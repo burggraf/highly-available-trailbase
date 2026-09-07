@@ -461,6 +461,17 @@ def _validate_nodes(nodes: list[Node]) -> None:
             raise ValueError(f"duplicate node {field}")
 
 
+def _validate_prerequisites(nodes: list[Node], inventory_path: Path | None, linode_env: Path | None, repository: Path | None) -> None:
+    _validate_nodes(nodes)
+    if (inventory_path is None) != (linode_env is None):
+        raise ValueError("inventory and Linode env must be supplied together")
+    if inventory_path is not None:
+        expected = load_inventory(inventory_path, repository)
+        if expected != nodes:
+            raise ValueError("nodes do not match private inventory")
+        load_linode_env(linode_env, nodes, repository)
+
+
 def _validate_local_context(context: RunContext, repository: Path | None = None) -> Path:
     local_root = _absolute_no_symlinks(context.local_root)
     _outside_repository(local_root, repository or Path(__file__).resolve().parents[2])
@@ -495,7 +506,7 @@ def _write_preflight_marker(context: RunContext) -> None:
     fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
         os.fchmod(fd, 0o600)
-        os.write(fd, (context.run_id + "\\n").encode("ascii"))
+        os.write(fd, (context.run_id + "\n").encode("ascii"))
         os.fsync(fd)
     finally:
         os.close(fd)
@@ -506,13 +517,13 @@ def _require_preflight_marker(context: RunContext) -> None:
     if marker.is_symlink() or not marker.is_file():
         raise ValueError("successful preflight marker is required")
     st = marker.stat()
-    if st.st_uid != os.getuid() or (st.st_mode & 0o777) != 0o600 or marker.read_text(encoding="ascii") != context.run_id + "\\n":
+    if st.st_uid != os.getuid() or (st.st_mode & 0o777) != 0o600 or marker.read_text(encoding="ascii") != context.run_id + "\n":
         raise ValueError("invalid successful preflight marker")
 
 
-def _preflight_impl(nodes: list[Node], context: RunContext, evidence: Path, repository: Path | None = None) -> None:
+def _preflight_impl(nodes: list[Node], context: RunContext, evidence: Path, repository: Path | None = None, inventory_path: Path | None = None, linode_env: Path | None = None) -> None:
     global _SSH_KNOWN_HOSTS
-    _validate_nodes(nodes)
+    _validate_prerequisites(nodes, inventory_path, linode_env, repository)
     local_root = _validate_local_context(context, repository)
     evidence = _validate_evidence_path(evidence, local_root, repository)
     with tempfile.TemporaryDirectory(prefix="hat-known-hosts-") as directory:
@@ -537,19 +548,19 @@ def _preflight_impl(nodes: list[Node], context: RunContext, evidence: Path, repo
         _write_preflight_marker(context)
 
 
-def preflight(nodes: list[Node], context: RunContext, evidence: Path, repository: Path | None = None) -> None:
+def preflight(nodes: list[Node], context: RunContext, evidence: Path, repository: Path | None = None, *, inventory_path: Path | None = None, linode_env: Path | None = None) -> None:
     global _SSH_KNOWN_HOSTS, _REMOTE_ROOT
     try:
-        _preflight_impl(nodes, context, evidence, repository)
+        _preflight_impl(nodes, context, evidence, repository, inventory_path, linode_env)
     finally:
         _SSH_KNOWN_HOSTS = None
         _REMOTE_ROOT = None
 
 
-def init_remote(nodes: list[Node], context: RunContext, evidence: Path | None = None, repository: Path | None = None) -> None:
+def init_remote(nodes: list[Node], context: RunContext, evidence: Path | None = None, repository: Path | None = None, *, inventory_path: Path | None = None, linode_env: Path | None = None) -> None:
     """Mutating phase: require a successful preflight, then create each root."""
     global _SSH_KNOWN_HOSTS, _REMOTE_ROOT
-    _validate_nodes(nodes)
+    _validate_prerequisites(nodes, inventory_path, linode_env, repository)
     local_root = _validate_local_context(context, repository)
     _require_preflight_marker(context)
     evidence = _validate_evidence_path(evidence or (local_root / "evidence.jsonl"), local_root, repository)
@@ -577,7 +588,7 @@ def main(argv: list[str] | None = None) -> int:
     load_linode_env(args.linode_env, nodes, repository)
     if args.scenario == "preflight":
         context = new_run_context(args.work_root, repository)
-        preflight(nodes, context, context.local_root / "evidence.jsonl", repository)
+        preflight(nodes, context, context.local_root / "evidence.jsonl", repository, inventory_path=args.inventory, linode_env=args.linode_env)
     else:
         work_root = _absolute_no_symlinks(args.work_root)
         candidates = sorted((p for p in work_root.iterdir() if p.is_dir() and _RUN_ID.fullmatch(p.name) and (p / ".preflight-ok").is_file()), reverse=True)
@@ -586,7 +597,7 @@ def main(argv: list[str] | None = None) -> int:
         local_root = candidates[0]
         context = RunContext(local_root.name, local_root, f"/var/lib/hat-qualification/{local_root.name}")
         _FRESH_LOCAL_ROOTS.add(str(local_root))
-        init_remote(nodes, context, local_root / "evidence.jsonl", repository)
+        init_remote(nodes, context, local_root / "evidence.jsonl", repository, inventory_path=args.inventory, linode_env=args.linode_env)
     print(f"{args.scenario} passed: {len(nodes)} nodes")
     return 0
 
