@@ -995,6 +995,8 @@ def validate_fence_evidence(evidence: Any, target: dict[str, Any], action: str) 
             observed_at = _fence_time(observation["time"])
         except ValueError:
             return False
+        if observed_at - now > datetime.timedelta(seconds=30):
+            return False
         key = (observation["time"], observation["state"])
         if key in seen or (previous is not None and observed_at <= previous):
             return False
@@ -1024,13 +1026,19 @@ def invoke_fence(command: Path, action: str, target: dict[str, Any], *, timeout:
             target_path = Path(target_file.name)
         os.chmod(target_path, 0o600)
         try:
-            result = subprocess.run([str(command), action, str(target_path)], capture_output=True, text=True, timeout=timeout, check=False)
+            result = subprocess.run([str(command), action, str(target_path)], capture_output=True, timeout=timeout, check=False)
         finally:
             target_path.unlink(missing_ok=True)
-        if result.returncode != 0 or not result.stdout.strip() or result.stdout.count("\n") > 1:
+        if result.returncode != 0:
             return {"valid": False, "reason": "fence command failed or returned non-single JSON"}
         try:
-            evidence = json.loads(result.stdout)
+            stdout = result.stdout.decode("utf-8")
+        except UnicodeDecodeError:
+            return {"valid": False, "reason": "malformed fence evidence"}
+        if not stdout.strip() or stdout.count("\n") > 1:
+            return {"valid": False, "reason": "fence command failed or returned non-single JSON"}
+        try:
+            evidence = json.loads(stdout)
         except json.JSONDecodeError:
             return {"valid": False, "reason": "malformed fence evidence"}
         return {"valid": validate_fence_evidence(evidence, target, action), "evidence": evidence}

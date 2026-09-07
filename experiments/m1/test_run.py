@@ -60,6 +60,19 @@ class FenceContractTests(unittest.TestCase):
                     {**valid, "completion": None}, {**valid, "request": {"id": "req-1"}}):
             self.assertFalse(promotion_allowed(bad, target))
 
+    def test_future_observation_and_invalid_encoding_fail_closed(self):
+        target = self.target()
+        future = self.evidence(target)
+        future_time = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=31)).isoformat().replace("+00:00", "Z")
+        future["observations"][0]["time"] = future_time
+        self.assertFalse(validate_fence_evidence(future, target, "power-off"))
+        with tempfile.TemporaryDirectory() as parent:
+            path = Path(parent) / "bad-encoding"
+            path.write_text("#!/bin/sh\nprintf '\\\\377'")
+            path.chmod(0o700)
+            result = invoke_fence(path, "power-off", target)
+            self.assertFalse(result["valid"])
+
     def test_invoke_rejects_non_json_target(self):
         with tempfile.TemporaryDirectory() as parent:
             path = self.fake(Path(parent), self.evidence(self.target()))
