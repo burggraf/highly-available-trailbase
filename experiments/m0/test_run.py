@@ -23,6 +23,7 @@ from run import (
     wait_ready,
     FIXTURE_USERNAME,
     parse_binary_versions,
+    format_txid,
 )
 
 
@@ -34,6 +35,23 @@ class RunRootTests(unittest.TestCase):
             (root / "existing").write_text("x")
             with self.assertRaises(ValueError):
                 require_private_run_root(root, Path(parent) / "repo")
+
+    def test_rejects_existing_empty_root(self):
+        with tempfile.TemporaryDirectory() as parent:
+            root = Path(parent) / "run"
+            root.mkdir()
+            with self.assertRaises(ValueError):
+                require_private_run_root(root, Path(parent) / "repo")
+
+    def test_rejects_symlinked_ancestor_into_repository(self):
+        with tempfile.TemporaryDirectory() as parent:
+            parent = Path(parent)
+            repo = parent / "repo"
+            repo.mkdir()
+            alias = parent / "alias"
+            alias.symlink_to(repo, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                require_private_run_root(alias / "run", repo)
 
     def test_rejects_root_inside_repository(self):
         with tempfile.TemporaryDirectory() as parent:
@@ -88,6 +106,16 @@ class FixtureTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate_inventory({**paths, "logs": root / "logs.db"})
 
+    def test_inventory_rejects_symlink_aliases(self):
+        with tempfile.TemporaryDirectory() as parent:
+            root = Path(parent)
+            target = root / "target"
+            target.mkdir()
+            alias = root / "alias"
+            alias.symlink_to(target, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                validate_inventory({"main": target / "same.db", "session": alias / "same.db", "aux": root / "aux.db"})
+
     def test_inventory_rejects_duplicate_resolved_paths(self):
         with tempfile.TemporaryDirectory() as parent:
             root = Path(parent)
@@ -103,6 +131,9 @@ class FixtureTests(unittest.TestCase):
     def test_binary_versions_must_match(self):
         with self.assertRaises(ValueError):
             validate_binary_versions({"trail": "0.33.11", "litestream": "0.5.17"}, {"trail": "0.33.10", "litestream": "0.5.17"})
+
+    def test_formats_fixed_width_litestream_txid(self):
+        self.assertEqual(format_txid(2), "0000000000000002")
 
     def test_normalizes_decimal_and_hex_positions(self):
         self.assertEqual(normalize_txid(17), 17)
@@ -120,6 +151,19 @@ class FixtureTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as parent:
             with self.assertRaises(FileNotFoundError):
                 require_files([Path(parent) / "main.db"])
+
+    def test_follower_parser_accepts_pinned_info_format(self):
+        event = parse_follower_line('time=2026-01-01T00:00:00Z level=INFO msg="follow: applied updates" txid=1')
+        self.assertEqual(event["level"], "INFO")
+        self.assertFalse(event["error"])
+
+    def test_follower_parser_fails_closed_on_unknown_format(self):
+        with self.assertRaises(RuntimeError):
+            promotion_error_gate([parse_follower_line("unexpected follower output")])
+
+    def test_follower_parser_recognizes_json_error_severity(self):
+        with self.assertRaises(RuntimeError):
+            promotion_error_gate([parse_follower_line('{"level":"ERROR","msg":"storage failed"}')])
 
     def test_follower_error_remains_a_promotion_failure_after_progress(self):
         error = parse_follower_line("level=ERROR msg=\\\"follow: error applying updates\\\"")
