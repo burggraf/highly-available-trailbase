@@ -44,6 +44,9 @@ class FenceContractTests(unittest.TestCase):
         valid = self.evidence(target)
         self.assertTrue(validate_fence_evidence(valid, target, "power-off"))
         self.assertTrue(promotion_allowed(valid, target))
+        before_completion = self.evidence(target)
+        before_completion["observations"][0]["time"] = "2026-01-01T00:00:00.500Z"
+        self.assertFalse(validate_fence_evidence(before_completion, target, "power-off"))
         for bad in (self.evidence(target, state="running"), self.evidence({**target, "boot": "new"}),
                     {**valid, "completion": None}, {**valid, "request": {"id": "req-1"}}):
             self.assertFalse(promotion_allowed(bad, target))
