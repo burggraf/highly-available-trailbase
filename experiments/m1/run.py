@@ -1,29 +1,30 @@
-"""M1 disposable-node safety foundation; standard library only."""
+"""Small, fail-closed coordinator for the M1 remote qualification."""
 from __future__ import annotations
 
 import argparse
-import getpass
-import hashlib
 import json
 import os
 import posixpath
 import re
 import shlex
-import socket
 import subprocess
-import sys
+import tempfile
 import time
 import uuid
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-_NODE_KEYS = {"name", "ssh", "instance_id", "provider_label", "address", "host_key"}
+_NODE_KEYS = {"name", "ssh", "instance_id", "provider_label", "address", "host_key", "hostname"}
 _SAFE = re.compile(r"^[A-Za-z0-9._-]+$")
+_RUN_ID = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{10}$")
+_FINGERPRINT = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
+_SECRET = re.compile(
+    r"(password|passwd|secret|token|authorization|private.?key|credential|access.?key|session|cookie)", re.I
+)
+SSH_TIMEOUT = 60
 _SSH_KNOWN_HOSTS: Path | None = None
 _REMOTE_ROOT: str | None = None
-_SECRET = re.compile(r"(password|passwd|secret|token|authorization|private.?key|credential|access.?key|session|cookie)", re.I)
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,12 @@ class Node:
     provider_label: str
     address: str
     host_key: str
+    hostname: str = ""
+
+    def __post_init__(self) -> None:
+        # Keep direct unit-test construction safe; persisted inventories must declare it.
+        if not self.hostname:
+            object.__setattr__(self, "hostname", self.address)
 
 
 @dataclass(frozen=True)
@@ -43,17 +50,42 @@ class RunContext:
     remote_root: str
 
 
-def require_private_file(path: Path) -> None:
+def _absolute_no_symlinks(path: Path) -> Path:
+    """Return an absolute path while rejecting every existing symlink component."""
     path = Path(path).expanduser()
-    if path.is_symlink() or not path.is_file():
+    absolute = Path(os.path.abspath(path))
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current /= part
+        # macOS exposes /var and /tmp as stable system aliases.
+        if current.is_symlink() and current not in (Path("/var"), Path("/tmp")):
+            raise ValueError(f"symlink path component: {current}")
+    return absolute
+
+
+def _outside_repository(path: Path, repository: Path | None) -> None:
+    if repository is None:
+        return
+    repo = _absolute_no_symlinks(repository)
+    candidate = _absolute_no_symlinks(path)
+    try:
+        candidate.relative_to(repo)
+    except ValueError:
+        return
+    raise ValueError("path must be outside repository")
+
+
+def require_private_file(path: Path, repository: Path | None = None) -> None:
+    path = _absolute_no_symlinks(path)
+    _outside_repository(path, repository)
+    if not path.is_file() or path.is_symlink():
         raise ValueError(f"private file required: {path}")
     st = path.stat()
     if st.st_uid != os.getuid():
         raise ValueError("private file is not owned by current user")
     if (st.st_mode & 0o777) != 0o600:
         raise ValueError("private file must have mode 0600")
-    parent = path.parent
-    pst = parent.stat()
+    pst = path.parent.stat()
     if pst.st_uid != os.getuid() or (pst.st_mode & 0o077):
         raise ValueError("private file parent is not private")
 
@@ -67,26 +99,27 @@ def _valid_text(value: Any, field: str) -> str:
 def validate_inventory(value: dict[str, Any]) -> list[Node]:
     if not isinstance(value, dict) or set(value) != {"nodes"} or not isinstance(value["nodes"], list):
         raise ValueError("inventory must contain only nodes")
-    if len(value["nodes"]) < 3:
-        raise ValueError("at least three nodes are required")
+    if len(value["nodes"]) != 3:
+        raise ValueError("exactly three nodes are required")
     nodes: list[Node] = []
     for raw in value["nodes"]:
         if not isinstance(raw, dict) or set(raw) != _NODE_KEYS:
             raise ValueError("node has unexpected keys")
         name = _valid_text(raw["name"], "name")
         ssh_name = raw["ssh"]
-        if not isinstance(ssh_name, str) or not ssh_name.startswith("root@") or not ssh_name[5:]:
+        if not isinstance(ssh_name, str) or not ssh_name.startswith("root@"):
             raise ValueError("SSH user must be root")
         address = _valid_text(raw["address"], "address")
-        host_key = raw["host_key"]
-        if not isinstance(host_key, str) or not re.fullmatch(r"SHA256:[A-Za-z0-9+/]{43}", host_key):
-            raise ValueError("invalid host key fingerprint")
         match = re.fullmatch(r"root@([A-Za-z0-9.-]+)", ssh_name)
         if not match or match.group(1) != address:
             raise ValueError("SSH target must be root@address")
+        host_key = raw["host_key"]
+        if not isinstance(host_key, str) or not _FINGERPRINT.fullmatch(host_key):
+            raise ValueError("invalid host key fingerprint")
         if not isinstance(raw["instance_id"], int) or isinstance(raw["instance_id"], bool) or raw["instance_id"] <= 0:
             raise ValueError("invalid instance ID")
-        nodes.append(Node(name, ssh_name, raw["instance_id"], _valid_text(raw["provider_label"], "provider label"), address, host_key))
+        hostname = _valid_text(raw["hostname"], "hostname")
+        nodes.append(Node(name, ssh_name, raw["instance_id"], _valid_text(raw["provider_label"], "provider label"), address, host_key, hostname))
     for field in ("name", "ssh", "instance_id", "provider_label", "address", "host_key"):
         vals = [getattr(n, field) for n in nodes]
         if len(set(vals)) != len(vals):
@@ -94,8 +127,8 @@ def validate_inventory(value: dict[str, Any]) -> list[Node]:
     return nodes
 
 
-def load_inventory(path: Path) -> list[Node]:
-    require_private_file(path)
+def load_inventory(path: Path, repository: Path | None = None) -> list[Node]:
+    require_private_file(path, repository)
     try:
         value = json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
@@ -103,89 +136,185 @@ def load_inventory(path: Path) -> list[Node]:
     return validate_inventory(value)
 
 
-def _reject_symlink_components(path: Path) -> Path:
-    path = Path(path).expanduser()
-    absolute = Path(os.path.abspath(path))
-    current = Path(absolute.anchor)
-    for part in absolute.parts[1:]:
-        current /= part
-        if current.is_symlink() and current not in (Path("/var"), Path("/tmp")):
-            raise ValueError(f"symlink path component: {current}")
-    return absolute
-
-
 def new_run_context(work_root: Path, repository: Path | None = None) -> RunContext:
-    work_root = _reject_symlink_components(work_root)
-    if repository:
-        repo = Path(repository).expanduser().resolve()
-        try:
-            work_root.relative_to(repo)
-        except ValueError:
-            pass
-        else:
-            raise ValueError("work root must be outside repository")
-    if work_root.is_symlink() or (work_root.exists() and work_root.stat().st_uid != os.getuid()):
-        raise ValueError("work root must be an owned non-symlink")
+    work_root = _absolute_no_symlinks(work_root)
+    _outside_repository(work_root, repository)
+    if work_root.exists() and work_root.stat().st_uid != os.getuid():
+        raise ValueError("work root must be owned by current user")
     work_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if (work_root.stat().st_mode & 0o077) or work_root.stat().st_uid != os.getuid():
-        raise ValueError("work root must be private")
+    if work_root.is_symlink() or work_root.stat().st_uid != os.getuid() or (work_root.stat().st_mode & 0o077):
+        raise ValueError("work root must be private and non-symlink")
     work_root.chmod(0o700)
-    run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + uuid.uuid4().hex[:10]
-    local = work_root / run_id
-    local.mkdir(mode=0o700)
-    remote = f"/var/lib/hat-qualification/{run_id}"
-    return RunContext(run_id, local, remote)
+    while True:
+        run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + uuid.uuid4().hex[:10]
+        local = work_root / run_id
+        try:
+            local.mkdir(mode=0o700)
+            break
+        except FileExistsError:
+            continue
+    return RunContext(run_id, local, f"/var/lib/hat-qualification/{run_id}")
+
+
+def _context_root(context: RunContext) -> str:
+    expected = f"/var/lib/hat-qualification/{context.run_id}"
+    if not _RUN_ID.fullmatch(context.run_id) or context.remote_root != expected:
+        raise ValueError("unsafe or stale remote run root")
+    return expected
+
+
+def _stdout(result: subprocess.CompletedProcess) -> str:
+    value = result.stdout
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return value or ""
+
+
+def _host_key_line(address: str, stdout: str) -> tuple[str, str]:
+    lines = [line.strip() for line in stdout.splitlines() if line.strip() and not line.lstrip().startswith("#")]
+    if len(lines) != 1:
+        raise RuntimeError(f"expected exactly one host key for {address}")
+    fields = lines[0].split()
+    if len(fields) != 3 or fields[0] not in {address, f"[{address}]:22"} or fields[1] != "ssh-ed25519":
+        raise RuntimeError(f"invalid host key for {address}")
+    return fields[1], lines[0]
+
+
+def _known_host_fingerprint(address: str) -> tuple[str, str]:
+    result = subprocess.run(
+        ["ssh-keyscan", "-T", "10", "-t", "ed25519", address],
+        capture_output=True, text=True, check=False, timeout=SSH_TIMEOUT,
+    )
+    if result.returncode:
+        raise RuntimeError(f"cannot collect host key for {address}")
+    _, line = _host_key_line(address, result.stdout)
+    with tempfile.TemporaryDirectory() as directory:
+        key = Path(directory) / "key"
+        key.write_text(line + "\n", encoding="ascii")
+        output = subprocess.run(
+            ["ssh-keygen", "-lf", str(key), "-E", "sha256"],
+            capture_output=True, text=True, check=False, timeout=SSH_TIMEOUT,
+        )
+    if output.returncode:
+        raise RuntimeError(f"cannot fingerprint host key for {address}")
+    fields = output.stdout.split()
+    if len(fields) < 2 or not _FINGERPRINT.fullmatch(fields[1]):
+        raise RuntimeError(f"invalid host-key fingerprint for {address}")
+    return fields[1], line
+
+
+def build_pinned_known_hosts(nodes: list[Node], directory: Path) -> Path:
+    """Create a fresh, mode-0600 known_hosts containing only inventory keys."""
+    directory = _absolute_no_symlinks(directory)
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if directory.is_symlink() or directory.stat().st_uid != os.getuid() or (directory.stat().st_mode & 0o077):
+        raise ValueError("known-host directory is not private")
+    path = directory / "known_hosts"
+    try:
+        with path.open("x", encoding="ascii") as stream:
+            for node in nodes:
+                fingerprint, line = _known_host_fingerprint(node.address)
+                if fingerprint != node.host_key:
+                    raise RuntimeError(f"host key mismatch for {node.name}")
+                stream.write(line + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        path.chmod(0o600)
+        return path
+    except Exception:
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _remote_stat(node: Node, path: str) -> tuple[str, int, int, int, str]:
+    result = ssh(node, ["stat", "-c", "%F %u %g %a %n", "--", path], check=False)
+    if result.returncode:
+        raise RuntimeError(f"remote path does not exist: {path}")
+    fields = _stdout(result).strip().split(" ", 4)
+    if len(fields) != 5:
+        raise RuntimeError(f"invalid remote path metadata: {path}")
+    try:
+        return fields[0], int(fields[1]), int(fields[2]), int(fields[3], 8), fields[4]
+    except ValueError as exc:
+        raise RuntimeError(f"invalid remote path metadata: {path}") from exc
 
 
 def ensure_remote_root(node: Node, context: RunContext) -> None:
     global _REMOTE_ROOT
-    root = context.remote_root
-    if not re.fullmatch(r"/var/lib/hat-qualification/[A-Za-z0-9T_Z-]+", root):
-        raise ValueError("unsafe remote root")
+    root = _context_root(context)
     base = "/var/lib/hat-qualification"
-    trusted = ssh(node, ["test", "-d", base], check=False)
-    if trusted.returncode:
-        raise RuntimeError("remote qualification base is missing or unsafe")
-    result = ssh(node, ["test", "!", "-e", root], check=False)
-    if result.returncode:
+    kind, uid, gid, mode, name = _remote_stat(node, base)
+    if kind != "directory" or uid != 0 or gid != 0 or mode & 0o022 or name != base:
+        raise RuntimeError("remote qualification base is not a trusted root-owned directory")
+    exists = ssh(node, ["test", "!", "-e", root], check=False)
+    dangling = ssh(node, ["test", "!", "-L", root], check=False)
+    if exists.returncode or dangling.returncode:
         raise RuntimeError("remote run root already exists")
-    result = ssh(node, ["mkdir", root], check=False)
-    if result.returncode:
-        raise RuntimeError("cannot create fresh remote run root")
-    result = ssh(node, ["test", "-d", root], check=False)
-    if result.returncode:
-        raise RuntimeError("remote root is not a directory")
-    result = ssh(node, ["stat", "-c", "%u %a", root], check=False)
-    if result.stdout.decode().strip() != "0 700":
-        raise RuntimeError("remote root ownership or mode unsafe")
-    _REMOTE_ROOT = root
+    created = False
+    try:
+        result = ssh(node, ["mkdir", "-m", "700", "--", root], check=False)
+        if result.returncode:
+            raise RuntimeError("cannot create fresh remote run root")
+        created = True
+        kind, uid, gid, mode, name = _remote_stat(node, root)
+        if kind != "directory" or uid != 0 or gid != 0 or mode != 0o700 or name != root:
+            raise RuntimeError("remote root ownership, mode, or path is unsafe")
+        _REMOTE_ROOT = root
+    except Exception:
+        if created:
+            ssh(node, ["rmdir", "--", root], check=False)
+        raise
+
+
+def _transport_options() -> list[str]:
+    if _SSH_KNOWN_HOSTS is None:
+        raise RuntimeError("SSH pinning context is not initialized")
+    return [
+        "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+        "-o", "StrictHostKeyChecking=yes", "-o", f"UserKnownHostsFile={_SSH_KNOWN_HOSTS}",
+    ]
 
 
 def ssh(node: Node, argv: list[str], input: bytes | None = None, *, check: bool = True) -> subprocess.CompletedProcess:
     if not argv:
         raise ValueError("remote command cannot be empty")
     command = " ".join(shlex.quote(str(arg)) for arg in argv)
-    options = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes"]
-    if _SSH_KNOWN_HOSTS is None:
-        raise RuntimeError("SSH pinning context is not initialized")
-    options += ["-o", f"UserKnownHostsFile={_SSH_KNOWN_HOSTS}"]
-    return subprocess.run(["ssh", *options, "--", node.ssh, command], input=input, capture_output=True, check=check, timeout=60)
+    return subprocess.run(
+        ["ssh", *_transport_options(), "--", node.ssh, command],
+        input=input, capture_output=True, check=check, timeout=SSH_TIMEOUT,
+    )
 
 
-def scp_to(node: Node, source: Path, destination: str, *, check: bool = True) -> subprocess.CompletedProcess:
+def _remote_destination(destination: str) -> tuple[str, str]:
+    if _REMOTE_ROOT is None or not isinstance(destination, str) or not destination.startswith(_REMOTE_ROOT + "/"):
+        raise RuntimeError("SCP destination is outside pinned remote run root")
+    normalized = posixpath.normpath(destination)
+    if normalized != destination or "\\" in destination or normalized == _REMOTE_ROOT:
+        raise RuntimeError("SCP destination is outside pinned remote run root")
+    parent = posixpath.dirname(normalized)
+    if not parent.startswith(_REMOTE_ROOT + "/") and parent != _REMOTE_ROOT:
+        raise RuntimeError("SCP destination is outside pinned remote run root")
+    return normalized, parent
+
+
+def scp_to(node: Node, source: Path, destination: str, *, check: bool = True, repository: Path | None = None) -> subprocess.CompletedProcess:
+    source = _absolute_no_symlinks(source)
+    _outside_repository(source, repository)
     if not source.is_file() or source.is_symlink():
         raise ValueError("source must be a regular file")
-    options = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=yes"]
-    if _SSH_KNOWN_HOSTS is None or _REMOTE_ROOT is None or not destination.startswith(_REMOTE_ROOT + "/"):
-        raise RuntimeError("SCP destination is outside pinned remote run root")
-    options += ["-o", f"UserKnownHostsFile={_SSH_KNOWN_HOSTS}"]
-    destination_path = os.path.normpath(destination)
-    if destination_path != destination or not destination_path.startswith(_REMOTE_ROOT + "/"):
-        raise RuntimeError("SCP destination is outside pinned remote run root")
-    parent = posixpath.dirname(destination_path)
-    if ssh(node, ["realpath", "-e", parent], check=False).stdout.decode().strip() != parent:
+    destination, parent = _remote_destination(destination)
+    real = ssh(node, ["realpath", "-e", "--", parent], check=False)
+    if real.returncode or _stdout(real).strip() != parent:
         raise RuntimeError("SCP destination parent is not a real path under remote root")
-    return subprocess.run(["scp", *options, "--", str(source), f"{node.ssh}:{destination_path}"], capture_output=True, check=check, timeout=60)
+    if ssh(node, ["test", "!", "-L", "--", destination], check=False).returncode:
+        raise RuntimeError("SCP destination is a symlink")
+    return subprocess.run(
+        ["scp", *_transport_options(), "--", str(source), f"{node.ssh}:{destination}"],
+        capture_output=True, check=check, timeout=SSH_TIMEOUT,
+    )
 
 
 def redact(value: Any) -> Any:
@@ -193,97 +322,110 @@ def redact(value: Any) -> Any:
         return {key: "[REDACTED]" if _SECRET.search(str(key)) else redact(item) for key, item in value.items()}
     if isinstance(value, list):
         return [redact(item) for item in value]
+    if isinstance(value, tuple):
+        return [redact(item) for item in value]
     return value
 
 
-def append_evidence(path: Path, event: dict[str, Any]) -> None:
-    path = Path(path)
-    _reject_symlink_components(path)
+def append_evidence(path: Path, event: dict[str, Any], repository: Path | None = None) -> None:
+    path = _absolute_no_symlinks(path)
+    _outside_repository(path, repository)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if path.parent.stat().st_uid != os.getuid() or (path.parent.stat().st_mode & 0o077):
+    parent_st = path.parent.stat()
+    if parent_st.st_uid != os.getuid() or (parent_st.st_mode & 0o077):
         raise ValueError("evidence parent is not private")
-    path.touch(mode=0o600, exist_ok=True)
-    path.chmod(0o600)
-    with path.open("a", encoding="utf-8") as stream:
-        stream.write(json.dumps(redact(event), sort_keys=True) + "\n")
-        stream.flush()
-        os.fsync(stream.fileno())
+    if path.exists():
+        file_st = path.stat()
+        if not path.is_file() or file_st.st_uid != os.getuid() or (file_st.st_mode & 0o777) != 0o600:
+            raise ValueError("evidence file is not private")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(path, flags, 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as stream:
+            fd = -1
+            stream.write(json.dumps(redact(event), sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+    finally:
+        if fd >= 0:
+            os.close(fd)
 
 
 def _require_facts(node: Node, facts: dict[str, str]) -> None:
-    if facts["hostname"].strip() not in {node.name, node.address}:
+    required = {"hostname", "release", "boot_id", "memory", "disk", "cpu", "time_sync", "outbound_tls"}
+    if not required.issubset(facts):
+        raise RuntimeError(f"incomplete facts for {node.name}")
+    if not node.hostname or facts["hostname"].strip() != node.hostname:
         raise RuntimeError(f"hostname mismatch for {node.name}")
-    if not re.search(r'^ID=ubuntu$', facts["release"], re.M) or not re.search(r'^VERSION_ID="?24\.04"?$', facts["release"], re.M):
+    release = facts["release"]
+    if not re.search(r"(?m)^ID=ubuntu\s*$", release) or not re.search(r'(?m)^VERSION_ID="?24\.04"?\s*$', release):
         raise RuntimeError(f"unsupported Ubuntu release for {node.name}")
-    if not facts["boot_id"].strip() or not re.fullmatch(r"[0-9a-fA-F-]{16,}", facts["boot_id"].strip()):
+    boot_id = facts["boot_id"].strip()
+    if not re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", boot_id):
         raise RuntimeError(f"invalid boot ID for {node.name}")
-    memory = re.search(r"MemTotal:\s+(\d+)", facts["memory"])
-    disk_rows = [line.split() for line in facts["disk"].splitlines() if line and not line.startswith("Filesystem")]
-    if len(disk_rows) != 1 or len(disk_rows[0]) < 5 or not disk_rows[0][4].endswith("%"):
-        raise RuntimeError(f"invalid disk report for {node.name}")
-    used = int(disk_rows[0][4][:-1])
-    if used < 0 or used > 90 or int(facts["cpu"].strip()) < 1 or not memory or int(memory.group(1)) < 512000:
+    memory = re.search(r"(?m)^MemTotal:\s+(\d+)\s+kB\s*$", facts["memory"])
+    cpu = facts["cpu"].strip()
+    if not re.fullmatch(r"[1-9][0-9]*", cpu) or int(cpu) < 1 or not memory or int(memory.group(1)) < 512000:
         raise RuntimeError(f"insufficient resources for {node.name}")
-    if not re.search(r"NTPSynchronized=yes", facts["time_sync"], re.I):
+    disk_rows = [line.split() for line in facts["disk"].splitlines() if line and not line.startswith("Filesystem")]
+    if len(disk_rows) != 1 or len(disk_rows[0]) < 5 or not re.fullmatch(r"(?:[0-9]|[1-8][0-9]|90)%", disk_rows[0][4]):
+        raise RuntimeError(f"invalid or full disk report for {node.name}")
+    if not re.fullmatch(r"NTPSynchronized=yes\s*", facts["time_sync"].strip(), re.I):
         raise RuntimeError(f"time is not synchronized for {node.name}")
-    if not facts["outbound_tls"].startswith("HAT_M1_TLS_OK"):
+    if facts["outbound_tls"].strip() != "HAT_M1_TLS_OK":
         raise RuntimeError(f"outbound TLS failed for {node.name}")
 
 
-def _known_host_fingerprint(address: str) -> tuple[str, str]:
-    result = subprocess.run(["ssh-keyscan", "-T", "10", "-t", "ed25519", address], capture_output=True, text=True, check=False)
-    line = next((line for line in result.stdout.splitlines() if "ssh-ed25519" in line), None)
-    if not line:
-        raise RuntimeError(f"no pinned host key for {address}")
-    with tempfile.TemporaryDirectory() as directory:
-        key = Path(directory) / "key"
-        key.write_text(" ".join(line.split()[1:]) + "\n", encoding="ascii")
-        output = subprocess.run(["ssh-keygen", "-lf", str(key)], capture_output=True, text=True, check=True).stdout
-    return output.split()[1], line
-
-
-def load_linode_env(path: Path, nodes: list[Node] | None = None) -> dict[str, int]:
-    require_private_file(path)
-    values: dict[str, int] = {}
-    for line in Path(path).read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        match = re.fullmatch(r"export (HAT_FM[123]_LINODE_ID)=(['\"]?)(\d+)\2", line)
-        token = re.fullmatch(r"export LINODE_TOKEN=(['\"])([^'\"]+)\1", line)
+def load_linode_env(path: Path, nodes: list[Node] | None = None, repository: Path | None = None) -> dict[str, int]:
+    """Strictly parse the four-line credential file without returning its token."""
+    require_private_file(path, repository)
+    try:
+        lines = Path(path).read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError) as exc:
+        raise ValueError("linode env is unreadable") from exc
+    if len(lines) != 4 or any(not line for line in lines):
+        raise ValueError("linode env must contain exactly token and three IDs")
+    ids: dict[str, int] = {}
+    token_seen = False
+    for line in lines:
+        token = re.fullmatch(r"export LINODE_TOKEN=(?:'([^'\n]+)'|\"([^\"\n]+)\"|([^\s]+))", line)
+        ident = re.fullmatch(r"export (HAT_FM[123]_LINODE_ID)=(['\"]?)(\d+)\2", line)
         if token:
-            continue
-        if not match or match.group(1) in values:
-            raise ValueError("linode env contains malformed or duplicate entries")
-        values[match.group(1)] = int(match.group(3))
-    expected = {f"HAT_FM{i}_LINODE_ID" for i in range(1, 4)}
-    if set(values) != expected:
-        raise ValueError("linode env must contain exactly three node IDs")
+            if token_seen:
+                raise ValueError("duplicate Linode token")
+            token_seen = True
+        elif ident:
+            key = ident.group(1)
+            if key in ids or int(ident.group(3)) <= 0:
+                raise ValueError("duplicate or invalid Linode ID")
+            ids[key] = int(ident.group(3))
+        else:
+            raise ValueError("linode env contains malformed entries")
+    if not token_seen or set(ids) != {f"HAT_FM{i}_LINODE_ID" for i in range(1, 4)}:
+        raise ValueError("linode env must contain exactly token and three IDs")
     if nodes is not None:
+        if {node.name for node in nodes} != {"fm1", "fm2", "fm3"}:
+            raise ValueError("inventory names must map to fm1, fm2, and fm3")
         for node in nodes:
-            match = re.fullmatch(r"fm([123])", node.name)
-            if not match or values[f"HAT_FM{match.group(1)}_LINODE_ID"] != node.instance_id:
+            slot = node.name[2:]
+            if ids[f"HAT_FM{slot}_LINODE_ID"] != node.instance_id:
                 raise ValueError("Linode IDs do not match inventory")
-    return values
+    return ids
 
 
 def _preflight_impl(nodes: list[Node], context: RunContext, evidence: Path) -> None:
-    """Collect and validate read-only host facts; do not create remote state."""
     global _SSH_KNOWN_HOSTS
-    evidence = Path(evidence).resolve(strict=False)
-    local_root = context.local_root.resolve()
+    evidence = _absolute_no_symlinks(evidence)
+    local_root = _absolute_no_symlinks(context.local_root)
     try:
         evidence.relative_to(local_root)
     except ValueError as exc:
         raise ValueError("evidence must be below the fresh local root") from exc
-    with tempfile.TemporaryDirectory() as directory:
-        known_hosts = Path(directory) / "known_hosts"
-        for node in nodes:
-            fingerprint, line = _known_host_fingerprint(node.address)
-            if fingerprint != node.host_key:
-                raise RuntimeError(f"host key mismatch for {node.name}")
-            with known_hosts.open("a", encoding="ascii") as stream:
-                stream.write(line + "\n")
-        _SSH_KNOWN_HOSTS = known_hosts
+    with tempfile.TemporaryDirectory(prefix="hat-known-hosts-") as directory:
+        _SSH_KNOWN_HOSTS = build_pinned_known_hosts(nodes, Path(directory) / "pins")
         commands = {
             "hostname": ["hostname"], "boot_id": ["cat", "/proc/sys/kernel/random/boot_id"],
             "release": ["cat", "/etc/os-release"], "cpu": ["nproc"],
@@ -292,16 +434,15 @@ def _preflight_impl(nodes: list[Node], context: RunContext, evidence: Path) -> N
             "outbound_tls": ["curl", "--fail", "--silent", "--show-error", "-o", "/dev/null", "-w", "HAT_M1_TLS_OK", "https://example.com/"],
         }
         for node in nodes:
-            facts = {"node": node.name, "address": node.address}
+            facts: dict[str, str] = {"node": node.name, "address": node.address}
             for label, command in commands.items():
                 result = ssh(node, command, check=False)
                 if result.returncode:
                     raise RuntimeError(f"preflight failed for {node.name}: {label}")
-                facts[label] = result.stdout.decode("utf-8", "replace")
+                facts[label] = _stdout(result)
             _require_facts(node, facts)
             facts["host_key"] = node.host_key
             append_evidence(evidence, {"event": "preflight", "facts": facts})
-        _SSH_KNOWN_HOSTS = None
 
 
 def preflight(nodes: list[Node], context: RunContext, evidence: Path) -> None:
@@ -313,18 +454,38 @@ def preflight(nodes: list[Node], context: RunContext, evidence: Path) -> None:
         _REMOTE_ROOT = None
 
 
+def init_remote(nodes: list[Node], context: RunContext, evidence: Path | None = None) -> None:
+    """Mutating phase: pin keys independently, then atomically create each root."""
+    global _SSH_KNOWN_HOSTS, _REMOTE_ROOT
+    try:
+        with tempfile.TemporaryDirectory(prefix="hat-known-hosts-") as directory:
+            _SSH_KNOWN_HOSTS = build_pinned_known_hosts(nodes, Path(directory) / "pins")
+            for node in nodes:
+                ensure_remote_root(node, context)
+                if evidence is not None:
+                    append_evidence(evidence, {"event": "init-remote", "node": node.name, "remote_root": context.remote_root})
+    finally:
+        _SSH_KNOWN_HOSTS = None
+        _REMOTE_ROOT = None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("scenario", choices=["preflight"])
+    parser.add_argument("scenario", choices=["preflight", "init-remote"])
     parser.add_argument("--inventory", type=Path, required=True)
     parser.add_argument("--work-root", type=Path, required=True)
     parser.add_argument("--linode-env", type=Path, required=True)
     args = parser.parse_args(argv)
-    nodes = load_inventory(args.inventory)
-    load_linode_env(args.linode_env, nodes)
-    context = new_run_context(args.work_root, Path(__file__).resolve().parents[2])
-    preflight(nodes, context, context.local_root / "evidence.jsonl")
-    print(f"preflight passed: {len(nodes)} nodes")
+    repository = Path(__file__).resolve().parents[2]
+    nodes = load_inventory(args.inventory, repository)
+    load_linode_env(args.linode_env, nodes, repository)
+    context = new_run_context(args.work_root, repository)
+    evidence = context.local_root / "evidence.jsonl"
+    if args.scenario == "preflight":
+        preflight(nodes, context, evidence)
+    else:
+        init_remote(nodes, context, evidence)
+    print(f"{args.scenario} passed: {len(nodes)} nodes")
     return 0
 
 
