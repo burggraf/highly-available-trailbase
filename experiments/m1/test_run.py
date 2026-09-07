@@ -680,11 +680,11 @@ class _StorageClient:
         from s3 import Reconciliation
         if not self.discard_unknown: self.put(key, body, etag=etag, if_none_match=if_none_match)
         return Reconciliation.UNKNOWN
-    def reconcile_put_detailed(self, key, body, etag):
+    def reconcile_put_detailed(self, key, body, etag=None):
         from s3 import Reconciliation, ReconciliationProbe, ReconciliationResult
         head = self.head(key); get = self.get(key)
         probes = tuple(ReconciliationProbe.from_response(method, response) for method, response in (("HEAD", head), ("GET", get)))
-        outcome = Reconciliation.DISCARDED if head[0] == 404 else (Reconciliation.COMMITTED if get[0] == 200 and get[1]["ETag"] == etag and get[2] == body else Reconciliation.UNKNOWN)
+        outcome = Reconciliation.DISCARDED if head[0] == 404 else (Reconciliation.COMMITTED if get[0] == 200 and (etag is None or get[1]["ETag"] == etag) and get[2] == body else Reconciliation.UNKNOWN)
         return ReconciliationResult(outcome, probes)
 
 

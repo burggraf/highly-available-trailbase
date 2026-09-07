@@ -853,10 +853,9 @@ def storage(nodes=None, context=None, evidence=None, repository=None, *, s3_env=
 
     uncertain_key, uncertain_body = prefix + "reconcile", b"uncertain-write"
     discarded = client.put_discarded(uncertain_key, uncertain_body, if_none_match=True)
-    expected_etag = '"' + hashlib.md5(uncertain_body).hexdigest() + '"'
-    reconciliation = client.reconcile_put_detailed(uncertain_key, uncertain_body, expected_etag)
+    reconciliation = client.reconcile_put_detailed(uncertain_key, uncertain_body)
     append_evidence(evidence, {"operation": "discarded-response-reconciliation", "outcome": discarded.value,
-        "result": reconciliation.outcome.value, "expected_etag": expected_etag,
+        "result": reconciliation.outcome.value,
         "expected_payload_sha256": hashlib.sha256(uncertain_body).hexdigest(),
         "probes": [probe.__dict__ for probe in reconciliation.probes]}, repository)
     check(discarded is Reconciliation.UNKNOWN, "discarded response was not unknown")

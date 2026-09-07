@@ -21,6 +21,16 @@ class SigV4Tests(unittest.TestCase):
         self.assertEqual(classify_status(412), "precondition")
         self.assertEqual(classify_status(599), "unknown")
 
+    def test_request_encodes_object_key_once(self):
+        c = S3Client("b", "r", "a", "s", "https://s3.example")
+        with mock.patch.object(c, "request", return_value=(200, {}, b"")):
+            c.get("folder/a file%2Fname")
+            path = c.request.call_args.args[1] if len(c.request.call_args.args) > 1 else ""
+        self.assertEqual(path, "folder/a file%2Fname")
+        signed = c.signed_request("GET", "/b/folder/a file/name", {}, b"")
+        self.assertIn("/b/folder/a%20file/name", signed.url)
+        self.assertNotIn("%2520", signed.url)
+
     def test_empty_etag_stays_conditional(self):
         c = S3Client("b", "r", "a", "s", "https://s3.example")
         with mock.patch.object(c, "request", return_value=(412, {}, b"")) as request:

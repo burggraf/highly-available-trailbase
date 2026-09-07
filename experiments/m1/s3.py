@@ -106,7 +106,7 @@ class S3Client:
         return SignedRequest(self.endpoint + canonical_uri, actual)
 
     def request(self, method: str, key: str = "", *, body: bytes = b"", headers: dict[str, str] | None = None, query: dict[str, str] | None = None) -> tuple[int, dict[str, str], bytes]:
-        path = ("/" + quote(self.bucket, safe="-_.~") + "/" + quote(key, safe="/-_.~")) if key else ("/" + quote(self.bucket, safe="-_.~"))
+        path = ("/" + self.bucket + "/" + key) if key else ("/" + self.bucket)
         signed = self.signed_request(method, path, headers or {}, body, query=query)
         url = signed.url + (("?" + "&".join(f"{quote(str(k), safe='-_.~')}={quote(str(v), safe='-_.~')}" for k, v in sorted((query or {}).items()))) if query else "")
         try:
@@ -128,7 +128,7 @@ class S3Client:
         if etag is not None and if_none_match:
             raise ValueError("conflicting conditions")
         headers = {"If-Match": quote_etag(etag)} if etag is not None else ({"If-None-Match": "*"} if if_none_match else {})
-        path = "/" + quote(self.bucket, safe="-_.~") + "/" + quote(key, safe="/-_.~")
+        path = "/" + self.bucket + "/" + key
         signed = self.signed_request("PUT", path, headers, body)
         parts = urlsplit(signed.url)
         connection = HTTPSConnection(parts.hostname, parts.port or 443, timeout=30)
@@ -144,7 +144,7 @@ class S3Client:
     def delete(self, key: str, *, etag: str | None = None):
         return self.request("DELETE", key, headers={"If-Match": quote_etag(etag)} if etag is not None else {})
 
-    def reconcile_put_detailed(self, key: str, body: bytes, etag: str) -> ReconciliationResult:
+    def reconcile_put_detailed(self, key: str, body: bytes, etag: str | None = None) -> ReconciliationResult:
         probes: list[ReconciliationProbe] = []
         # ponytail: three authoritative rounds bound degraded-provider runtime.
         for _ in range(3):
@@ -160,13 +160,13 @@ class S3Client:
                 status, headers, got = response
                 if status == 404:
                     absent.add(method)
-                if method == "GET" and status == 200 and got == body and probe.etag == quote_etag(etag):
+                if method == "GET" and status == 200 and got == body and probe.etag and (etag is None or probe.etag == quote_etag(etag)):
                     return ReconciliationResult(Reconciliation.COMMITTED, tuple(probes))
             if absent == {"HEAD", "GET"}:
                 return ReconciliationResult(Reconciliation.DISCARDED, tuple(probes))
         return ReconciliationResult(Reconciliation.UNKNOWN, tuple(probes))
 
-    def reconcile_put(self, key: str, body: bytes, etag: str) -> Reconciliation:
+    def reconcile_put(self, key: str, body: bytes, etag: str | None = None) -> Reconciliation:
         return self.reconcile_put_detailed(key, body, etag).outcome
 
 
