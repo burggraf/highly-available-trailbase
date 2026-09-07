@@ -10,7 +10,9 @@ The user selected this policy during planning:
 
 > Safety first: automatic promotion only with proven fencing and a defined data-loss budget; otherwise stop for operator review.
 
-This approves the safety direction, not a particular fencing backend, numeric RPO/RTO, or all design proposals below. Those remain open decisions.
+**Deployment target chosen:** cloud VMs first. Bare-metal and orchestrator-specific deployments are deferred.
+
+These decisions approve the safety direction and deployment class, not a particular cloud provider/fencing backend, numeric RPO/RTO, or all design proposals below. Those remain open decisions.
 
 In scope:
 
@@ -47,7 +49,7 @@ Until these pass, HAT is an HA design experiment, not a production availability 
 | Existing consensus-backed coordinator + the same supervisor/fence | Preferable where etcd/Consul or an equivalent managed control plane already exists | Adds a dependency otherwise; election still does not fence SQLite or make backups synchronous | Keep as an alternative, not a second v1 backend |
 | Synchronous/quorum database or replication architecture | Appropriate if acknowledged-write loss is forbidden | Changes the core TrailBase/Litestream premise; needs a separate compatibility evaluation | Revisit only if requirements demand it |
 
-Proposed initial deployment: two or three Linux nodes in separate failure domains, an existing HA ingress service, one S3/R2 endpoint, and a host/cloud fence that works independently of the application process. Two nodes can coordinate through a single authoritative object-store lease; adding a third node does **not** magically create data quorum replication.
+Within the chosen cloud-VM target, the proposed initial deployment is two or three Linux VMs in separate failure domains, an existing HA ingress service, one S3/R2 endpoint, and a cloud-control-plane fence that works independently of the guest OS and application process. Two nodes can coordinate through a single authoritative object-store lease; adding a third node does **not** magically create data quorum replication.
 
 Start with data-hot standbys: restore processes stay running, but TrailBase is stopped. Add service-hot read replicas only after the read-only gate. This is an explicit reduction of initial scope, not a claim to have solved the requested hot application standby yet.
 
@@ -105,11 +107,11 @@ Execution planning comes after M0: choose implementation language/backend, turn 
 
 Priority order:
 
-1. **Deployment/fencing:** which first target—cloud VMs, bare-metal/systemd, or an existing orchestrator? What independent power/process/storage fence is available?
+1. **Cloud provider/fencing:** cloud VMs are selected. Which VM provider should we qualify first, and what confirmed power-off/termination and restart-prevention guarantees does its control plane provide?
 2. **Loss and downtime:** what acknowledged-write loss is acceptable, and for which data? What write/API RTO is useful? Is operator review acceptable when loss cannot be bounded?
 3. **Hotness:** is data-hot/process-stopped an acceptable first milestone while genuine read-only TrailBase support is established?
 4. **Database semantics:** are attached DBs independently recoverable, or do transactions/workflows require cross-DB invariants? Can failover invalidate sessions and require reauthentication?
-5. **First provider/region:** AWS S3 or Cloudflare R2, single-region or cross-region? Coordination and backup availability are shared dependencies.
+5. **Storage provider/region:** AWS S3 or Cloudflare R2, single-region or cross-region? This choice is separate from the VM provider. Coordination and backup availability are shared dependencies.
 6. **Reads:** public eventually-consistent reads only, or auth-sensitive reads? Which maximum stale/revocation windows are acceptable?
 7. **Side effects:** any cron, email, webhook, payment, queue, object deletion, or custom runtime handlers that need idempotency or durable replay?
 8. **Project policy:** choose a license before distributing implementation; public visibility alone does not grant an open-source license.

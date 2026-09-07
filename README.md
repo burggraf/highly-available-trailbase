@@ -15,7 +15,7 @@ A **planning-stage** project for a single-writer [TrailBase](https://github.com/
 
 ## Initial direction
 
-One primary; one or more continuously restored standbys; stable HA ingress; shared S3/R2 application object storage. Read offloading is optional and disabled until genuine read-only operation is demonstrated.
+**Cloud VMs first**, with the cloud provider still to be selected. One primary; one or more continuously restored standbys; stable HA ingress; shared S3/R2 application object storage. Read offloading is optional and disabled until genuine read-only operation is demonstrated.
 
 **Safety policy chosen:** automatically promote only when fencing is proven and a defined data-loss budget is satisfied; otherwise require operator review. Neither manual approval nor a lease permits overlapping writers.
 

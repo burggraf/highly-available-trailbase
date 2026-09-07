@@ -12,7 +12,7 @@ Prefer one small supervisor executable plus generated config and tests. Choose i
 | Inventory/config validator | Discover declared DB files; validate required/optional policies, no path alias/collision, roles, versions, secrets references, object store and fence availability | Fail closed on undeclared mutable DBs; no speculative config framework |
 | Node supervisor | Own subprocess groups; persist/reconcile state transitions; role readiness; no auto-primary restart | Existing OS service manager for lifetime; reuse Litestream subprocess functionality where proven |
 | Coordination/activation integration | One lease; renewal deadlines; uncertain-outcome reconciliation; fresh epoch allocation; safe discovery publication | Reuse Litestream S3 primitives only where the full contract holds; one backend first |
-| Fencing integration | Fence exact old node/boot; confirm it cannot write or restart; preserve receipt | One deployment-native backend first; never reduce fencing to load-balancer removal |
+| Fencing integration | Fence exact old VM/boot through the cloud control plane; confirm it cannot write or restart; preserve receipt | One cloud provider first; never reduce fencing to guest shutdown or load-balancer removal |
 | Replication lifecycle | Generate per-epoch configs; run one primary replicator / per-DB followers; collect progress, handle gaps and clean reseeds | Litestream remains responsible for SQLite backup format and transport |
 | Promotion/recovery operations | Eligibility, fence, choose/validate recovery cut, stop followers, activate epoch, start writer, publish, reseed peers | Same safe path for manual and automatic operation; resumable, idempotent transitions |
 | Ingress integration | Stable primary endpoint; role/epoch-aware health; demotion/drain; optional allowlisted read endpoint | Existing managed LB or established proxy, not a new HTTP implementation |
@@ -28,7 +28,7 @@ Prefer one small supervisor executable plus generated config and tests. Choose i
 | HAT-001 | P0 M0 | Pin current upstream binaries and embedded SQLite versions | Record checksums/platform/help; test exact pair; upstream changes invalidate qualification |
 | HAT-002 | P0 M0 | Follow correctness under real SQLite access | Multi-page transactions, long-lived readers, DDL, cache invalidation, truncate/vacuum/page-size behavior, lock pressure all pass on target platform |
 | HAT-003 | P0 M0 | Read-only TrailBase is absent in baseline | Either supported upstream mode passes write tracing, or service-hot/read scaling is explicitly unavailable; stopped-app standby remains baseline |
-| HAT-004 | P0 M0 | Independent application fence | Old node paused/partitioned then resumed cannot perform any new DB/object/job mutations after successor activation |
+| HAT-004 | P0 M0 | Cloud-control-plane VM fence | Confirm exact old VM is powered off/terminated with restart prevented; delayed/unknown API outcomes block promotion; restarted nodes cannot mutate before safe rejoin |
 | HAT-005 | P0 M0–M1 | Integrate S3 lease lifecycle; released CLI does not do it | Acquire/renew/loss/expiry/release and child shutdown proven; no undocumented `lease:` config |
 | HAT-006 | P0 M0 | Time/lease safety model | Bound skew, renewal latency, scheduling and suspend behavior; unknown timing forces stop; late renew never revives an old activation |
 | HAT-007 | P0 M0–M1 | Safe activation publication and epoch ordering | Concurrent candidates/stale publishers cannot advertise an unauthorized writer; missing lock/generation reset/ABA and lost responses tested |
@@ -99,6 +99,6 @@ M0 results should be short reproducible reports: pinned versions, environment, e
 
 ## 6. Execution-plan readiness
 
-Before writing a complete execution plan, record decisions for the first platform/fence, coordinator/provider, RPO/RTO and uncertainty policy, supported DB semantics, hotness/read scope, auth recovery, object-retention restrictions, implementation language, and licensing.
+Cloud VMs are the selected first deployment target. Before writing a complete execution plan, record decisions for the first VM provider/fence, coordinator/storage provider, RPO/RTO and uncertainty policy, supported DB semantics, hotness/read scope, auth recovery, object-retention restrictions, implementation language, and licensing.
 
 Then turn M1/M2 issues into small implementation tasks with concrete files, runnable tests, acceptance commands, and review checkpoints. M3 should remain blocked while HAT-002/HAT-003/HAT-020 are unresolved. Do not turn these tables into dozens of empty modules, config interfaces, or GitHub tickets before prioritizing the experiments.

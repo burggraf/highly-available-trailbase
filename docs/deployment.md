@@ -4,9 +4,15 @@ Status: proposed setup requirements, **not runnable installation instructions**.
 
 ## 1. First supported environment
 
-Recommend Linux hosts with local persistent SSD storage, an existing HA ingress, and a deployment-native independent fence. Choose one backend first. Windows, shared/network SQLite filesystems, serverless scale-to-zero/overlapping replicas, and multi-region active/active are outside the first support envelope.
+**Selected target: cloud VMs first.** The cloud provider remains undecided; qualify one provider before adding another. Bare-metal and orchestrator-specific deployments are deferred.
+
+Recommend Linux VMs with node-exclusive persistent SSD-backed volumes, an existing HA ingress, and a cloud-control-plane fence independent of the guest OS. Choose the exact disk type, OS/service manager, and ingress after the provider. Windows, shared/network SQLite filesystems, serverless scale-to-zero/overlapping replicas, and multi-region active/active are outside the first support envelope.
 
 Minimum topology: one primary plus one standby on distinct failure domains. Three nodes improve maintenance flexibility and recovery capacity but do not alter asynchronous durability. Ingress, the fencing API, credentials, time service, DNS, and object storage are dependencies to include in the availability model.
+
+For automatic promotion, require provider-confirmed power-off or termination of the exact previous VM incarnation and prevention of uncoordinated restart/replacement. An accepted API request, guest shutdown command, SSH failure, or load-balancer removal is not completion evidence. Preserve disks for forensic recovery where supported; qualify termination/disk-retention semantics before choosing that operation. Unknown fencing outcomes or an unavailable cloud control plane block promotion. Any later restarted/replacement VM must enter fenced and rejoin through the normal reseed protocol.
+
+The first provider qualification must cover stop/force-stop behavior under a hung guest, completion evidence, delayed/duplicate requests, narrowly scoped fencing permissions, automatic recovery/restart settings, and fence latency as part of RTO. The VM provider does not select the object-storage provider: S3 versus R2 remains a separate decision.
 
 ## 2. Every node
 
