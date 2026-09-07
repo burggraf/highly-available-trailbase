@@ -14,7 +14,7 @@ from run import (
     append_evidence, build_pinned_known_hosts, ensure_remote_root, init_remote,
     load_inventory, load_linode_env, new_run_context, require_private_file,
     redact, scp_to, ssh, storage, validate_inventory, _absolute_no_symlinks,
-    main, StorageStatus,
+    main, StorageStatus, write_latest_storage_evidence_pointer,
 )
 
 FP = "SHA256:" + "A" * 43
@@ -689,21 +689,55 @@ class _StorageClient:
 
 
 class StorageQualificationTests(unittest.TestCase):
-    def run_storage(self, client):
+    def run_storage(self, client, cleanup=False):
         events = []
         context = mock.Mock(run_id="20260907T000000Z-0123456789")
         with mock.patch("s3.client_from_env", return_value=client), mock.patch("run.append_evidence", side_effect=lambda path, event, repository=None: events.append(event)):
-            status = storage(context=context, evidence=Path("/private/evidence"), s3_env=Path("/private/env"))
+            status = storage(context=context, evidence=Path("/private/evidence"), s3_env=Path("/private/env"), cleanup=cleanup)
         return status, events
 
     def test_storage_pass_records_complete_matrix(self):
         status, events = self.run_storage(_StorageClient())
         self.assertIs(status, StorageStatus.PASS)
         operations = {event.get("operation") for event in events}
-        self.assertTrue({"put-replace-missing", "delete-current", "race-create-final", "race-create-lineage", "race-replace-final", "race-replace-lineage", "list", "discarded-response-reconciliation", "storage-result"}.issubset(operations))
+        self.assertTrue({"put-unconditional", "head-unconditional", "get-unconditional", "put-replace-missing", "delete-current", "race-create-final", "race-create-lineage", "race-replace-final", "race-replace-lineage", "list", "discarded-response-reconciliation", "storage-result"}.issubset(operations))
+        unconditional = {event["operation"]: event for event in events if event.get("operation", "").endswith("-unconditional")}
+        self.assertEqual(unconditional["get-unconditional"]["request_payload_sha256"], hashlib.sha256(b"ordinary").hexdigest())
+        self.assertEqual(unconditional["get-unconditional"]["response_payload_sha256"], hashlib.sha256(b"ordinary").hexdigest())
+        self.assertEqual(unconditional["head-unconditional"]["etag"], unconditional["get-unconditional"]["etag"])
         result = events[-1]
         self.assertEqual(result["result"], "PASS")
         self.assertEqual(result["failures"], [])
+
+    def test_storage_preserves_fresh_prefix_by_default_and_cleanup_is_opt_in(self):
+        client = _StorageClient()
+        status, _ = self.run_storage(client)
+        self.assertIs(status, StorageStatus.PASS)
+        self.assertTrue(client.objects)
+        client = _StorageClient()
+        events = []
+        context = mock.Mock(run_id="20260907T000000Z-0123456789")
+        with mock.patch("s3.client_from_env", return_value=client), mock.patch("run.append_evidence", side_effect=lambda path, event, repository=None: events.append(event)):
+            status = storage(context=context, evidence=Path("/private/evidence"), s3_env=Path("/private/env"), cleanup=True)
+        self.assertIs(status, StorageStatus.PASS)
+        self.assertFalse(client.objects)
+
+    def test_cleanup_never_deletes_after_no_go(self):
+        client = _StorageClient(broken_stale_delete=True)
+        status, events = self.run_storage(client, cleanup=True)
+        self.assertIs(status, StorageStatus.NO_GO)
+        self.assertTrue(client.objects)
+        self.assertEqual(events[-1]["result"], "NO-GO")
+
+    def test_latest_storage_pointer_is_private_and_contains_only_evidence_path(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch("run.Path.home", return_value=Path(d)):
+            evidence = Path(d) / "runs" / "evidence.jsonl"
+            evidence.parent.mkdir(mode=0o700)
+            write_latest_storage_evidence_pointer(evidence)
+            pointer = Path(d) / ".config" / "hat" / "m1-latest-storage-evidence"
+            self.assertEqual(pointer.read_text(), str(evidence.resolve()) + "\n")
+            self.assertEqual(stat.S_IMODE(pointer.stat().st_mode), 0o600)
+            self.assertNotIn("secret", pointer.read_text())
 
     def test_storage_passes_when_discarded_request_reconciles_absent(self):
         status, events = self.run_storage(_StorageClient(discard_unknown=True))
@@ -723,7 +757,7 @@ class StorageQualificationTests(unittest.TestCase):
     def test_storage_cli_has_distinct_pass_and_no_go_exit_status(self):
         with tempfile.TemporaryDirectory() as directory:
             for result, expected in ((StorageStatus.PASS, 0), (StorageStatus.NO_GO, 2)):
-                with mock.patch("run.storage", return_value=result):
+                with mock.patch("run.storage", return_value=result), mock.patch("run.write_latest_storage_evidence_pointer"):
                     self.assertEqual(main(["storage", "--work-root", str(Path(directory) / result.name), "--s3-env", "/private/env"]), expected)
 
 

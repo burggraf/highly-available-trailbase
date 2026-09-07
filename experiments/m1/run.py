@@ -464,6 +464,30 @@ def append_evidence(path: Path, event: dict[str, Any], repository: Path | None =
             os.close(fd)
 
 
+def write_latest_storage_evidence_pointer(evidence: Path) -> Path:
+    """Atomically publish only the latest local evidence path outside Git."""
+    evidence = _absolute_no_symlinks(evidence)
+    pointer = _absolute_no_symlinks(Path.home() / ".config" / "hat" / "m1-latest-storage-evidence")
+    pointer.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _require_private_directory(pointer.parent, "storage pointer parent")
+    temporary = pointer.parent / ("." + pointer.name + ".tmp-" + uuid.uuid4().hex)
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        os.write(fd, (str(evidence) + "\n").encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    try:
+        os.replace(temporary, pointer)
+        pointer.chmod(0o600)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+    return pointer
+
+
 def _require_facts(node: Node, facts: dict[str, str]) -> None:
     required = {"hostname", "release", "boot_id", "memory", "disk", "cpu", "time_sync", "outbound_tls"}
     if not required.issubset(facts):
@@ -737,7 +761,7 @@ def init_remote(nodes: list[Node], context: RunContext, evidence: Path | None = 
         _REMOTE_ROOT = None
 
 
-def storage(nodes=None, context=None, evidence=None, repository=None, *, s3_env=None) -> StorageStatus:
+def storage(nodes=None, context=None, evidence=None, repository=None, *, s3_env=None, cleanup=False) -> StorageStatus:
     """Collect the complete fresh-prefix matrix; capability mismatches produce NO-GO."""
     from concurrent.futures import ThreadPoolExecutor
     from xml.etree import ElementTree
@@ -765,6 +789,27 @@ def storage(nodes=None, context=None, evidence=None, repository=None, *, s3_env=
         event.update(extra)
         append_evidence(evidence, event, repository)
         return result
+
+    unconditional_key = prefix + "control/unconditional"
+    unconditional_body = b"ordinary"
+    unconditional = record("put-unconditional", client.put(unconditional_key, unconditional_body), unconditional_body)
+    unconditional_etag = etag(unconditional)
+    unconditional_head = record("head-unconditional", client.head(unconditional_key))
+    unconditional_get = record("get-unconditional", client.get(unconditional_key), unconditional_body)
+    unconditional_hash = hashlib.sha256(unconditional_body).hexdigest()
+    check(unconditional[0] in success and bool(unconditional_etag), "unconditional PUT failed")
+    check(
+        unconditional_head[0] == unconditional_get[0] == 200
+        and etag(unconditional_head) == etag(unconditional_get) == unconditional_etag
+        and hashlib.sha256(unconditional_head[2]).hexdigest() == hashlib.sha256(b"").hexdigest()
+        and unconditional_get[2] == unconditional_body
+        and hashlib.sha256(unconditional_get[2]).hexdigest() == unconditional_hash,
+        "unconditional PUT GET/HEAD bytes, hash, or ETag mismatch",
+    )
+    append_evidence(evidence, {"operation": "unconditional-verification", "etag": unconditional_etag,
+        "expected_payload_sha256": unconditional_hash, "head_payload_sha256": hashlib.sha256(unconditional_head[2]).hexdigest(),
+        "get_payload_sha256": hashlib.sha256(unconditional_get[2]).hexdigest(), "valid": not failures}, repository)
+    if unconditional_get[0] == 200: expected_objects.add(unconditional_key)
 
     key = prefix + "control/object"
     created = record("put-create", client.put(key, b"one", if_none_match=True), b"one")
@@ -873,13 +918,20 @@ def storage(nodes=None, context=None, evidence=None, repository=None, *, s3_env=
     append_evidence(evidence, {"operation": "list-verification", "prefix": prefix, "listed_keys": sorted(listed_keys), "expected_keys": sorted(expected_objects)}, repository)
     check(listed[0] == 200 and expected_objects.issubset(listed_keys) and all(key.startswith(prefix) for key in listed_keys), "LIST did not prove fresh-prefix objects")
 
-    cleanup_keys = expected_objects | {key for key in listed_keys if key.startswith(prefix)}
-    for index, cleanup_key in enumerate(sorted(cleanup_keys), 1):
-        deleted = record(f"cleanup-delete-{index}", client.delete(cleanup_key), key=cleanup_key)
-        absent = record(f"cleanup-head-{index}", client.head(cleanup_key), key=cleanup_key)
-        check(deleted[0] in success and absent[0] == 404, "fresh-prefix cleanup failed")
-
     result = StorageStatus.PASS if not failures else StorageStatus.NO_GO
+    accepted_pass = result is StorageStatus.PASS
+    cleanup_keys = expected_objects | {key for key in listed_keys if key.startswith(prefix)}
+    cleanup_performed = False
+    if cleanup and accepted_pass:
+        cleanup_performed = True
+        for index, cleanup_key in enumerate(sorted(cleanup_keys), 1):
+            deleted = record(f"cleanup-delete-{index}", client.delete(cleanup_key), key=cleanup_key)
+            absent = record(f"cleanup-head-{index}", client.head(cleanup_key), key=cleanup_key)
+            check(deleted[0] in success and absent[0] == 404, "fresh-prefix cleanup failed")
+        result = StorageStatus.PASS if not failures else StorageStatus.NO_GO
+    append_evidence(evidence, {"operation": "storage-cleanup", "requested": cleanup,
+        "performed": cleanup_performed, "eligible": accepted_pass,
+        "preserved": not cleanup_performed}, repository)
     append_evidence(evidence, {"operation": "storage-result", "result": result.value, "failures": failures}, repository)
     return result
 
@@ -890,11 +942,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--work-root", type=Path, required=True)
     parser.add_argument("--linode-env", type=Path)
     parser.add_argument("--s3-env", type=Path)
+    parser.add_argument("--cleanup", action="store_true", help="delete fresh-prefix objects only after a passing matrix")
     args = parser.parse_args(argv)
     repository = Path(__file__).resolve().parents[2]
     if args.scenario == "storage":
         context = new_run_context(args.work_root, repository)
-        result = storage(context=context, evidence=context.local_root / "evidence.jsonl", repository=repository, s3_env=args.s3_env)
+        evidence = context.local_root / "evidence.jsonl"
+        result = storage(context=context, evidence=evidence, repository=repository, s3_env=args.s3_env, cleanup=args.cleanup)
+        write_latest_storage_evidence_pointer(evidence)
         print(f"storage {result.value}")
         return 0 if result is StorageStatus.PASS else 2
     if args.inventory is None or args.linode_env is None:

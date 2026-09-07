@@ -37,4 +37,13 @@ python3 experiments/m1/run.py storage \
   --work-root ~/.config/hat/m1-storage-runs
 ```
 
-The storage run uses a fresh unique prefix and records its complete conditional-operation matrix in a mode-`0600` evidence file below the private work root. It prints `storage PASS` and exits `0` when all capabilities hold; capability mismatches are fully collected, print `storage NO-GO`, and exit `2`.
+The storage run uses a fresh unique prefix and records its complete operation matrix in a mode-`0600` evidence file below the private work root. It prints `storage PASS` and exits `0` when all capabilities hold; capability mismatches are fully collected, print `storage NO-GO`, and exit `2`. Fresh local and remote artifacts are preserved by default, including after `NO-GO`; cleanup is explicit opt-in and runs only after an accepted `PASS`:
+
+```sh
+python3 experiments/m1/run.py storage \
+  --s3-env ~/.config/hat/m1-idrivee2.env \
+  --work-root ~/.config/hat/m1-storage-runs \
+  --cleanup
+```
+
+Each run publishes its local evidence path (and no credentials) to the mode-`0600` pointer `~/.config/hat/m1-latest-storage-evidence`.
