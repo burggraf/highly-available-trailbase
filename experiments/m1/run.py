@@ -25,6 +25,7 @@ _SECRET = re.compile(
 SSH_TIMEOUT = 60
 _SSH_KNOWN_HOSTS: Path | None = None
 _REMOTE_ROOT: str | None = None
+_FRESH_LOCAL_ROOTS: set[str] = set()
 
 
 @dataclass(frozen=True)
@@ -57,7 +58,7 @@ def _absolute_no_symlinks(path: Path) -> Path:
     current = Path(absolute.anchor)
     for part in absolute.parts[1:]:
         current /= part
-        # macOS exposes /var and /tmp as stable system aliases.
+        # /var and /tmp are canonical macOS system aliases; reject all other links.
         if current.is_symlink() and current not in (Path("/var"), Path("/tmp")):
             raise ValueError(f"symlink path component: {current}")
     return absolute
@@ -120,6 +121,8 @@ def validate_inventory(value: dict[str, Any]) -> list[Node]:
             raise ValueError("invalid instance ID")
         hostname = _valid_text(raw["hostname"], "hostname")
         nodes.append(Node(name, ssh_name, raw["instance_id"], _valid_text(raw["provider_label"], "provider label"), address, host_key, hostname))
+    if {node.name for node in nodes} != {"fm1", "fm2", "fm3"}:
+        raise ValueError("inventory names must be exactly fm1, fm2, and fm3")
     for field in ("name", "ssh", "instance_id", "provider_label", "address", "host_key"):
         vals = [getattr(n, field) for n in nodes]
         if len(set(vals)) != len(vals):
@@ -139,8 +142,10 @@ def load_inventory(path: Path, repository: Path | None = None) -> list[Node]:
 def new_run_context(work_root: Path, repository: Path | None = None) -> RunContext:
     work_root = _absolute_no_symlinks(work_root)
     _outside_repository(work_root, repository)
-    if work_root.exists() and work_root.stat().st_uid != os.getuid():
-        raise ValueError("work root must be owned by current user")
+    if work_root.exists():
+        existing = work_root.stat()
+        if not work_root.is_dir() or existing.st_uid != os.getuid() or (existing.st_mode & 0o077):
+            raise ValueError("work root must be an owned private directory")
     work_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     if work_root.is_symlink() or work_root.stat().st_uid != os.getuid() or (work_root.stat().st_mode & 0o077):
         raise ValueError("work root must be private and non-symlink")
@@ -153,7 +158,9 @@ def new_run_context(work_root: Path, repository: Path | None = None) -> RunConte
             break
         except FileExistsError:
             continue
-    return RunContext(run_id, local, f"/var/lib/hat-qualification/{run_id}")
+    context = RunContext(run_id, local, f"/var/lib/hat-qualification/{run_id}")
+    _FRESH_LOCAL_ROOTS.add(str(local))
+    return context
 
 
 def _context_root(context: RunContext) -> str:
@@ -330,8 +337,11 @@ def scp_to(node: Node, source: Path, destination: str, *, check: bool = True, re
     real = ssh(node, ["realpath", "-e", "--", parent], check=False)
     if real.returncode or _stdout(real).strip() != parent:
         raise RuntimeError("SCP destination parent is not a real path under remote root")
-    if ssh(node, ["test", "!", "-L", destination], check=False).returncode:
-        raise RuntimeError("SCP destination is a symlink")
+    kind, uid, gid, mode, name = _remote_stat(node, parent)
+    if kind != "directory" or uid != 0 or gid != 0 or mode != 0o700 or name != parent:
+        raise RuntimeError("SCP destination parent is not a private root-owned directory")
+    if ssh(node, ["test", "!", "-e", destination], check=False).returncode or ssh(node, ["test", "!", "-L", destination], check=False).returncode:
+        raise RuntimeError("SCP destination already exists or is a symlink")
     return subprocess.run(
         ["scp", *_transport_options(), "--", str(source), f"{node.ssh}:{destination}"],
         capture_output=True, check=check, timeout=SSH_TIMEOUT,
@@ -440,10 +450,25 @@ def load_linode_env(path: Path, nodes: list[Node] | None = None, repository: Pat
     return ids
 
 
-def _preflight_impl(nodes: list[Node], context: RunContext, evidence: Path) -> None:
-    global _SSH_KNOWN_HOSTS
-    evidence = _absolute_no_symlinks(evidence)
+def _validate_local_context(context: RunContext, repository: Path | None = None) -> Path:
     local_root = _absolute_no_symlinks(context.local_root)
+    _outside_repository(local_root, repository or Path(__file__).resolve().parents[2])
+    if str(local_root) not in _FRESH_LOCAL_ROOTS or local_root.name != context.run_id:
+        raise ValueError("local root was not freshly created by new_run_context")
+    st = local_root.stat()
+    if not local_root.is_dir() or local_root.is_symlink() or st.st_uid != os.getuid() or (st.st_mode & 0o777) != 0o700:
+        raise ValueError("local root must be a private non-symlink directory")
+    parent = local_root.parent
+    pst = parent.stat()
+    if parent.is_symlink() or pst.st_uid != os.getuid() or (pst.st_mode & 0o077):
+        raise ValueError("local root parent must be private")
+    return local_root
+
+
+def _preflight_impl(nodes: list[Node], context: RunContext, evidence: Path, repository: Path | None = None) -> None:
+    global _SSH_KNOWN_HOSTS
+    local_root = _validate_local_context(context, repository)
+    evidence = _absolute_no_symlinks(evidence)
     try:
         evidence.relative_to(local_root)
     except ValueError as exc:
@@ -469,10 +494,10 @@ def _preflight_impl(nodes: list[Node], context: RunContext, evidence: Path) -> N
             append_evidence(evidence, {"event": "preflight", "facts": facts})
 
 
-def preflight(nodes: list[Node], context: RunContext, evidence: Path) -> None:
+def preflight(nodes: list[Node], context: RunContext, evidence: Path, repository: Path | None = None) -> None:
     global _SSH_KNOWN_HOSTS, _REMOTE_ROOT
     try:
-        _preflight_impl(nodes, context, evidence)
+        _preflight_impl(nodes, context, evidence, repository)
     finally:
         _SSH_KNOWN_HOSTS = None
         _REMOTE_ROOT = None

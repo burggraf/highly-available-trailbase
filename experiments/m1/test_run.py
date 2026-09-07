@@ -35,7 +35,11 @@ def facts(host="a"):
 
 class InventoryTests(unittest.TestCase):
     def test_validates_and_returns_nodes(self):
-        self.assertEqual(len(validate_inventory(inventory())), 3)
+        self.assertEqual(len(validate_inventory(inventory(("fm1", "fm2", "fm3")))), 3)
+
+    def test_inventory_requires_exact_fm_node_set(self):
+        for names in (("a", "b", "c"), ("fm1", "fm2", "other"), ("fm1", "fm2", "fm2")):
+            with self.assertRaises(ValueError): validate_inventory(inventory(names))
 
     def test_rejects_unknown_keys_and_duplicates(self):
         value = inventory(); value["extra"] = 1
@@ -44,7 +48,7 @@ class InventoryTests(unittest.TestCase):
         with self.assertRaises(ValueError): validate_inventory(value)
 
     def test_hostname_duplicates_are_not_identity_duplicates(self):
-        value = inventory()
+        value = inventory(("fm1", "fm2", "fm3"))
         value["nodes"][1]["hostname"] = value["nodes"][0]["hostname"] = "localhost"
         self.assertEqual(len(validate_inventory(value)), 3)
 
@@ -89,6 +93,14 @@ class ContextTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(ctx.local_root.stat().st_mode), 0o700)
             self.assertTrue(ctx.remote_root.startswith("/var/lib/hat-qualification/"))
             self.assertNotEqual(ctx.run_id, new_run_context(Path(d)).run_id)
+
+    def test_existing_work_root_must_be_private_directory(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "runs"; root.mkdir(mode=0o700)
+            root.chmod(0o755)
+            with self.assertRaises(ValueError): new_run_context(root)
+            file_path = Path(d) / "file"; file_path.write_text("x")
+            with self.assertRaises(ValueError): new_run_context(file_path)
 
     def test_context_rejects_repository_descendant_and_symlink(self):
         with tempfile.TemporaryDirectory() as d:
@@ -151,12 +163,27 @@ class TransportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             source = Path(d) / "x"; source.write_text("x"); source.chmod(0o600)
             with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")), mock.patch("run._REMOTE_ROOT", "/var/lib/hat-qualification/r"):
-                with mock.patch("run.ssh", return_value=subprocess.CompletedProcess([], 0, b"/var/lib/hat-qualification/r\n")) as remote, mock.patch("run.subprocess.run") as call:
+                def remote_call(n, argv, **kw):
+                    if argv[0] == "realpath": return subprocess.CompletedProcess([], 0, b"/var/lib/hat-qualification/r\n")
+                    if argv[0] == "stat": return subprocess.CompletedProcess([], 0, b"directory 0 0 700 /var/lib/hat-qualification/r\n")
+                    return subprocess.CompletedProcess([], 0, b"")
+                with mock.patch("run.ssh", side_effect=remote_call) as remote, mock.patch("run.subprocess.run") as call:
                     scp_to(node(), source, "/var/lib/hat-qualification/r/x")
             self.assertEqual(call.call_args.args[0][0], "scp")
             self.assertIn("StrictHostKeyChecking=yes", call.call_args.args[0])
             self.assertEqual(call.call_args.kwargs["timeout"], 60)
-            self.assertEqual(remote.call_count, 2)
+            self.assertEqual(remote.call_count, 4)
+
+    def test_scp_rejects_unsafe_parent_and_existing_destination(self):
+        with tempfile.TemporaryDirectory() as d:
+            source = Path(d) / "x"; source.write_text("x")
+            with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")), mock.patch("run._REMOTE_ROOT", "/var/lib/hat-qualification/r"):
+                unsafe = subprocess.CompletedProcess([], 0, b"directory 99 0 700 /var/lib/hat-qualification/r\n")
+                with mock.patch("run.ssh", side_effect=[subprocess.CompletedProcess([], 0, b"/var/lib/hat-qualification/r\n"), unsafe]):
+                    with self.assertRaises(RuntimeError): scp_to(node(), source, "/var/lib/hat-qualification/r/x")
+                existing = subprocess.CompletedProcess([], 1, b"")
+                with mock.patch("run.ssh", side_effect=[subprocess.CompletedProcess([], 0, b"/var/lib/hat-qualification/r\n"), subprocess.CompletedProcess([], 0, b"directory 0 0 700 /var/lib/hat-qualification/r\n"), existing]):
+                    with self.assertRaises(RuntimeError): scp_to(node(), source, "/var/lib/hat-qualification/r/x")
 
     def test_scp_rejects_traversal_symlink_and_outside_root(self):
         with tempfile.TemporaryDirectory() as d:
@@ -281,6 +308,13 @@ class EnvTests(unittest.TestCase):
             with self.assertRaises(ValueError): load_linode_env(self.write_env(d, good), wrong)
 
 class PreflightEvidenceTests(unittest.TestCase):
+    def test_preflight_rejects_manually_supplied_local_context(self):
+        from run import _preflight_impl
+        with tempfile.TemporaryDirectory() as d:
+            repo = Path(d) / "repo"; repo.mkdir(mode=0o700)
+            bad = RunContext("20260907T010203Z-0123456789", repo, "/var/lib/hat-qualification/20260907T010203Z-0123456789")
+            with self.assertRaises(ValueError): _preflight_impl([], bad, repo / "evidence.jsonl", repo)
+
     def test_preflight_is_read_only_and_writes_fsynced_redacted_evidence(self):
         n = [Node("a", "root@a", 1, "a", "a", FP, "a"), Node("b", "root@b", 2, "b", "b", FP, "b"), Node("c", "root@c", 3, "c", "c", FP, "c")]
         with tempfile.TemporaryDirectory() as d:
