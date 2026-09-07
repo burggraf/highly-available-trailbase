@@ -497,9 +497,13 @@ def _verify_remote_directory(node: Node, path: str, *, mode: int | None = None) 
         raise RuntimeError(f"remote directory is not trusted: {path}")
     if mode is not None and actual_mode != mode:
         raise RuntimeError(f"remote directory has unsafe mode: {path}")
-    real = ssh(node, ["realpath", "-e", "--", path], check=False)
-    if real.returncode or _stdout(real).strip() != path:
-        raise RuntimeError(f"remote directory is not a real path: {path}")
+    for attempt in range(3):
+        real = ssh(node, ["realpath", "-e", "--", path], check=False)
+        if real.returncode == 0 and _stdout(real).strip() == path:
+            return
+        if attempt < 2:
+            time.sleep(1)
+    raise RuntimeError(f"remote directory is not a real path: {path}")
 
 
 def ensure_remote_root(node: Node, context: RunContext) -> None:

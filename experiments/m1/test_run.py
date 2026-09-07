@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 from run import (
-    Node, RunContext, _FINGERPRINT, _require_facts, _known_host_fingerprint,
+    Node, RunContext, _FINGERPRINT, _require_facts, _known_host_fingerprint, _verify_remote_directory,
     invoke_fence, validate_fence_evidence, promotion_allowed,
     append_evidence, build_pinned_known_hosts, ensure_remote_root, init_remote,
     load_inventory, load_linode_env, new_run_context, require_private_file,
@@ -387,6 +387,14 @@ class TransportTests(unittest.TestCase):
                 with self.assertRaises(ValueError): scp_to(node(), source, "/var/lib/hat-qualification/r/x")
 
 class RemoteRootTests(unittest.TestCase):
+    def test_remote_realpath_retries_transient_transport_failure(self):
+        failed = subprocess.CompletedProcess([], 255, b"", b"transient")
+        passed = subprocess.CompletedProcess([], 0, b"/safe\n", b"")
+        with mock.patch("run._remote_stat", return_value=("directory", 0, 0, 0o700, "/safe")), \
+             mock.patch("run.ssh", side_effect=[failed, passed]) as transport, mock.patch("run.time.sleep"):
+            _verify_remote_directory(node(), "/safe", mode=0o700)
+        self.assertEqual(transport.call_count, 2)
+
     def setUp(self):
         self.ctx = RunContext("20260907T010203Z-0123456789", Path("/tmp/local"), "/var/lib/hat-qualification/20260907T010203Z-0123456789")
         self.base = subprocess.CompletedProcess([], 0, b"directory 0 0 755 /var/lib/hat-qualification\n")
