@@ -665,6 +665,117 @@ def run_follow(trail: Path, litestream: Path, root: Path) -> int:
     return 0
 
 
+def rebuild_epoch2(trail: Path, litestream: Path, root: Path, writer_depot: Path, c_depot: Path,
+                   writer: OwnedProcess, base: str, token: str) -> dict[str, object]:
+    e1_inventory = backup_inventory(root / "backup" / "e1")
+    source = writer_depot / "data"
+    paths = validate_inventory({name: source / f"{name}.db" for name in ("main", "session", "aux")})
+    old_paths = {name: root / "backup" / "e1" / name for name in paths}
+    new_paths = {name: root / "backup" / "e2" / name for name in paths}
+    validate_epoch_paths(old_paths, new_paths)
+    config, socket_path = write_litestream_config(root, source, "e2")
+    replicator: OwnedProcess | None = None
+    followers: list[OwnedProcess] = []
+    reseed_started = time.monotonic_ns()
+    try:
+        replicator = owned_process(
+            [str(litestream), "replicate", "-config", str(config)],
+            "litestream-b-e2", root, root / "logs" / "replicator-b-e2.log",
+        )
+        wait_for_path(socket_path, replicator)
+        initial = {
+            name: normalize_txid(sync_database(litestream, socket_path, database)["replica_txid"])
+            for name, database in paths.items()
+        }
+        for name in ("main", "session", "aux"):
+            output = c_depot / "data" / f"{name}.db"
+            output.parent.mkdir(parents=True, exist_ok=True)
+            child = owned_process(
+                [str(litestream), "restore", "-f", "-follow-interval", "1s", "-o", str(output), (root / "backup" / "e2" / name).as_uri()],
+                f"follower-c-{name}", root, root / "logs" / f"follower-c-{name}.log",
+            )
+            followers.append(child)
+            initial[name] = wait_for_txid(output.with_name(output.name + "-txid"), initial[name], child)
+        follower_by_name = dict(zip(("main", "session", "aux"), followers))
+        progressed = {}
+        for api, name, offset in (("main_ops", "main", 400000), ("aux_ops", "aux", 500000)):
+            for index in range(1, 11):
+                status, created = http_json("POST", f"{base}/api/records/v1/{api}", {
+                    "id": offset + index, "op_key": f"e2-{name}-{index:06d}", "payload": "epoch-two",
+                }, token)
+                if status not in (200, 201) or not isinstance(created, dict):
+                    raise RuntimeError(f"e2 write failed: {name}/{index}")
+            progressed[name] = normalize_txid(sync_database(litestream, socket_path, paths[name])["replica_txid"])
+            if progressed[name] <= initial[name]:
+                raise RuntimeError(f"e2 {name} follower did not advance")
+            wait_for_txid(c_depot / "data" / f"{name}.db-txid", progressed[name], follower_by_name[name])
+        status, retained = http_json("POST", f"{base}/api/auth/v1/login", {"username": FIXTURE_USERNAME, "password": "m0-local-only-password"})
+        status2, revoked = http_json("POST", f"{base}/api/auth/v1/login", {"username": FIXTURE_USERNAME, "password": "m0-local-only-password"})
+        if status != 200 or status2 != 200 or not isinstance(retained, dict) or not isinstance(revoked, dict):
+            raise RuntimeError("e2 session creation failed")
+        session_created = normalize_txid(sync_database(litestream, socket_path, paths["session"])["replica_txid"])
+        if session_created <= initial["session"]:
+            raise RuntimeError("e2 session creation did not advance")
+        wait_for_txid(c_depot / "data" / "session.db-txid", session_created, follower_by_name["session"])
+        logout_status, _ = http_request("POST", f"{base}/api/auth/v1/logout", {"refresh_token": revoked["refresh_token"]})
+        retained_status, _ = http_json("POST", f"{base}/api/auth/v1/refresh", {"refresh_token": retained["refresh_token"]})
+        revoked_status, _ = http_json("POST", f"{base}/api/auth/v1/refresh", {"refresh_token": revoked["refresh_token"]})
+        if logout_status != 200 or retained_status != 200 or revoked_status == 200:
+            raise RuntimeError("e2 session revocation failed")
+        session_revoked = normalize_txid(sync_database(litestream, socket_path, paths["session"])["replica_txid"])
+        if session_revoked <= session_created:
+            raise RuntimeError("e2 session revocation did not advance")
+        if writer.process.poll() is not None:
+            raise RuntimeError("promoted writer exited before e2 quiesce")
+        stop_owned([writer])
+        final = {
+            name: normalize_txid(sync_database(litestream, socket_path, database)["replica_txid"])
+            for name, database in paths.items()
+        }
+        if replicator.process.poll() is not None:
+            raise RuntimeError("e2 replicator exited before intentional stop")
+        stop_owned([replicator])
+        selected = {}
+        oracle = root / "oracle" / "e2"
+        oracle.mkdir(parents=True)
+        for name in ("main", "session", "aux"):
+            dry = subprocess.run(
+                [str(litestream), "restore", "-dry-run", "-json", "-o", str(oracle / f"{name}.db"), (root / "backup" / "e2" / name).as_uri()],
+                capture_output=True, text=True, timeout=60, check=True,
+            )
+            selected[name] = normalize_txid(json.loads(dry.stdout)["max_txid"])
+            follower = follower_by_name[name]
+            wait_for_txid(c_depot / "data" / f"{name}.db-txid", selected[name], follower)
+            restored = subprocess.run(
+                [str(litestream), "restore", "-txid", format_txid(selected[name]), "-o", str(oracle / f"{name}.db"), (root / "backup" / "e2" / name).as_uri()],
+                capture_output=True, text=True, timeout=60,
+            )
+            if restored.returncode:
+                raise RuntimeError(f"e2 finite restore failed for {name}: {restored.stderr[-500:]}")
+        stop_owned(followers)
+        for child in followers:
+            check_follower_log(child)
+        inspection = root / "evidence" / "c-stopped-inspection"
+        comparisons = {}
+        table_map = {"main": ("hat_ops", "_user"), "session": ("_session",), "aux": ("hat_ops",)}
+        for name in ("main", "session", "aux"):
+            followed = sqlite_rows(copy_for_inspection(c_depot / "data" / f"{name}.db", inspection), table_map[name])
+            restored = sqlite_rows(oracle / f"{name}.db", table_map[name])
+            comparisons[name] = followed == restored
+        if not all(comparisons.values()):
+            raise CorrectnessFailure(f"e2 C follower differs from finite restore: {comparisons}")
+        if backup_inventory(root / "backup" / "e1") != e1_inventory:
+            raise CorrectnessFailure("e1 history changed while producing e2")
+        return {
+            "status": "PASS", "initial_txid": initial, "final_txid": final,
+            "selected_txid": selected, "logical_comparison": comparisons,
+            "reseed_ms": (time.monotonic_ns() - reseed_started) / 1_000_000,
+            "retained_session": "present", "revoked_session": "absent",
+        }
+    finally:
+        stop_owned([child for child in (replicator, *followers) if child is not None])
+
+
 def run_graceful(trail: Path, litestream: Path, root: Path) -> int:
     run_follow(trail, litestream, root)
     follow_result = json.loads((root / "result.json").read_text())
@@ -708,18 +819,19 @@ def run_graceful(trail: Path, litestream: Path, root: Path) -> int:
                     raise CorrectnessFailure(f"promoted API mismatch for {api}/{offset + index}")
             new_id = offset + 200001
             status, created = http_json("POST", f"{base}/api/records/v1/{api}", {
-                "id": new_id, "op_key": f"e2-{name}-000001", "payload": "promoted-write",
+                "id": new_id, "op_key": f"promoted-{name}-000001", "payload": "promoted-write",
             }, token)
             if status not in (200, 201) or not isinstance(created, dict) or created.get("ids") != [str(new_id)]:
                 raise CorrectnessFailure(f"promoted write failed for {api}")
         functional_ns = time.monotonic_ns()
         require_files([depot / "data" / "logs.db"])
+        epoch2 = rebuild_epoch2(trail, litestream, root, depot, root / "c" / "traildepot", child, base, token)
         (root / "result.json").write_text(json.dumps({
             "scenario": "graceful", "status": "PASS", "follow": follow_result,
             "promotion_start_to_functional_ms": (functional_ns - start_ns) / 1_000_000,
             "quiesce_to_functional_ms": (time.time_ns() - follow_result["quiesce_wall_ns"]) / 1_000_000,
             "baseline_auth": {"retained": "accepted", "revoked": "rejected"},
-            "promoted_writes": 2, "logs_db": "node-local-created",
+            "promoted_writes": 2, "logs_db": "node-local-created", "epoch2": epoch2,
         }, indent=2) + "\n")
     finally:
         stop_owned([child])
@@ -841,10 +953,11 @@ def run_lagged_crash(trail: Path, litestream: Path, root: Path) -> int:
             raise CorrectnessFailure(f"lagged loss detector did not find ten writes per DB: {measurements}")
         if not all(outcome_passes(value) for value in measurements.values()):
             raise CorrectnessFailure(f"invalid lagged recovered outcomes: {measurements}")
+        epoch2 = rebuild_epoch2(trail, litestream, root, b_depot, root / "c" / "traildepot", b_child, b_base, token)
         (root / "result.json").write_text(json.dumps({
             "scenario": "lagged-crash", "status": "PASS", "baseline": baseline_result,
             "signal_sent_ns": signal_sent_ns, "exit_observed_ns": exit_observed_ns,
-            "outcomes": measurements,
+            "outcomes": measurements, "epoch2": epoch2,
             "auth": {"baseline_retained": "accepted", "baseline_revoked": "rejected", "late": "rejected"},
         }, indent=2) + "\n")
     finally:
@@ -993,11 +1106,13 @@ def run_crash(trail: Path, litestream: Path, root: Path) -> int:
         }
         if not all(outcome_passes(value) for value in measured.values()):
             raise CorrectnessFailure(f"crash outcome classification failed: {measured}")
+        epoch2 = rebuild_epoch2(trail, litestream, root, d_depot, root / "c" / "traildepot", b_child, b_base, recovered_token)
         (root / "result.json").write_text(json.dumps({
             "scenario": "crash", "status": "PASS", "selected_txid": selected,
             "trail_signal_ns": trail_sent, "trail_exit_ns": trail_exited,
             "replicator_signal_ns": replica_sent, "replicator_exit_ns": replica_exited,
             "outcomes": measured, "in_flight": "acknowledged" if in_flight_key in acknowledged["main"] else "ambiguous",
+            "epoch2": epoch2,
         }, indent=2) + "\n")
     finally:
         stop_owned([*children, *followers])

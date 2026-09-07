@@ -125,6 +125,15 @@ class PromotionTests(unittest.TestCase):
             promote_candidate([live], [], start)
         start.assert_not_called()
 
+    def test_epoch_rejects_cross_database_destination_alias(self):
+        with tempfile.TemporaryDirectory() as parent:
+            root = Path(parent)
+            with self.assertRaises(ValueError):
+                validate_epoch_paths(
+                    {"main": root / "e1-main", "session": root / "e1-session"},
+                    {"main": root / "e2-shared", "session": root / "e2-shared"},
+                )
+
     def test_new_epoch_paths_must_not_reuse_e1(self):
         with tempfile.TemporaryDirectory() as parent:
             root = Path(parent)
