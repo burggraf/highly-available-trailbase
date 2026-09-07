@@ -58,18 +58,14 @@ def _absolute_no_symlinks(path: Path) -> Path:
     """Canonicalize trusted OS aliases, then reject symlink or unsafe ancestors."""
     path = Path(path).expanduser()
     absolute = Path(os.path.abspath(path))
-    # macOS presents these aliases as symlinks; use their effective paths without
-    # weakening checks on any requested descendant or private boundary.
     for alias, target in ((Path("/tmp"), Path("/private/tmp")), (Path("/var"), Path("/private/var"))):
-        # Darwin exposes these aliases as symlinks; do not invent them on Unix.
-        if not alias.is_symlink():
-            continue
-        try:
-            relative = absolute.relative_to(alias)
-        except ValueError:
-            continue
-        absolute = target / relative
-        break
+        if alias.is_symlink():
+            try:
+                absolute = target / absolute.relative_to(alias)
+            except ValueError:
+                pass
+            else:
+                break
     current = Path(absolute.anchor)
     for part in absolute.parts[1:]:
         current /= part
@@ -265,6 +261,7 @@ def build_pinned_known_hosts(nodes: list[Node], directory: Path) -> Path:
 
 
 def _remote_stat(node: Node, path: str) -> tuple[str, int, int, int, str]:
+    _validate_node_fields(node)
     result = ssh(node, ["stat", "-c", "%F %u %g %a %n", "--", path], check=False)
     if result.returncode:
         raise RuntimeError(f"remote path does not exist: {path}")
@@ -278,6 +275,7 @@ def _remote_stat(node: Node, path: str) -> tuple[str, int, int, int, str]:
 
 
 def _verify_remote_directory(node: Node, path: str, *, mode: int | None = None) -> None:
+    _validate_node_fields(node)
     kind, uid, gid, actual_mode, name = _remote_stat(node, path)
     if kind != "directory" or uid != 0 or gid != 0 or name != path or (actual_mode & 0o022):
         raise RuntimeError(f"remote directory is not trusted: {path}")
@@ -335,6 +333,7 @@ def _transport_options() -> list[str]:
 
 
 def ssh(node: Node, argv: list[str], input: bytes | None = None, *, check: bool = True) -> subprocess.CompletedProcess:
+    _validate_node_fields(node)
     if not argv:
         raise ValueError("remote command cannot be empty")
     command = " ".join(shlex.quote(str(arg)) for arg in argv)
@@ -406,6 +405,7 @@ finally:
 
 
 def scp_to(node: Node, source: Path, destination: str, *, check: bool = True, repository: Path | None = None) -> subprocess.CompletedProcess:
+    _validate_node_fields(node)
     source = _absolute_no_symlinks(source)
     _outside_repository(source, repository)
     if not source.is_file() or source.is_symlink():
@@ -434,7 +434,7 @@ def append_evidence(path: Path, event: dict[str, Any], repository: Path | None =
     _require_private_directory(path.parent, "evidence parent")
     if path.exists():
         file_st = path.stat()
-        if not path.is_file() or file_st.st_uid != os.getuid() or (file_st.st_mode & 0o777) != 0o600:
+        if not path.is_file() or file_st.st_uid != os.getuid() or stat.S_IMODE(file_st.st_mode) != 0o600:
             raise ValueError("evidence file is not private")
     flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND
     if hasattr(os, "O_NOFOLLOW"):

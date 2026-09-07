@@ -192,6 +192,11 @@ class HostKeyTests(unittest.TestCase):
             with self.assertRaises(RuntimeError): build_pinned_known_hosts([node()], Path(d))
 
 class TransportTests(unittest.TestCase):
+    def test_low_level_transport_rejects_unvalidated_node(self):
+        bad = Node("fm1", "root@a", 1, "a", "bad/address", FP, "a")
+        with self.assertRaises(ValueError): ssh(bad, ["true"])
+        with self.assertRaises(ValueError): scp_to(bad, Path("/tmp/missing"), "/x")
+
     def test_ssh_options_order_target_and_quote(self):
         n = node()
         with mock.patch("run.subprocess.run") as call, mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/known_hosts")):
@@ -454,6 +459,8 @@ class PreflightEvidenceTests(unittest.TestCase):
             directory.chmod(0o700)
             append_evidence(path, {"ok": True})
             path.chmod(0o644)
+            with self.assertRaises(ValueError): append_evidence(path, {"ok": True})
+            path.chmod(0o1600)
             with self.assertRaises(ValueError): append_evidence(path, {"ok": True})
 
     def test_init_rejects_replaced_credentials_without_mutation(self):
