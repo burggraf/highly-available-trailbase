@@ -732,37 +732,51 @@ def init_remote(nodes: list[Node], context: RunContext, evidence: Path | None = 
 
 
 def storage(nodes=None, context=None, evidence=None, repository=None, *, s3_env=None) -> None:
-    """Run the bounded fresh-prefix S3 conditional-operation qualification."""
+    """Run a fresh-prefix S3 conditional-operation qualification, failing closed."""
     from concurrent.futures import ThreadPoolExecutor
     from s3 import client_from_env, Reconciliation
     if s3_env is None: raise ValueError("private S3 env is required")
     client = client_from_env(s3_env, repository)
     prefix = f"qualification/{context.run_id}/"
-    ledger = evidence
-    def op(name, method, key, body=b"", result=None):
-        status, headers, data = result if result is not None else method(key, body)
-        event = {"operation": name, "status": status, "request_id": headers.get("x-amz-request-id", headers.get("x-request-id", "")),
-                 "etag": headers.get("ETag", headers.get("etag", "")), "payload_sha256": hashlib.sha256(data or body).hexdigest()}
-        append_evidence(ledger, event, repository)
+    def record(name, result, expected=None):
+        status, headers, data = result
+        etag = headers.get("ETag", headers.get("etag", ""))
+        append_evidence(evidence, {"operation": name, "status": status,
+            "request_id": headers.get("x-amz-request-id", headers.get("x-request-id", "")),
+            "etag": etag, "payload_sha256": hashlib.sha256(data).hexdigest()}, repository)
+        if expected is not None and status not in expected: raise RuntimeError(f"{name} unexpected status")
         return status, headers, data
     key = prefix + "control/object"
-    first = op("put-create", client.put, key, b"one", client.put(key, b"one", if_none_match=True))
-    etag = first[1].get("ETag", first[1].get("etag", ""))
-    op("head", client.head, key, result=client.head(key)); op("get", client.get, key, result=client.get(key))
-    op("put-create-refused", client.put, key, b"other", client.put(key, b"other", if_none_match=True))
-    replaced = op("put-replace", client.put, key, b"two", client.put(key, b"two", etag=etag))
-    current = replaced[1].get("ETag", replaced[1].get("etag", ""))
-    op("put-stale-refused", client.put, key, b"bad", client.put(key, b"bad", etag=etag))
+    status, headers, _ = record("put-create", client.put(key, b"one", if_none_match=True), {200, 201, 204})
+    etag = headers.get("ETag", headers.get("etag", ""))
+    record("head", client.head(key), {200}); record("get", client.get(key), {200})
+    record("put-create-refused", client.put(key, b"other", if_none_match=True), {409, 412})
+    status, headers, _ = record("put-replace", client.put(key, b"two", etag=etag), {200, 201, 204})
+    current = headers.get("ETag", headers.get("etag", ""))
+    record("put-stale-refused", client.put(key, b"bad", etag=etag), {409, 412})
+    record("delete-stale-refused", client.delete(key, etag=etag), {409, 412})
+    record("delete-missing-refused", client.delete(key, etag='"missing"'), {409, 412})
     race_key = prefix + "race/create"
     with ThreadPoolExecutor(max_workers=2) as pool:
-        races = list(pool.map(lambda payload: client.put(race_key, payload, if_none_match=True), (b"a", b"b")))
-    winners = sum(status in (200, 201, 204) for status, _, _ in races)
-    if winners != 1: raise RuntimeError("conditional create race did not produce exactly one winner")
-    delete = op("delete-current", client.delete, key, result=client.delete(key, etag=current))
-    if delete[0] not in (200, 204): raise RuntimeError("conditional delete failed")
-    op("list", lambda k, b: client.list(prefix), prefix, result=client.list(prefix))
-    reconciliation = client.reconcile_put(prefix + "reconcile", b"reconcile", '"' + hashlib.md5(b"reconcile").hexdigest() + '"')
-    append_evidence(ledger, {"operation": "discarded-response-reconciliation", "result": reconciliation.value}, repository)
+        creates = list(pool.map(lambda body: client.put(race_key, body, if_none_match=True), (b"a", b"b")))
+    if sum(status in (200, 201, 204) for status, _, _ in creates) != 1: raise RuntimeError("create race is not single-winner")
+    winner = record("race-create-final", client.get(race_key), {200})
+    replace_etag = winner[1].get("ETag", winner[1].get("etag", ""))
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        replaces = list(pool.map(lambda body: client.put(race_key, body, etag=replace_etag), (b"c", b"d")))
+    if sum(status in (200, 201, 204) for status, _, _ in replaces) != 1: raise RuntimeError("replace race is not single-winner")
+    final = record("race-replace-final", client.get(race_key), {200})
+    winning = [body for (status, _, _), body in zip(replaces, (b"c", b"d")) if status in (200, 201, 204)]
+    if final[2] != winning[0]: raise RuntimeError("race final bytes mismatch")
+    if not final[1].get("ETag", final[1].get("etag", "")): raise RuntimeError("race final ETag missing")
+    record("delete-current", client.delete(key, etag=current), {200, 204})
+    record("list", client.list(prefix), {200})
+    uncertain_key, uncertain_body = prefix + "reconcile", b"uncertain-write"
+    discarded = client.put(uncertain_key, uncertain_body, if_none_match=True)
+    expected_etag = '"' + hashlib.md5(uncertain_body).hexdigest() + '"'
+    reconciliation = client.reconcile_put(uncertain_key, uncertain_body, expected_etag)
+    append_evidence(evidence, {"operation": "discarded-response-reconciliation", "result": reconciliation.value}, repository)
+    if discarded[0] not in (200, 201, 204) or reconciliation is not Reconciliation.COMMITTED: raise RuntimeError("discarded response reconciliation failed")
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()

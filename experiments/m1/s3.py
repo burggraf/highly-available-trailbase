@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 
 try:
@@ -68,7 +68,7 @@ class S3Client:
         canonical_headers = "".join(f"{k}:{' '.join(actual[k].split())}\n" for k in sorted(actual))
         signed = ";".join(sorted(actual))
         canonical_uri = "/" + "/".join(quote(part, safe="-_.~") for part in path.lstrip("/").split("/"))
-        canonical_query = urlencode(sorted((query or {}).items()), quote_via=quote)
+        canonical_query = "&".join(f"{quote(str(k), safe='-_.~')}={quote(str(v), safe='-_.~')}" for k, v in sorted((query or {}).items()))
         canonical = "\n".join((method.upper(), canonical_uri, canonical_query, canonical_headers, signed, payload_hash))
         scope = f"{day}/{self.region}/s3/aws4_request"
         string = "\n".join(("AWS4-HMAC-SHA256", now, scope, hashlib.sha256(canonical.encode()).hexdigest()))
@@ -81,9 +81,9 @@ class S3Client:
         return SignedRequest(self.endpoint + canonical_uri, actual)
 
     def request(self, method: str, key: str = "", *, body: bytes = b"", headers: dict[str, str] | None = None, query: dict[str, str] | None = None) -> tuple[int, dict[str, str], bytes]:
-        path = "/" + quote(key, safe="/-_.~") if key else "/"
+        path = ("/" + quote(self.bucket, safe="-_.~") + "/" + quote(key, safe="/-_.~")) if key else ("/" + quote(self.bucket, safe="-_.~"))
         signed = self.signed_request(method, path, headers or {}, body, query=query)
-        url = signed.url + ("?" + urlencode(sorted((query or {}).items())) if query else "")
+        url = signed.url + (("?" + "&".join(f"{quote(str(k), safe='-_.~')}={quote(str(v), safe='-_.~')}" for k, v in sorted((query or {}).items()))) if query else "")
         try:
             with urlopen(Request(url, data=body if method not in {"GET", "HEAD"} else None, headers=signed.headers, method=method), timeout=30) as response:
                 return response.status, dict(response.headers.items()), response.read()
