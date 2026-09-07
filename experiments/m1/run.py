@@ -548,14 +548,14 @@ def _transport_options() -> list[str]:
     ]
 
 
-def ssh(node: Node, argv: list[str], input: bytes | None = None, *, check: bool = True) -> subprocess.CompletedProcess:
+def ssh(node: Node, argv: list[str], input: bytes | None = None, *, check: bool = True, timeout: float = SSH_TIMEOUT) -> subprocess.CompletedProcess:
     _validate_node_fields(node)
     if not argv:
         raise ValueError("remote command cannot be empty")
     command = " ".join(shlex.quote(str(arg)) for arg in argv)
     return subprocess.run(
         ["ssh", *_transport_options(), "--", node.ssh, command],
-        input=input, capture_output=True, check=check, timeout=SSH_TIMEOUT,
+        input=input, capture_output=True, check=check, timeout=timeout,
     )
 
 
@@ -1309,7 +1309,7 @@ def provision(nodes: list[Node], context: RunContext, evidence: Path, repository
             work = _create_runtime_root(fm1, context)
             result = ssh(fm1, ["python3", m0 + "/run.py", "--trail", context.remote_root + "/bin/trail",
                                "--litestream", context.remote_root + "/bin/litestream", "--work-root", work,
-                               "--scenario", "all", "--repeat", "3"], check=False)
+                               "--scenario", "all", "--repeat", "3"], check=False, timeout=1200)
             if result.returncode:
                 raise RuntimeError("M0 Linux parity failed")
             if ssh(fm1, ["python3", "-c", _M0_COLLECT_SCRIPT, work, context.remote_root], check=False).returncode:

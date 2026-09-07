@@ -312,6 +312,9 @@ class TransportTests(unittest.TestCase):
         with self.assertRaises(RuntimeError): ssh(node(), ["true"])
         with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")):
             with self.assertRaises(ValueError): ssh(node(), [])
+            with mock.patch("run.subprocess.run") as execute:
+                ssh(node(), ["true"], timeout=900)
+            self.assertEqual(execute.call_args.kwargs["timeout"], 900)
 
     def test_scp_confines_destination_and_uses_options(self):
         with tempfile.TemporaryDirectory() as d:
