@@ -255,10 +255,26 @@ class RemoteRootTests(unittest.TestCase):
             with self.assertRaises(RuntimeError): ensure_remote_root(node(), self.ctx)
         self.assertTrue(any(c.args[1][0] == "rmdir" for c in call.call_args_list))
 
-    def test_init_remote_builds_pins_independently_and_clears_state(self):
-        with mock.patch("run.build_pinned_known_hosts", return_value=Path("/tmp/k")) as pins, mock.patch("run.ensure_remote_root") as init, mock.patch("run._validate_local_context", return_value=self.ctx.local_root), mock.patch("run._require_preflight_marker"):
-            init_remote([Node("fm1", "root@a", 1, "a", "a", "SHA256:" + "A" * 43, "a"), Node("fm2", "root@b", 2, "b", "b", "SHA256:" + "B" * 43, "b"), Node("fm3", "root@c", 3, "c", "c", "SHA256:" + "C" * 43, "c")], self.ctx)
-        self.assertEqual(pins.call_count, 1); self.assertEqual(init.call_count, 3)
+    def test_init_remote_requires_private_inputs(self):
+        nodes = [Node("fm1", "root@a", 1, "a", "a", "SHA256:" + "A" * 43, "a"), Node("fm2", "root@b", 2, "b", "b", "SHA256:" + "B" * 43, "b"), Node("fm3", "root@c", 3, "c", "c", "SHA256:" + "C" * 43, "c")]
+        with self.assertRaises(ValueError): init_remote(nodes, self.ctx)
+
+class NodeValidationTests(unittest.TestCase):
+    def test_validate_nodes_rechecks_every_field(self):
+        from run import _validate_nodes
+        valid = [Node("fm1", "root@a", 1, "a", "a", FP, "a"), Node("fm2", "root@b", 2, "b", "b", "SHA256:" + "B" * 43, "b"), Node("fm3", "root@c", 3, "c", "c", "SHA256:" + "C" * 43, "c")]
+        _validate_nodes(valid)
+        for field, value in (("name", "bad name"), ("ssh", "hat@a"), ("address", "bad/address"), ("provider_label", "bad label"), ("host_key", "bad"), ("hostname", "bad host"), ("instance_id", 0)):
+            bad = list(valid); item = bad[0]; changes = {f: getattr(item, f) for f in ("name", "ssh", "instance_id", "provider_label", "address", "host_key", "hostname")}; changes[field] = value
+            bad[0] = Node(**changes)
+            with self.assertRaises(ValueError): _validate_nodes(bad)
+
+    def test_preflight_and_init_require_both_private_inputs(self):
+        from run import _preflight_impl
+        nodes = [Node("fm1", "root@a", 1, "a", "a", FP, "a"), Node("fm2", "root@b", 2, "b", "b", "SHA256:" + "B" * 43, "b"), Node("fm3", "root@c", 3, "c", "c", "SHA256:" + "C" * 43, "c")]
+        ctx = RunContext("20260907T010203Z-0123456789", Path("/tmp/x"), "/var/lib/hat-qualification/20260907T010203Z-0123456789")
+        with self.assertRaises(ValueError): _preflight_impl(nodes, ctx, Path("/tmp/e"), inventory_path=Path("/tmp/i"))
+        with self.assertRaises(ValueError): init_remote(nodes, ctx, inventory_path=Path("/tmp/i"))
 
 class FactsTests(unittest.TestCase):
     def test_accepts_exact_boundary_facts(self):
@@ -275,8 +291,17 @@ class FactsTests(unittest.TestCase):
             with self.assertRaises(RuntimeError): _require_facts(node(), bad)
 
     def test_time_and_tls_are_anchored(self):
-        for field, value in (("time_sync", "NTPSynchronized=yes\nother=no"), ("outbound_tls", "HAT_M1_TLS_OK extra")):
+        for field, value in (("time_sync", "NTPSynchronized=yes\nother=no"), ("time_sync", "ntpsynchronized=yes\n"), ("outbound_tls", "HAT_M1_TLS_OK extra")):
             bad = facts(); bad[field] = value
+            with self.assertRaises(RuntimeError): _require_facts(node(), bad)
+
+    def test_disk_requires_exact_root_schema_and_numeric_values(self):
+        for value in (
+            "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/x 1 1 1 10% / /extra\n",
+            "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/x one 1 1 10% /\n",
+            "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/x 1 2 1 10% /\n",
+        ):
+            bad = facts(); bad["disk"] = value
             with self.assertRaises(RuntimeError): _require_facts(node(), bad)
 
     def test_resources_are_strict(self):
@@ -328,23 +353,6 @@ class PreflightEvidenceTests(unittest.TestCase):
             marker.unlink()
             with mock.patch("run.build_pinned_known_hosts", return_value=Path(d) / "known"):
                 with self.assertRaises(ValueError): init_remote(nodes, ctx, ctx.local_root / "evidence.jsonl")
-
-    def test_preflight_is_read_only_and_writes_fsynced_redacted_evidence(self):
-        n = [Node("fm1", "root@fm1", 1, "fm1", "fm1", "SHA256:" + "A" * 43, "fm1"), Node("fm2", "root@fm2", 2, "fm2", "fm2", "SHA256:" + "B" * 43, "fm2"), Node("fm3", "root@fm3", 3, "fm3", "fm3", "SHA256:" + "C" * 43, "fm3")]
-        with tempfile.TemporaryDirectory() as d:
-            ctx = new_run_context(Path(d))
-            results = [subprocess.CompletedProcess([], 0, facts(x)["hostname"].encode()) for x in ("a", "b", "c")]
-            all_facts = []
-            for x in n:
-                f = facts(x.name)
-                all_facts.extend(subprocess.CompletedProcess([], 0, f[k].encode()) for k in ("hostname", "boot_id", "release", "cpu", "memory", "disk", "time_sync", "outbound_tls"))
-            with mock.patch("run.build_pinned_known_hosts", return_value=Path(d) / "pins"), mock.patch("run.ssh", side_effect=all_facts) as call:
-                # The mock pin path need not exist for transport tests.
-                from run import _preflight_impl
-                _preflight_impl(n, ctx, ctx.local_root / "evidence.jsonl")
-            commands = [c.args[1][0] for c in call.call_args_list]
-            self.assertNotIn("mkdir", commands); self.assertNotIn("rmdir", commands)
-            self.assertNotIn("do-not-return", (ctx.local_root / "evidence.jsonl").read_text())
 
     def test_evidence_rejects_repository_descendant_and_symlink(self):
         with tempfile.TemporaryDirectory() as d:

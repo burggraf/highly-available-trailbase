@@ -58,7 +58,7 @@ def _absolute_no_symlinks(path: Path) -> Path:
     current = Path(absolute.anchor)
     for part in absolute.parts[1:]:
         current /= part
-        # /var and /tmp are canonical macOS system aliases; reject all other links.
+        # macOS exposes /var and /tmp as stable system aliases.
         if current.is_symlink() and current not in (Path("/var"), Path("/tmp")):
             raise ValueError(f"symlink path component: {current}")
     return absolute
@@ -404,10 +404,16 @@ def _require_facts(node: Node, facts: dict[str, str]) -> None:
     cpu = facts["cpu"].strip()
     if not re.fullmatch(r"[1-9][0-9]*", cpu) or int(cpu) < 1 or not memory or int(memory) < 512000:
         raise RuntimeError(f"insufficient resources for {node.name}")
-    disk_rows = [line.split() for line in facts["disk"].splitlines() if line and not line.startswith("Filesystem")]
-    if len(disk_rows) != 1 or len(disk_rows[0]) < 5 or not re.fullmatch(r"(?:[0-9]|[1-8][0-9]|90)%", disk_rows[0][4]):
+    disk_lines = facts["disk"].splitlines()
+    expected_header = "Filesystem 1024-blocks Used Available Capacity Mounted on"
+    if len(disk_lines) != 2 or disk_lines[0].split() != expected_header.split():
         raise RuntimeError(f"invalid or full disk report for {node.name}")
-    if not re.fullmatch(r"NTPSynchronized=yes\s*", facts["time_sync"].strip(), re.I):
+    disk_row = disk_lines[1].split()
+    if len(disk_row) != 6 or disk_row[5] != "/" or any(not re.fullmatch(r"[0-9]+", disk_row[i]) for i in (1, 2, 3)):
+        raise RuntimeError(f"invalid or full disk report for {node.name}")
+    if int(disk_row[2]) > int(disk_row[1]) or int(disk_row[3]) > int(disk_row[1]) or not re.fullmatch(r"(?:[0-9]|[1-8][0-9]|90)%", disk_row[4]):
+        raise RuntimeError(f"invalid or full disk report for {node.name}")
+    if not re.fullmatch(r"NTPSynchronized=yes\n?", facts["time_sync"]):
         raise RuntimeError(f"time is not synchronized for {node.name}")
     if facts["outbound_tls"].strip() != "HAT_M1_TLS_OK":
         raise RuntimeError(f"outbound TLS failed for {node.name}")
@@ -450,12 +456,31 @@ def load_linode_env(path: Path, nodes: list[Node] | None = None, repository: Pat
     return ids
 
 
+def _validate_node_fields(node: Node) -> None:
+    if not isinstance(node, Node):
+        raise ValueError("invalid node")
+    _valid_text(node.name, "name")
+    _valid_text(node.address, "address")
+    _valid_text(node.provider_label, "provider label")
+    _valid_text(node.hostname, "hostname")
+    if not isinstance(node.ssh, str) or re.fullmatch(r"root@([A-Za-z0-9.-]+)", node.ssh) is None:
+        raise ValueError("SSH user must be root")
+    if node.ssh != f"root@{node.address}":
+        raise ValueError("SSH target must be root@address")
+    if not isinstance(node.host_key, str) or not _FINGERPRINT.fullmatch(node.host_key):
+        raise ValueError("invalid host key fingerprint")
+    if not isinstance(node.instance_id, int) or isinstance(node.instance_id, bool) or node.instance_id <= 0:
+        raise ValueError("invalid instance ID")
+
+
 def _validate_nodes(nodes: list[Node]) -> None:
-    if not isinstance(nodes, list) or len(nodes) != 3 or {node.name for node in nodes} != {"fm1", "fm2", "fm3"}:
+    if not isinstance(nodes, list) or len(nodes) != 3 or any(not isinstance(node, Node) for node in nodes):
+        raise ValueError("nodes must be exactly three Node values")
+    for node in nodes:
+        _validate_node_fields(node)
+    if {node.name for node in nodes} != {"fm1", "fm2", "fm3"}:
         raise ValueError("nodes must be exactly fm1, fm2, and fm3")
-    if any(not isinstance(node, Node) or not node.hostname for node in nodes):
-        raise ValueError("invalid node prerequisites")
-    for field in ("ssh", "instance_id", "provider_label", "address", "host_key"):
+    for field in ("name", "ssh", "instance_id", "provider_label", "address", "host_key"):
         values = [getattr(node, field) for node in nodes]
         if len(set(values)) != 3:
             raise ValueError(f"duplicate node {field}")
@@ -463,13 +488,12 @@ def _validate_nodes(nodes: list[Node]) -> None:
 
 def _validate_prerequisites(nodes: list[Node], inventory_path: Path | None, linode_env: Path | None, repository: Path | None) -> None:
     _validate_nodes(nodes)
-    if (inventory_path is None) != (linode_env is None):
-        raise ValueError("inventory and Linode env must be supplied together")
-    if inventory_path is not None:
-        expected = load_inventory(inventory_path, repository)
-        if expected != nodes:
-            raise ValueError("nodes do not match private inventory")
-        load_linode_env(linode_env, nodes, repository)
+    if inventory_path is None or linode_env is None:
+        raise ValueError("private inventory and Linode env are required")
+    expected = load_inventory(inventory_path, repository)
+    if expected != nodes:
+        raise ValueError("nodes do not match private inventory")
+    load_linode_env(linode_env, nodes, repository)
 
 
 def _validate_local_context(context: RunContext, repository: Path | None = None) -> Path:
