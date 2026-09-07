@@ -483,6 +483,11 @@ def write_latest_storage_evidence_pointer(evidence: Path) -> Path:
     try:
         os.replace(temporary, pointer)
         pointer.chmod(0o600)
+        directory_fd = os.open(pointer.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     finally:
         try:
             temporary.unlink()
@@ -507,6 +512,11 @@ def write_latest_fence_evidence_pointer(evidence: Path) -> Path:
     try:
         os.replace(temporary, pointer)
         pointer.chmod(0o600)
+        directory_fd = os.open(pointer.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
     finally:
         temporary.unlink(missing_ok=True)
     return pointer
@@ -1036,9 +1046,19 @@ def invoke_fence(command: Path, action: str, target: dict[str, Any], *, timeout:
     if action not in {"inspect", "power-off", "power-on"} or not isinstance(target, dict) or not target:
         return {"valid": False, "reason": "invalid request"}
     try:
+        command = _absolute_no_symlinks(command)
+        parent = command.parent
+        while True:
+            st = parent.stat()
+            trusted_sticky = stat.S_ISDIR(st.st_mode) and bool(st.st_mode & stat.S_ISVTX)
+            if st.st_uid not in (0, os.getuid()) or ((st.st_mode & 0o022) and not trusted_sticky):
+                return {"valid": False, "reason": "fence command parent is not trusted"}
+            if parent == Path(parent.anchor):
+                break
+            parent = parent.parent
         if (command.is_symlink() or not command.is_file() or not os.access(command, os.X_OK)
                 or command.stat().st_uid != os.getuid() or stat.S_IMODE(command.stat().st_mode) != 0o700
-                or command.resolve().is_relative_to(Path(__file__).resolve().parents[2])):
+                or command.is_relative_to(Path(__file__).resolve().parents[2])):
             return {"valid": False, "reason": "fence command is not a private executable"}
         try:
             json.dumps(target, sort_keys=True, separators=(",", ":"))
