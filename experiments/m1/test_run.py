@@ -22,7 +22,7 @@ from run import (
     main, StorageStatus, write_latest_storage_evidence_pointer,
     Artifact, artifact_for, confined_remote_path, extract_verified_artifact,
     mask_writer_services, missing_packages, published_checksum,
-    validate_binary_version, validate_release_metadata,
+    validate_binary_version, validate_release_metadata, _install_required_packages,
 )
 
 FP = "SHA256:" + "A" * 43
@@ -1046,6 +1046,13 @@ class ProvisionTests(unittest.TestCase):
         self.assertEqual(missing_packages(installed | {"sqlite3", "unzip"}), [])
         with self.assertRaises(ValueError):
             missing_packages(installed | {"unexpected"})
+
+    def test_installed_package_query_uses_dpkg_status_field_without_shell_expansion(self):
+        installed = subprocess.CompletedProcess([], 0, "install ok installed", "")
+        with mock.patch("run.subprocess.run", return_value=installed) as execute:
+            self.assertEqual(_install_required_packages(), [])
+        self.assertEqual(execute.call_count, 5)
+        self.assertTrue(all(call.args[0][2] == "-f=${Status}" for call in execute.call_args_list))
 
     def test_versions_are_exact(self):
         trail = "trail v0.33.11-0-gf24291b8 (2026-09-04)\nsqlite: 3.53.2\n"

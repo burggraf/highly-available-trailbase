@@ -1032,7 +1032,7 @@ def _install_required_packages() -> list[str]:
     installed = set()
     for package in _REQUIRED_PACKAGES:
         result = subprocess.run(
-            ["dpkg-query", "-W", "-f=${db:Status}", package], capture_output=True, text=True,
+            ["dpkg-query", "-W", "-f=${Status}", package], capture_output=True, text=True,
             check=False, timeout=30,
         )
         if result.returncode == 0 and result.stdout.strip() == "install ok installed":
@@ -1047,7 +1047,7 @@ def _install_required_packages() -> list[str]:
         )
     for package in needed:
         result = subprocess.run(
-            ["dpkg-query", "-W", "-f=${db:Status}", package], capture_output=True, text=True,
+            ["dpkg-query", "-W", "-f=${Status}", package], capture_output=True, text=True,
             check=False, timeout=30,
         )
         if result.returncode or result.stdout.strip() != "install ok installed":
@@ -1177,7 +1177,7 @@ def _copy_m0_source(node: Node, context: RunContext, repository: Path) -> str:
 
 
 _M0_COLLECT_SCRIPT = r'''import json, pathlib, tarfile, sys
-root = pathlib.Path(sys.argv[1])
+root, output = map(pathlib.Path, sys.argv[1:])
 runs = [path for path in root.iterdir() if path.is_dir() and path.name.startswith("run-")]
 if len(runs) != 1:
     raise SystemExit("expected one M0 run")
@@ -1185,14 +1185,33 @@ run = runs[0]
 result = json.loads((run / "result.json").read_text())
 if result.get("status") != "PASS" or result.get("repeat") != 3 or len(result.get("results", [])) != 13:
     raise SystemExit("M0 aggregate is incomplete")
-(root.parent / "m0-result.json").write_bytes((run / "result.json").read_bytes())
-with tarfile.open(root.parent / "m0-logs.tar.gz", "x:gz") as archive:
+(output / "m0-result.json").write_bytes((run / "result.json").read_bytes())
+with tarfile.open(output / "m0-logs.tar.gz", "x:gz") as archive:
     logs = sorted(path for path in run.rglob("*") if path.is_file() and path.parent.name == "logs")
     if not logs:
         raise SystemExit("M0 logs are missing")
     for path in logs:
         archive.add(path, arcname=path.relative_to(run), recursive=False)
 '''
+
+
+def _create_runtime_root(node: Node, context: RunContext) -> str:
+    base = "/run/hat-qualification"
+    _verify_remote_directory(node, "/run")
+    status = ssh(node, ["stat", "-c", "%F %u %g %a %n", "--", base], check=False)
+    if status.returncode:
+        absent = ssh(node, ["test", "!", "-e", base], check=False)
+        dangling = ssh(node, ["test", "!", "-L", base], check=False)
+        if absent.returncode or dangling.returncode or ssh(node, ["mkdir", "-m", "700", "--", base], check=False).returncode:
+            raise RuntimeError("runtime qualification base is missing or unsafe")
+    _verify_remote_directory(node, base, mode=0o700)
+    root = base + "/" + context.run_id.rsplit("-", 1)[1]
+    if ssh(node, ["test", "!", "-e", root], check=False).returncode or ssh(node, ["test", "!", "-L", root], check=False).returncode:
+        raise RuntimeError("runtime M0 root already exists")
+    if ssh(node, ["mkdir", "-m", "700", "--", root], check=False).returncode:
+        raise RuntimeError("could not create runtime M0 root")
+    _verify_remote_directory(node, root, mode=0o700)
+    return root
 
 
 def _preflight_boot_ids(evidence: Path, nodes: list[Node]) -> dict[str, str]:
@@ -1287,15 +1306,13 @@ def provision(nodes: list[Node], context: RunContext, evidence: Path, repository
 
             fm1 = next(node for node in nodes if node.name == "fm1")
             m0 = _copy_m0_source(fm1, context, repository)
-            work = context.remote_root + "/m0-work"
-            if ssh(fm1, ["mkdir", "-m", "700", "--", work], check=False).returncode:
-                raise RuntimeError("could not create fresh M0 work directory")
+            work = _create_runtime_root(fm1, context)
             result = ssh(fm1, ["python3", m0 + "/run.py", "--trail", context.remote_root + "/bin/trail",
                                "--litestream", context.remote_root + "/bin/litestream", "--work-root", work,
                                "--scenario", "all", "--repeat", "3"], check=False)
             if result.returncode:
                 raise RuntimeError("M0 Linux parity failed")
-            if ssh(fm1, ["python3", "-c", _M0_COLLECT_SCRIPT, work], check=False).returncode:
+            if ssh(fm1, ["python3", "-c", _M0_COLLECT_SCRIPT, work, context.remote_root], check=False).returncode:
                 raise RuntimeError("could not collect M0 private evidence")
             local_result = local_root / "fm1-m0-result.json"
             local_logs = local_root / "fm1-m0-logs.tar.gz"
