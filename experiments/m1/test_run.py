@@ -1,12 +1,15 @@
 import datetime
 import hashlib
+import io
 import json
 import os
 import threading
 import stat
 import subprocess
+import tarfile
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from unittest import mock
 
@@ -17,6 +20,9 @@ from run import (
     load_inventory, load_linode_env, new_run_context, require_private_file,
     redact, scp_to, ssh, storage, validate_inventory, _absolute_no_symlinks,
     main, StorageStatus, write_latest_storage_evidence_pointer,
+    Artifact, artifact_for, confined_remote_path, extract_verified_artifact,
+    mask_writer_services, missing_packages, published_checksum,
+    validate_binary_version, validate_release_metadata,
 )
 
 FP = "SHA256:" + "A" * 43
@@ -522,7 +528,11 @@ sys.exit(1 if %s else 0)
                 main(["init-remote", "--inventory", str(inventory_path), "--linode-env", str(env_path), "--work-root", str(root)])
 
     def test_cli_requires_explicit_credentials(self):
-        with self.assertRaises(SystemExit): main(["init-remote", "--work-root", "/tmp/hat-m1"])
+        with self.assertRaises(SystemExit):
+            main(["init-remote", "--work-root", "/tmp/hat-m1"])
+        with self.assertRaises(SystemExit):
+            main(["provision", "--work-root", "/tmp/hat-m1", "--inventory", "/private/inventory",
+                  "--linode-env", "/private/env"])
 
 class FactsTests(unittest.TestCase):
     def test_accepts_exact_boundary_facts(self):
@@ -918,6 +928,160 @@ class StorageQualificationTests(unittest.TestCase):
             for result, expected in ((StorageStatus.PASS, 0), (StorageStatus.NO_GO, 2)):
                 with mock.patch("run.storage", return_value=result), mock.patch("run.write_latest_storage_evidence_pointer"):
                     self.assertEqual(main(["storage", "--work-root", str(Path(directory) / result.name), "--s3-env", "/private/env"]), expected)
+
+
+class ProvisionTests(unittest.TestCase):
+    def _zip(self, path, members):
+        with zipfile.ZipFile(path, "w") as archive:
+            for name, data, mode in members:
+                info = zipfile.ZipInfo(name)
+                info.external_attr = mode << 16
+                archive.writestr(info, data)
+
+    def _tar(self, path, members):
+        with tarfile.open(path, "w:gz") as archive:
+            for name, data, mode, kind in members:
+                info = tarfile.TarInfo(name)
+                info.mode = mode
+                info.size = len(data)
+                info.type = kind
+                archive.addfile(info, io.BytesIO(data))
+
+    def _spec(self, archive_sha, executable_sha, *, kind="zip"):
+        return Artifact("demo", "1.2.3", "demo.zip", "https://example.invalid/demo.zip",
+                        archive_sha, executable_sha, kind, ("demo", "LICENSE"), "demo")
+
+    def test_architecture_selects_only_exact_linux_assets(self):
+        self.assertEqual(artifact_for("trailbase", "x86_64").filename,
+                         "trailbase_v0.33.11_x86_64_linux.zip")
+        self.assertEqual(artifact_for("litestream", "aarch64").filename,
+                         "litestream-0.5.17-linux-arm64.tar.gz")
+        for machine in ("amd64", "arm64", "i686", "", "x86_64;touch /tmp/x"):
+            with self.assertRaises(ValueError):
+                artifact_for("trailbase", machine)
+        with self.assertRaises(ValueError):
+            artifact_for("unknown", "x86_64")
+
+    def test_release_metadata_and_published_checksum_are_both_exact(self):
+        spec = artifact_for("litestream", "x86_64")
+        metadata = {"tag_name": "v0.5.17", "draft": False, "prerelease": False, "assets": [
+            {"name": spec.filename, "digest": "sha256:" + spec.archive_sha256,
+             "browser_download_url": spec.url}
+        ]}
+        validate_release_metadata(spec, metadata)
+        self.assertEqual(published_checksum(f"{spec.archive_sha256}  {spec.filename}\n", spec.filename),
+                         spec.archive_sha256)
+        for broken in (
+            {**metadata, "tag_name": "v0.5.18"},
+            {**metadata, "draft": True},
+            {**metadata, "assets": [{**metadata["assets"][0], "digest": "sha256:" + "0" * 64}]},
+            {**metadata, "assets": [{**metadata["assets"][0], "browser_download_url": "https://example.invalid/x"}]},
+        ):
+            with self.assertRaises(RuntimeError):
+                validate_release_metadata(spec, broken)
+        for text in ("", f"{'0' * 64}  {spec.filename}\n",
+                     f"{spec.archive_sha256}  ../{spec.filename}\n",
+                     f"{spec.archive_sha256}  {spec.filename}\n{spec.archive_sha256}  {spec.filename}\n"):
+            with self.assertRaises(RuntimeError):
+                published_checksum(text, spec.filename)
+
+    def test_checksum_and_executable_hash_mismatch_refuse_before_write(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            archive = root / "demo.zip"
+            self._zip(archive, [("demo", b"binary", 0o100755), ("LICENSE", b"license", 0o100644)])
+            destination = root / "bin" / "demo"
+            bad_archive = self._spec("0" * 64, hashlib.sha256(b"binary").hexdigest())
+            with self.assertRaises(RuntimeError):
+                extract_verified_artifact(archive, bad_archive, destination)
+            self.assertFalse(destination.exists())
+            good_archive = hashlib.sha256(archive.read_bytes()).hexdigest()
+            bad_binary = self._spec(good_archive, "0" * 64)
+            with self.assertRaises(RuntimeError):
+                extract_verified_artifact(archive, bad_binary, destination)
+            self.assertFalse(destination.exists())
+
+    def test_archive_members_must_be_exact_regular_safe_paths(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            destination = root / "bin" / "demo"
+            cases = [
+                [("../demo", b"binary", 0o100755), ("LICENSE", b"license", 0o100644)],
+                [("/demo", b"binary", 0o100755), ("LICENSE", b"license", 0o100644)],
+                [("demo", b"binary", 0o120777), ("LICENSE", b"license", 0o100644)],
+                [("demo", b"binary", 0o100755), ("LICENSE", b"license", 0o100644), ("extra", b"x", 0o100644)],
+            ]
+            for index, members in enumerate(cases):
+                archive = root / f"bad-{index}.zip"
+                self._zip(archive, members)
+                spec = self._spec(hashlib.sha256(archive.read_bytes()).hexdigest(), hashlib.sha256(b"binary").hexdigest())
+                with self.assertRaises(RuntimeError):
+                    extract_verified_artifact(archive, spec, destination)
+                self.assertFalse(destination.exists())
+
+    def test_safe_tar_extracts_only_pinned_executable(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            archive = root / "demo.tar.gz"
+            members = [("demo", b"binary", 0o755, tarfile.REGTYPE),
+                       ("LICENSE", b"license", 0o644, tarfile.REGTYPE)]
+            self._tar(archive, members)
+            spec = Artifact("demo", "1.2.3", "demo.tar.gz", "https://example.invalid/demo.tar.gz",
+                            hashlib.sha256(archive.read_bytes()).hexdigest(), hashlib.sha256(b"binary").hexdigest(),
+                            "tar.gz", ("demo", "LICENSE"), "demo")
+            destination = root / "bin" / "demo"
+            extract_verified_artifact(archive, spec, destination)
+            self.assertEqual(destination.read_bytes(), b"binary")
+            self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o700)
+            link_archive = root / "link.tar.gz"
+            self._tar(link_archive, [("demo", b"", 0o755, tarfile.SYMTYPE),
+                                     ("LICENSE", b"license", 0o644, tarfile.REGTYPE)])
+            link_spec = Artifact(**{**spec.__dict__, "archive_sha256": hashlib.sha256(link_archive.read_bytes()).hexdigest()})
+            with self.assertRaises(RuntimeError):
+                extract_verified_artifact(link_archive, link_spec, root / "bin" / "other")
+
+    def test_package_selection_is_idempotent_and_allowlisted(self):
+        installed = {"ca-certificates", "curl", "python3"}
+        self.assertEqual(missing_packages(installed), ["sqlite3", "unzip"])
+        self.assertEqual(missing_packages(installed | {"sqlite3", "unzip"}), [])
+        with self.assertRaises(ValueError):
+            missing_packages(installed | {"unexpected"})
+
+    def test_versions_are_exact(self):
+        trail = "trail v0.33.11-0-gf24291b8 (2026-09-04)\nsqlite: 3.53.2\n"
+        self.assertEqual(validate_binary_version("trailbase", trail), "0.33.11")
+        self.assertEqual(validate_binary_version("litestream", "0.5.17\n"), "0.5.17")
+        for product, value in (("trailbase", trail.replace("0.33.11", "0.33.110")),
+                               ("litestream", "0.5.18\n"),
+                               ("litestream", "prefix 0.5.17 suffix\n")):
+            with self.assertRaises(RuntimeError):
+                validate_binary_version(product, value)
+
+    def test_remote_paths_are_confined_and_normalized(self):
+        root = "/var/lib/hat-qualification/20260907T010203Z-0123456789"
+        self.assertEqual(confined_remote_path(root, root + "/bin/trail"), root + "/bin/trail")
+        for candidate in (root, root + "/../escape", root + "//bin", "/tmp/trail", root + "/bin/./trail"):
+            with self.assertRaises(ValueError):
+                confined_remote_path(root, candidate)
+
+    def test_writer_service_masks_are_persistent_and_fail_closed(self):
+        calls = []
+        def run(argv, **kwargs):
+            calls.append(argv)
+            return subprocess.CompletedProcess(argv, 3 if argv[1:3] == ["is-active", "--quiet"] else 0,
+                                               stdout="masked\n" if argv[1:2] == ["is-enabled"] else "", stderr="")
+        with tempfile.TemporaryDirectory() as d:
+            service_dir = Path(d)
+            mask_writer_services(service_dir, run=run)
+            for unit in ("hat-trailbase.service", "hat-litestream.service"):
+                self.assertTrue((service_dir / unit).is_symlink())
+                self.assertEqual(os.readlink(service_dir / unit), "/dev/null")
+            mask_writer_services(service_dir, run=run)
+            self.assertIn(["systemctl", "daemon-reload"], calls)
+            (service_dir / "hat-trailbase.service").unlink()
+            (service_dir / "hat-trailbase.service").write_text("[Service]\nExecStart=/bin/true\n")
+            with self.assertRaises(RuntimeError):
+                mask_writer_services(service_dir, run=run)
 
 
 if __name__ == "__main__": unittest.main()

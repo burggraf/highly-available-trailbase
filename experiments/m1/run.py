@@ -6,15 +6,20 @@ import datetime
 import hashlib
 import json
 import os
+import platform
 import posixpath
 import re
 import shlex
 import stat
 import sys
 import subprocess
+import tarfile
 import tempfile
 import time
+import urllib.parse
+import urllib.request
 import uuid
+import zipfile
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -62,6 +67,207 @@ class RunContext:
     run_id: str
     local_root: Path
     remote_root: str
+
+
+@dataclass(frozen=True)
+class Artifact:
+    product: str
+    version: str
+    filename: str
+    url: str
+    archive_sha256: str
+    executable_sha256: str
+    archive_kind: str
+    members: tuple[str, ...]
+    executable: str
+
+
+_REQUIRED_PACKAGES = ("ca-certificates", "curl", "python3", "sqlite3", "unzip")
+_ARTIFACTS = {
+    ("trailbase", "x86_64"): Artifact(
+        "trailbase", "0.33.11", "trailbase_v0.33.11_x86_64_linux.zip",
+        "https://github.com/trailbaseio/trailbase/releases/download/v0.33.11/trailbase_v0.33.11_x86_64_linux.zip",
+        "4d5162c8cb5050c653b6e831e5094decdad1060f2221fab73983693667a75925",
+        "4d51d0a1fcce9c11d3470b5d5a330848cfd869bed1f237f0886f06794942b121",
+        "zip", ("trail", "CHANGELOG.md", "LICENSE"), "trail",
+    ),
+    ("trailbase", "aarch64"): Artifact(
+        "trailbase", "0.33.11", "trailbase_v0.33.11_aarch64_linux.zip",
+        "https://github.com/trailbaseio/trailbase/releases/download/v0.33.11/trailbase_v0.33.11_aarch64_linux.zip",
+        "05ce27fe190a69d1f504d410de3267c2132ee7ca4b03f00561c14e1d55fc5aca",
+        "4241c50147e85716498b35a9f3d2d4bd5247d86ab4405e21bc7e09e7ddfd01a0",
+        "zip", ("trail", "CHANGELOG.md", "LICENSE"), "trail",
+    ),
+    ("litestream", "x86_64"): Artifact(
+        "litestream", "0.5.17", "litestream-0.5.17-linux-x86_64.tar.gz",
+        "https://github.com/benbjohnson/litestream/releases/download/v0.5.17/litestream-0.5.17-linux-x86_64.tar.gz",
+        "cfb371176d164437ae869f8351cfde49bd1804ae71c61923f75c9cba9c9c006d",
+        "200e4248a4cc83da2ca52babe66774f1a71afa993d31373adb0ce0fe12154647",
+        "tar.gz", ("LICENSE", "README.md", "etc/litestream.service", "etc/litestream.yml", "litestream"), "litestream",
+    ),
+    ("litestream", "aarch64"): Artifact(
+        "litestream", "0.5.17", "litestream-0.5.17-linux-arm64.tar.gz",
+        "https://github.com/benbjohnson/litestream/releases/download/v0.5.17/litestream-0.5.17-linux-arm64.tar.gz",
+        "f8ca4a050095c1efbda2c4365172e61bf9d955ea0d9ac42f448b52e51819baa5",
+        "47baa971c744f3f0d3ca1f4fe82a7883fc8d4bf67ebe3d673c89ec71364920eb",
+        "tar.gz", ("LICENSE", "README.md", "etc/litestream.service", "etc/litestream.yml", "litestream"), "litestream",
+    ),
+}
+_LITESTREAM_CHECKSUMS_SHA256 = "f5c30b11a19ef14fc64581be19aa50ee81dcc7f53eb429737c151630f5129d6f"
+_WRITER_UNITS = ("hat-trailbase.service", "hat-litestream.service")
+
+
+def artifact_for(product: str, machine: str) -> Artifact:
+    try:
+        return _ARTIFACTS[(product, machine)]
+    except KeyError as exc:
+        raise ValueError("unsupported product or machine architecture") from exc
+
+
+def confined_remote_path(root: str, candidate: str) -> str:
+    if not isinstance(root, str) or not isinstance(candidate, str):
+        raise ValueError("remote paths must be strings")
+    normalized = posixpath.normpath(candidate)
+    if normalized != candidate or "\\" in candidate or not candidate.startswith(root + "/"):
+        raise ValueError("remote path escapes run root")
+    return candidate
+
+
+def missing_packages(installed: set[str]) -> list[str]:
+    if not isinstance(installed, set) or not installed <= set(_REQUIRED_PACKAGES):
+        raise ValueError("package state contains an unexpected name")
+    return sorted(set(_REQUIRED_PACKAGES) - installed)
+
+
+def validate_binary_version(product: str, output: str) -> str:
+    patterns = {
+        "trailbase": r"^trail v0\.33\.11-[0-9]+-g[0-9a-f]{8} \(\d{4}-\d{2}-\d{2}\)\nsqlite: \d+\.\d+\.\d+\n?$",
+        "litestream": r"^0\.5\.17\n?$",
+    }
+    if product not in patterns or not isinstance(output, str) or not re.fullmatch(patterns[product], output):
+        raise RuntimeError("unexpected binary version")
+    return "0.33.11" if product == "trailbase" else "0.5.17"
+
+
+def validate_release_metadata(spec: Artifact, metadata: Any) -> None:
+    expected_tag = "v" + spec.version
+    if (not isinstance(metadata, dict) or metadata.get("tag_name") != expected_tag
+            or metadata.get("draft") is not False or metadata.get("prerelease") is not False):
+        raise RuntimeError("unexpected release metadata")
+    assets = metadata.get("assets")
+    if not isinstance(assets, list):
+        raise RuntimeError("release assets are missing")
+    matches = [asset for asset in assets if isinstance(asset, dict) and asset.get("name") == spec.filename]
+    if len(matches) != 1:
+        raise RuntimeError("release asset is missing or duplicated")
+    asset = matches[0]
+    if asset.get("digest") != "sha256:" + spec.archive_sha256 or asset.get("browser_download_url") != spec.url:
+        raise RuntimeError("release asset identity or digest changed")
+
+
+def published_checksum(text: str, filename: str) -> str:
+    if not isinstance(text, str) or not _SAFE.fullmatch(filename):
+        raise RuntimeError("invalid published checksum input")
+    matches = []
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) == 2 and fields[1] == filename and re.fullmatch(r"[0-9a-f]{64}", fields[0]):
+            matches.append(fields[0])
+    if len(matches) != 1:
+        raise RuntimeError("published checksum is missing or duplicated")
+    expected = {spec.filename: spec.archive_sha256 for key, spec in _ARTIFACTS.items() if key[0] == "litestream"}.get(filename)
+    if expected is None or matches[0] != expected:
+        raise RuntimeError("published checksum does not match pinned digest")
+    return matches[0]
+
+
+def _archive_executable(archive: Path, spec: Artifact) -> bytes:
+    expected = set(spec.members)
+    if len(expected) != len(spec.members) or spec.executable not in expected:
+        raise RuntimeError("invalid pinned archive manifest")
+    if spec.archive_kind == "zip":
+        with zipfile.ZipFile(archive) as source:
+            members = source.infolist()
+            names = [member.filename for member in members]
+            for member in members:
+                mode = member.external_attr >> 16
+                if not stat.S_ISREG(mode) or member.file_size > 128 * 1024 * 1024:
+                    raise RuntimeError("unsafe ZIP member")
+            if len(names) != len(set(names)) or set(names) != expected:
+                raise RuntimeError("unexpected ZIP members")
+            executable = source.read(spec.executable)
+    elif spec.archive_kind == "tar.gz":
+        with tarfile.open(archive, mode="r:gz") as source:
+            members = source.getmembers()
+            names = [member.name for member in members]
+            if any(not member.isfile() or member.size > 128 * 1024 * 1024 for member in members):
+                raise RuntimeError("unsafe tar member")
+            if len(names) != len(set(names)) or set(names) != expected:
+                raise RuntimeError("unexpected tar members")
+            stream = source.extractfile(spec.executable)
+            if stream is None:
+                raise RuntimeError("missing archive executable")
+            executable = stream.read()
+    else:
+        raise RuntimeError("unsupported archive kind")
+    for name in names:
+        pure = __import__("pathlib").PurePosixPath(name)
+        if pure.is_absolute() or not pure.parts or any(part in ("", ".", "..") for part in pure.parts):
+            raise RuntimeError("unsafe archive member path")
+    if not executable or len(executable) > 128 * 1024 * 1024:
+        raise RuntimeError("invalid archive executable")
+    return executable
+
+
+def extract_verified_artifact(archive: Path, spec: Artifact, destination: Path) -> None:
+    archive = Path(archive)
+    if not archive.is_file() or archive.is_symlink():
+        raise RuntimeError("archive is not a regular file")
+    if hashlib.sha256(archive.read_bytes()).hexdigest() != spec.archive_sha256:
+        raise RuntimeError("archive checksum mismatch")
+    executable = _archive_executable(archive, spec)
+    if hashlib.sha256(executable).hexdigest() != spec.executable_sha256:
+        raise RuntimeError("executable checksum mismatch")
+    destination = Path(destination)
+    if destination.exists() or destination.is_symlink():
+        raise RuntimeError("executable destination already exists")
+    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = destination.parent / ("." + destination.name + ".tmp-" + uuid.uuid4().hex)
+    try:
+        with temporary.open("xb") as stream:
+            stream.write(executable)
+            stream.flush()
+            os.fsync(stream.fileno())
+        temporary.chmod(0o700)
+        os.link(temporary, destination, follow_symlinks=False)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def mask_writer_services(service_dir: Path, *, run=subprocess.run) -> None:
+    service_dir = Path(service_dir)
+    if not service_dir.is_dir() or service_dir.is_symlink():
+        raise RuntimeError("unsafe systemd directory")
+    for unit in _WRITER_UNITS:
+        result = run(["systemctl", "stop", unit], capture_output=True, text=True, check=False, timeout=30)
+        if result.returncode not in (0, 5):
+            raise RuntimeError("could not stop writer service")
+        path = service_dir / unit
+        if path.is_symlink():
+            if os.readlink(path) != "/dev/null":
+                raise RuntimeError("unexpected writer service symlink")
+        elif path.exists():
+            raise RuntimeError("writer service file already exists")
+        else:
+            os.symlink("/dev/null", path)
+    result = run(["systemctl", "daemon-reload"], capture_output=True, text=True, check=False, timeout=30)
+    if result.returncode:
+        raise RuntimeError("could not reload systemd")
+    for unit in _WRITER_UNITS:
+        enabled = run(["systemctl", "is-enabled", unit], capture_output=True, text=True, check=False, timeout=30)
+        active = run(["systemctl", "is-active", "--quiet", unit], capture_output=True, text=True, check=False, timeout=30)
+        if enabled.stdout.strip() != "masked" or active.returncode == 0:
+            raise RuntimeError("writer service is not persistently masked and stopped")
 
 
 def _absolute_no_symlinks(path: Path) -> Path:
@@ -795,6 +1001,319 @@ def init_remote(nodes: list[Node], context: RunContext, evidence: Path | None = 
         _REMOTE_ROOT = None
 
 
+def _download_public(url: str, destination: Path, *, max_bytes: int) -> str:
+    request = urllib.request.Request(url, headers={"User-Agent": "hat-qualification/1"})
+    destination = Path(destination)
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response, destination.open("xb") as stream:
+            host = urllib.parse.urlparse(response.geturl()).hostname
+            if host not in {"api.github.com", "github.com", "release-assets.githubusercontent.com"}:
+                raise RuntimeError("download redirected to an untrusted host")
+            size = 0
+            while chunk := response.read(1024 * 1024):
+                size += len(chunk)
+                if size > max_bytes:
+                    raise RuntimeError("download exceeds size limit")
+                stream.write(chunk)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except Exception:
+        destination.unlink(missing_ok=True)
+        raise
+    return hashlib.sha256(destination.read_bytes()).hexdigest()
+
+
+def _release_api(spec: Artifact) -> str:
+    repository = "trailbaseio/trailbase" if spec.product == "trailbase" else "benbjohnson/litestream"
+    return f"https://api.github.com/repos/{repository}/releases/tags/v{spec.version}"
+
+
+def _install_required_packages() -> list[str]:
+    installed = set()
+    for package in _REQUIRED_PACKAGES:
+        result = subprocess.run(
+            ["dpkg-query", "-W", "-f=${db:Status}", package], capture_output=True, text=True,
+            check=False, timeout=30,
+        )
+        if result.returncode == 0 and result.stdout.strip() == "install ok installed":
+            installed.add(package)
+    needed = missing_packages(installed)
+    if needed:
+        environment = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
+        subprocess.run(["apt-get", "update"], env=environment, capture_output=True, check=True, timeout=300)
+        subprocess.run(
+            ["apt-get", "install", "-y", "--no-install-recommends", *needed],
+            env=environment, capture_output=True, check=True, timeout=300,
+        )
+    for package in needed:
+        result = subprocess.run(
+            ["dpkg-query", "-W", "-f=${db:Status}", package], capture_output=True, text=True,
+            check=False, timeout=30,
+        )
+        if result.returncode or result.stdout.strip() != "install ok installed":
+            raise RuntimeError("required package installation did not complete")
+    return needed
+
+
+def _trusted_remote_root(root: Path) -> Path:
+    root = Path(root)
+    expected_parent = Path("/var/lib/hat-qualification")
+    if root.parent != expected_parent or not _RUN_ID.fullmatch(root.name):
+        raise RuntimeError("invalid remote provisioning root")
+    st = root.stat(follow_symlinks=False)
+    if not stat.S_ISDIR(st.st_mode) or st.st_uid != 0 or st.st_gid != 0 or stat.S_IMODE(st.st_mode) != 0o700:
+        raise RuntimeError("untrusted remote provisioning root")
+    if root.resolve(strict=True) != root:
+        raise RuntimeError("remote provisioning root is not canonical")
+    return root
+
+
+def _checksums_asset(metadata: dict[str, Any]) -> tuple[str, str]:
+    matches = [asset for asset in metadata.get("assets", [])
+               if isinstance(asset, dict) and asset.get("name") == "checksums.txt"]
+    url = "https://github.com/benbjohnson/litestream/releases/download/v0.5.17/checksums.txt"
+    if len(matches) != 1 or matches[0].get("digest") != "sha256:" + _LITESTREAM_CHECKSUMS_SHA256 or matches[0].get("browser_download_url") != url:
+        raise RuntimeError("published checksums asset identity or digest changed")
+    return url, _LITESTREAM_CHECKSUMS_SHA256
+
+
+def remote_provision(remote_root: Path) -> dict[str, Any]:
+    if os.geteuid() != 0 or platform.system() != "Linux":
+        raise RuntimeError("remote provisioning requires Linux root")
+    root = _trusted_remote_root(remote_root)
+    machine = platform.machine()
+    specs = [artifact_for("trailbase", machine), artifact_for("litestream", machine)]
+
+    installed = _install_required_packages()
+    mask_writer_services(Path("/etc/systemd/system"))
+
+    downloads = root / "downloads"
+    downloads.mkdir(mode=0o700)
+    release_metadata: dict[str, dict[str, Any]] = {}
+    for spec in specs:
+        metadata_path = downloads / f"{spec.product}-release.json"
+        _download_public(_release_api(spec), metadata_path, max_bytes=2 * 1024 * 1024)
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("invalid release metadata") from exc
+        validate_release_metadata(spec, metadata)
+        release_metadata[spec.product] = metadata
+
+    checksums_url, checksums_digest = _checksums_asset(release_metadata["litestream"])
+    checksums_path = downloads / "checksums.txt"
+    if _download_public(checksums_url, checksums_path, max_bytes=128 * 1024) != checksums_digest:
+        raise RuntimeError("published checksums file digest mismatch")
+    checksums_text = checksums_path.read_text(encoding="ascii")
+
+    for spec in specs:
+        archive = downloads / spec.filename
+        if _download_public(spec.url, archive, max_bytes=256 * 1024 * 1024) != spec.archive_sha256:
+            raise RuntimeError("release archive digest mismatch")
+        if spec.product == "litestream":
+            published_checksum(checksums_text, spec.filename)
+
+    binaries = root / "bin"
+    for spec in specs:
+        extract_verified_artifact(downloads / spec.filename, spec, binaries / spec.executable)
+
+    trail_output = subprocess.run(
+        [str(binaries / "trail"), "--version"], capture_output=True, text=True, check=True, timeout=30,
+    ).stdout
+    litestream_output = subprocess.run(
+        [str(binaries / "litestream"), "version"], capture_output=True, text=True, check=True, timeout=30,
+    ).stdout
+    versions = {
+        "trailbase": validate_binary_version("trailbase", trail_output),
+        "litestream": validate_binary_version("litestream", litestream_output),
+    }
+    return {
+        "status": "PASS", "architecture": machine, "installed_packages": installed,
+        "versions": versions,
+        "archives": {spec.product: spec.archive_sha256 for spec in specs},
+        "executables": {spec.product: spec.executable_sha256 for spec in specs},
+        "services": {unit: "masked" for unit in _WRITER_UNITS},
+    }
+
+
+def _copy_from_node(node: Node, source: str, destination: Path, *, max_bytes: int) -> None:
+    if _REMOTE_ROOT is None:
+        raise RuntimeError("remote copy context is not initialized")
+    confined_remote_path(_REMOTE_ROOT, source)
+    kind, uid, gid, mode, name = _remote_stat(node, source)
+    if kind != "regular file" or uid != 0 or gid != 0 or name != source or (mode & 0o022):
+        raise RuntimeError("remote evidence file is unsafe")
+    real = ssh(node, ["realpath", "-e", "--", source], check=False)
+    if real.returncode or _stdout(real).strip() != source:
+        raise RuntimeError("remote evidence file is not canonical")
+    result = ssh(node, ["cat", "--", source], check=False)
+    if result.returncode or len(result.stdout) > max_bytes:
+        raise RuntimeError("could not copy bounded remote evidence")
+    destination = Path(destination)
+    with destination.open("xb") as stream:
+        stream.write(result.stdout)
+        stream.flush()
+        os.fsync(stream.fileno())
+    destination.chmod(0o600)
+
+
+def _copy_m0_source(node: Node, context: RunContext, repository: Path) -> str:
+    source_dir = repository / "experiments" / "m0"
+    tracked = ("README.md", "run.py", "test_run.py")
+    result = subprocess.run(
+        ["git", "diff", "--quiet", "HEAD", "--", *[str(path.relative_to(repository)) for path in (source_dir / name for name in tracked)]],
+        cwd=repository, capture_output=True, check=False, timeout=30,
+    )
+    if result.returncode:
+        raise RuntimeError("M0 source differs from the committed baseline")
+    remote_dir = context.remote_root + "/source/experiments/m0"
+    for directory in (context.remote_root + "/source", context.remote_root + "/source/experiments", remote_dir):
+        created = ssh(node, ["mkdir", "-m", "700", "--", directory], check=False)
+        if created.returncode:
+            raise RuntimeError("could not create remote M0 source directory")
+    for name in tracked:
+        scp_to(node, source_dir / name, remote_dir + "/" + name)
+    return remote_dir
+
+
+_M0_COLLECT_SCRIPT = r'''import json, pathlib, tarfile, sys
+root = pathlib.Path(sys.argv[1])
+runs = [path for path in root.iterdir() if path.is_dir() and path.name.startswith("run-")]
+if len(runs) != 1:
+    raise SystemExit("expected one M0 run")
+run = runs[0]
+result = json.loads((run / "result.json").read_text())
+if result.get("status") != "PASS" or result.get("repeat") != 3 or len(result.get("results", [])) != 13:
+    raise SystemExit("M0 aggregate is incomplete")
+(root.parent / "m0-result.json").write_bytes((run / "result.json").read_bytes())
+with tarfile.open(root.parent / "m0-logs.tar.gz", "x:gz") as archive:
+    logs = sorted(path for path in run.rglob("*") if path.is_file() and path.parent.name == "logs")
+    if not logs:
+        raise SystemExit("M0 logs are missing")
+    for path in logs:
+        archive.add(path, arcname=path.relative_to(run), recursive=False)
+'''
+
+
+def _preflight_boot_ids(evidence: Path, nodes: list[Node]) -> dict[str, str]:
+    expected = {node.name for node in nodes}
+    boots: dict[str, str] = {}
+    for line in evidence.read_text(encoding="utf-8").splitlines():
+        event = json.loads(line)
+        if event.get("event") == "preflight" and isinstance(event.get("facts"), dict):
+            name = event["facts"].get("node")
+            boot = event["facts"].get("boot_id", "").strip()
+            if name in boots or name not in expected or not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", boot):
+                raise RuntimeError("invalid preflight boot identity")
+            boots[name] = boot
+    if set(boots) != expected:
+        raise RuntimeError("preflight boot identities are incomplete")
+    return boots
+
+
+def _require_live_identity(node: Node, boot_id: str) -> None:
+    hostname = ssh(node, ["hostname"], check=False)
+    boot = ssh(node, ["cat", "/proc/sys/kernel/random/boot_id"], check=False)
+    if hostname.returncode or _stdout(hostname).strip() != node.hostname or boot.returncode or _stdout(boot).strip() != boot_id:
+        raise RuntimeError("live node identity changed before reboot")
+
+
+def _verify_reboot(node: Node, old_boot: str, *, timeout: float = 240.0) -> None:
+    reboot = ssh(node, ["systemctl", "reboot"], check=False)
+    if reboot.returncode not in (0, 255):
+        raise RuntimeError("reboot request failed")
+    deadline = time.monotonic() + timeout
+    new_boot = ""
+    while time.monotonic() < deadline:
+        time.sleep(3)
+        try:
+            result = ssh(node, ["cat", "/proc/sys/kernel/random/boot_id"], check=False)
+            candidate = _stdout(result).strip() if result.returncode == 0 else ""
+        except (OSError, subprocess.SubprocessError):
+            candidate = ""
+        if candidate and candidate != old_boot:
+            new_boot = candidate
+            break
+    if not re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", new_boot):
+        raise RuntimeError("node did not return with a new boot identity")
+    hostname = ssh(node, ["hostname"], check=False)
+    if hostname.returncode or _stdout(hostname).strip() != node.hostname:
+        raise RuntimeError("node hostname changed after reboot")
+    for unit in _WRITER_UNITS:
+        enabled = ssh(node, ["systemctl", "is-enabled", unit], check=False)
+        active = ssh(node, ["systemctl", "is-active", "--quiet", unit], check=False)
+        if _stdout(enabled).strip() != "masked" or active.returncode == 0:
+            raise RuntimeError("writer service mask did not survive reboot")
+
+
+def provision(nodes: list[Node], context: RunContext, evidence: Path, repository: Path, *, inventory_path: Path, linode_env: Path, fence_command: Path) -> None:
+    global _SSH_KNOWN_HOSTS, _REMOTE_ROOT
+    _validate_prerequisites(nodes, inventory_path, linode_env, repository)
+    local_root = _validate_local_context(context, repository)
+    evidence = _validate_evidence_path(evidence, local_root, repository)
+    try:
+        with tempfile.TemporaryDirectory(prefix="hat-known-hosts-") as directory:
+            _SSH_KNOWN_HOSTS = build_pinned_known_hosts(nodes, Path(directory) / "pins")
+            _REMOTE_ROOT = context.remote_root
+            coordinator = Path(__file__).resolve()
+            for node in nodes:
+                _verify_remote_directory(node, context.remote_root, mode=0o700)
+                remote_coordinator = context.remote_root + "/m1-run.py"
+                scp_to(node, coordinator, remote_coordinator)
+                result = ssh(node, ["python3", remote_coordinator, "__remote-provision", context.remote_root], check=False)
+                if result.returncode:
+                    raise RuntimeError(f"provisioning failed for {node.name}")
+                try:
+                    summary = json.loads(_stdout(result))
+                except (UnicodeError, json.JSONDecodeError) as exc:
+                    raise RuntimeError("invalid remote provisioning result") from exc
+                if summary.get("status") != "PASS":
+                    raise RuntimeError("remote provisioning did not pass")
+                append_evidence(evidence, {"event": "provision", "node": node.name, **summary}, repository)
+
+            boot_ids = _preflight_boot_ids(evidence, nodes)
+            for node in nodes:
+                target = {"node": node.name, "instance_id": node.instance_id,
+                          "provider_label": node.provider_label, "address": node.address,
+                          "host_key": node.host_key}
+                inspected = invoke_fence(fence_command, "inspect", target)
+                provider = inspected.get("evidence", {})
+                if not inspected.get("valid") or provider.get("state") != "running":
+                    raise RuntimeError("provider identity/state is not confirmed before reboot")
+                _require_live_identity(node, boot_ids[node.name])
+                _verify_reboot(node, boot_ids[node.name])
+                append_evidence(evidence, {"event": "reboot-mask-check", "node": node.name,
+                                           "status": "PASS", "services": "masked-and-inactive"}, repository)
+
+            fm1 = next(node for node in nodes if node.name == "fm1")
+            m0 = _copy_m0_source(fm1, context, repository)
+            work = context.remote_root + "/m0-work"
+            if ssh(fm1, ["mkdir", "-m", "700", "--", work], check=False).returncode:
+                raise RuntimeError("could not create fresh M0 work directory")
+            result = ssh(fm1, ["python3", m0 + "/run.py", "--trail", context.remote_root + "/bin/trail",
+                               "--litestream", context.remote_root + "/bin/litestream", "--work-root", work,
+                               "--scenario", "all", "--repeat", "3"], check=False)
+            if result.returncode:
+                raise RuntimeError("M0 Linux parity failed")
+            if ssh(fm1, ["python3", "-c", _M0_COLLECT_SCRIPT, work], check=False).returncode:
+                raise RuntimeError("could not collect M0 private evidence")
+            local_result = local_root / "fm1-m0-result.json"
+            local_logs = local_root / "fm1-m0-logs.tar.gz"
+            _copy_from_node(fm1, context.remote_root + "/m0-result.json", local_result, max_bytes=8 * 1024 * 1024)
+            _copy_from_node(fm1, context.remote_root + "/m0-logs.tar.gz", local_logs, max_bytes=128 * 1024 * 1024)
+            aggregate = json.loads(local_result.read_text(encoding="utf-8"))
+            if aggregate.get("status") != "PASS" or aggregate.get("repeat") != 3 or len(aggregate.get("results", [])) != 13:
+                raise RuntimeError("copied M0 aggregate is incomplete")
+            append_evidence(evidence, {
+                "event": "m0-linux-parity", "node": "fm1", "status": "PASS", "repeat": 3,
+                "result_sha256": hashlib.sha256(local_result.read_bytes()).hexdigest(),
+                "logs_sha256": hashlib.sha256(local_logs.read_bytes()).hexdigest(),
+            }, repository)
+    finally:
+        _SSH_KNOWN_HOSTS = None
+        _REMOTE_ROOT = None
+
+
 def _storage_matrix(nodes=None, context=None, evidence=None, repository=None, *, s3_env=None, cleanup=False) -> StorageStatus:
     """Collect the complete fresh-prefix matrix; capability mismatches produce NO-GO."""
     from concurrent.futures import ThreadPoolExecutor
@@ -1128,8 +1647,14 @@ def storage(nodes=None, context=None, evidence=None, repository=None, *, s3_env=
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "__remote-provision":
+        if len(argv) != 2:
+            raise ValueError("remote provision requires one root")
+        print(json.dumps(remote_provision(Path(argv[1])), sort_keys=True))
+        return 0
     parser = argparse.ArgumentParser()
-    parser.add_argument("scenario", choices=["preflight", "init-remote", "storage", "fence-inspect"])
+    parser.add_argument("scenario", choices=["preflight", "init-remote", "provision", "storage", "fence-inspect"])
     parser.add_argument("--inventory", type=Path)
     parser.add_argument("--work-root", type=Path, required=True)
     parser.add_argument("--linode-env", type=Path)
@@ -1180,11 +1705,18 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if result is StorageStatus.PASS else 2
     if args.inventory is None or args.linode_env is None:
         parser.error("--inventory and --linode-env are required")
+    if args.scenario == "provision" and args.fence_command is None:
+        parser.error("provision requires --fence-command for pre-reboot identity confirmation")
     nodes = load_inventory(args.inventory, repository)
     load_linode_env(args.linode_env, nodes, repository)
-    if args.scenario == "preflight":
+    if args.scenario in {"preflight", "provision"}:
         context = new_run_context(args.work_root, repository)
-        preflight(nodes, context, context.local_root / "evidence.jsonl", repository, inventory_path=args.inventory, linode_env=args.linode_env)
+        evidence = context.local_root / "evidence.jsonl"
+        preflight(nodes, context, evidence, repository, inventory_path=args.inventory, linode_env=args.linode_env)
+        if args.scenario == "provision":
+            init_remote(nodes, context, evidence, repository, inventory_path=args.inventory, linode_env=args.linode_env)
+            provision(nodes, context, evidence, repository, inventory_path=args.inventory,
+                      linode_env=args.linode_env, fence_command=args.fence_command)
     else:
         work_root = _absolute_no_symlinks(args.work_root)
         candidates = sorted((p for p in work_root.iterdir() if p.is_dir() and _RUN_ID.fullmatch(p.name) and (p / ".preflight-ok").is_file() and (p / ".preflight-handoff").is_file()), reverse=True)
