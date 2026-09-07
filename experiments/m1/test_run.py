@@ -177,8 +177,12 @@ class RemoteRootTests(unittest.TestCase):
     def test_creates_and_verifies_root(self):
         root = b"directory 0 0 700 " + self.ctx.remote_root.encode() + b"\n"
         def calls(n, argv, **kw):
-            if argv[0] == "stat" and argv[-1].endswith("qualification"): return self.base
-            if argv[0] == "stat": return subprocess.CompletedProcess([], 0, root)
+            if argv[0] == "stat":
+                path = argv[-1]
+                if path == self.ctx.remote_root: return subprocess.CompletedProcess([], 0, root)
+                if path == "/var/lib/hat-qualification": return subprocess.CompletedProcess([], 0, b"directory 0 0 700 /var/lib/hat-qualification\n")
+                return subprocess.CompletedProcess([], 0, ("directory 0 0 755 " + path + "\n").encode())
+            if argv[0] == "realpath": return subprocess.CompletedProcess([], 0, (argv[-1] + "\n").encode())
             return self.empty
         with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")), mock.patch("run.ssh", side_effect=calls) as call:
             ensure_remote_root(node(), self.ctx)
@@ -189,20 +193,38 @@ class RemoteRootTests(unittest.TestCase):
         with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")), mock.patch("run.ssh", return_value=bad):
             with self.assertRaises(RuntimeError): ensure_remote_root(node(), self.ctx)
 
+    def test_rejects_wrong_owner_and_mode_base(self):
+        from run import _verify_remote_directory
+        for metadata in (("directory", 100, 0, 0o700, "/var/lib/hat-qualification"), ("directory", 0, 0, 0o755, "/var/lib/hat-qualification")):
+            with mock.patch("run._remote_stat", return_value=metadata), mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")):
+                with self.assertRaises(RuntimeError): _verify_remote_directory(node(), "/var/lib/hat-qualification", mode=0o700)
+
+    def test_absent_base_is_bootstrapped_before_root(self):
+        root = b"directory 0 0 700 " + self.ctx.remote_root.encode() + b"\n"
+        missing = subprocess.CompletedProcess([], 1, b"")
+        def calls(n, argv, **kw):
+            if argv[0] == "stat" and argv[-1] == "/var/lib/hat-qualification": return missing
+            if argv[0] == "stat": return subprocess.CompletedProcess([], 0, root)
+            return self.empty
+        with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")), mock.patch("run._verify_remote_directory"), mock.patch("run.ssh", side_effect=calls) as call:
+            ensure_remote_root(node(), self.ctx)
+        mkdirs = [c.args[1] for c in call.call_args_list if c.args[1][0] == "mkdir"]
+        self.assertEqual(mkdirs[0][-1], "/var/lib/hat-qualification")
+        self.assertEqual(mkdirs[1][-1], self.ctx.remote_root)
+
     def test_existing_root_is_rejected_without_mkdir(self):
         existing = subprocess.CompletedProcess([], 1, b"")
         calls = [self.base, existing, subprocess.CompletedProcess([], 0, b"exists")]
-        with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")), mock.patch("run.ssh", side_effect=calls) as call:
+        with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")), mock.patch("run._verify_remote_directory"), mock.patch("run.ssh", side_effect=calls) as call:
             with self.assertRaises(RuntimeError): ensure_remote_root(node(), self.ctx)
         self.assertFalse(any(c.args[1][0] == "mkdir" for c in call.call_args_list))
 
     def test_failed_verification_removes_new_root(self):
         wrong = b"directory 0 0 755 " + self.ctx.remote_root.encode() + b"\n"
         def calls(n, argv, **kw):
-            if argv[0] == "stat" and argv[-1].endswith("qualification"): return self.base
             if argv[0] == "stat": return subprocess.CompletedProcess([], 0, wrong)
             return self.empty
-        with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")), mock.patch("run.ssh", side_effect=calls) as call:
+        with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")), mock.patch("run._verify_remote_directory"), mock.patch("run.ssh", side_effect=calls) as call:
             with self.assertRaises(RuntimeError): ensure_remote_root(node(), self.ctx)
         self.assertTrue(any(c.args[1][0] == "rmdir" for c in call.call_args_list))
 

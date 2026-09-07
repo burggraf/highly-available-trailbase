@@ -242,13 +242,34 @@ def _remote_stat(node: Node, path: str) -> tuple[str, int, int, int, str]:
         raise RuntimeError(f"invalid remote path metadata: {path}") from exc
 
 
+def _verify_remote_directory(node: Node, path: str, *, mode: int | None = None) -> None:
+    kind, uid, gid, actual_mode, name = _remote_stat(node, path)
+    if kind != "directory" or uid != 0 or gid != 0 or name != path or (actual_mode & 0o022):
+        raise RuntimeError(f"remote directory is not trusted: {path}")
+    if mode is not None and actual_mode != mode:
+        raise RuntimeError(f"remote directory has unsafe mode: {path}")
+    real = ssh(node, ["realpath", "-e", "--", path], check=False)
+    if real.returncode or _stdout(real).strip() != path:
+        raise RuntimeError(f"remote directory is not a real path: {path}")
+
+
 def ensure_remote_root(node: Node, context: RunContext) -> None:
     global _REMOTE_ROOT
     root = _context_root(context)
     base = "/var/lib/hat-qualification"
-    kind, uid, gid, mode, name = _remote_stat(node, base)
-    if kind != "directory" or uid != 0 or gid != 0 or mode & 0o022 or name != base:
-        raise RuntimeError("remote qualification base is not a trusted root-owned directory")
+    _verify_remote_directory(node, "/var")
+    _verify_remote_directory(node, "/var/lib")
+    base_result = ssh(node, ["stat", "-c", "%F %u %g %a %n", "--", base], check=False)
+    if base_result.returncode:
+        # Only an absent path may be bootstrapped; a dangling link is not absent.
+        absent = ssh(node, ["test", "!", "-e", base], check=False)
+        dangling = ssh(node, ["test", "!", "-L", base], check=False)
+        if absent.returncode or dangling.returncode:
+            raise RuntimeError("remote qualification base is missing or unsafe")
+        created_base = ssh(node, ["mkdir", "-m", "700", "--", base], check=False)
+        if created_base.returncode:
+            raise RuntimeError("cannot create remote qualification base")
+    _verify_remote_directory(node, base, mode=0o700)
     exists = ssh(node, ["test", "!", "-e", root], check=False)
     dangling = ssh(node, ["test", "!", "-L", root], check=False)
     if exists.returncode or dangling.returncode:
@@ -309,7 +330,7 @@ def scp_to(node: Node, source: Path, destination: str, *, check: bool = True, re
     real = ssh(node, ["realpath", "-e", "--", parent], check=False)
     if real.returncode or _stdout(real).strip() != parent:
         raise RuntimeError("SCP destination parent is not a real path under remote root")
-    if ssh(node, ["test", "!", "-L", "--", destination], check=False).returncode:
+    if ssh(node, ["test", "!", "-L", destination], check=False).returncode:
         raise RuntimeError("SCP destination is a symlink")
     return subprocess.run(
         ["scp", *_transport_options(), "--", str(source), f"{node.ssh}:{destination}"],
@@ -361,14 +382,17 @@ def _require_facts(node: Node, facts: dict[str, str]) -> None:
     if not node.hostname or facts["hostname"].strip() != node.hostname:
         raise RuntimeError(f"hostname mismatch for {node.name}")
     release = facts["release"]
-    if not re.search(r"(?m)^ID=ubuntu\s*$", release) or not re.search(r'(?m)^VERSION_ID="?24\.04"?\s*$', release):
+    ubuntu_ids = re.findall(r"(?m)^ID=([^\n]*)$", release)
+    versions = re.findall(r'(?m)^VERSION_ID="?([^"\n]+)"?\s*$', release)
+    if ubuntu_ids != ["ubuntu"] or versions != ["24.04"]:
         raise RuntimeError(f"unsupported Ubuntu release for {node.name}")
     boot_id = facts["boot_id"].strip()
     if not re.fullmatch(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}", boot_id):
         raise RuntimeError(f"invalid boot ID for {node.name}")
-    memory = re.search(r"(?m)^MemTotal:\s+(\d+)\s+kB\s*$", facts["memory"])
+    memory_rows = re.findall(r"(?m)^MemTotal:\s+(\d+)\s+kB\s*$", facts["memory"])
+    memory = memory_rows[0] if len(memory_rows) == 1 else None
     cpu = facts["cpu"].strip()
-    if not re.fullmatch(r"[1-9][0-9]*", cpu) or int(cpu) < 1 or not memory or int(memory.group(1)) < 512000:
+    if not re.fullmatch(r"[1-9][0-9]*", cpu) or int(cpu) < 1 or not memory or int(memory) < 512000:
         raise RuntimeError(f"insufficient resources for {node.name}")
     disk_rows = [line.split() for line in facts["disk"].splitlines() if line and not line.startswith("Filesystem")]
     if len(disk_rows) != 1 or len(disk_rows[0]) < 5 or not re.fullmatch(r"(?:[0-9]|[1-8][0-9]|90)%", disk_rows[0][4]):
