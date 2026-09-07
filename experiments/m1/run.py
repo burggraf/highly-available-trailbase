@@ -29,6 +29,7 @@ SSH_TIMEOUT = 60
 _SSH_KNOWN_HOSTS: Path | None = None
 _REMOTE_ROOT: str | None = None
 _FRESH_LOCAL_ROOTS: set[str] = set()
+_LOADED_SECRET_VALUES: set[str] = set()
 
 
 @dataclass(frozen=True)
@@ -355,52 +356,40 @@ def _remote_destination(destination: str) -> tuple[str, str]:
     return normalized, parent
 
 
-_REMOTE_COPY_SCRIPT = r'''import os, sys
-root, destination = sys.argv[1], sys.argv[2]
-if not destination.startswith(root + "/"):
-    raise SystemExit("destination outside root")
-parts = destination[len(root) + 1:].split("/")
-if not parts or any(not p or p in (".", "..") for p in parts):
-    raise SystemExit("invalid destination")
+_REMOTE_FINALIZE_SCRIPT = r'''import os, sys
+root, temporary, destination = sys.argv[1:]
+if not temporary.startswith(root + "/") or not destination.startswith(root + "/"):
+    raise SystemExit("path outside root")
+def parts(path):
+    value = path[len(root) + 1:].split("/")
+    if not value or any(not p or p in (".", "..") for p in value):
+        raise SystemExit("invalid path")
+    return value
 flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-def trusted_directory(fd, label):
+def trusted(fd):
     st = os.fstat(fd)
     if st.st_uid != 0 or st.st_gid != 0 or (st.st_mode & 0o777) != 0o700:
-        raise SystemExit("untrusted remote directory: " + label)
-fd = os.open(root, flags)
+        raise SystemExit("untrusted directory")
+def open_parent(path):
+    fd = os.open(root, flags); trusted(fd)
+    for part in parts(path)[:-1]:
+        child = os.open(part, flags, dir_fd=fd); trusted(child); os.close(fd); fd = child
+    return fd
+parent = open_parent(destination)
 try:
-    trusted_directory(fd, root)
-    for part in parts[:-1]:
-        child = os.open(part, flags, dir_fd=fd)
-        trusted_directory(child, part)
-        os.close(fd)
-        fd = child
-    name = parts[-1]
-    temp = "." + name + ".hat-copy-" + str(os.getpid())
-    out = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=fd)
+    temporary_name = parts(temporary)[-1]
+    destination_name = parts(destination)[-1]
+    os.stat(temporary_name, dir_fd=parent, follow_symlinks=False)
+    temporary_fd = os.open(temporary_name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent)
     try:
-        while True:
-            chunk = os.read(0, 1024 * 1024)
-            if not chunk:
-                break
-            view = memoryview(chunk)
-            while view:
-                written = os.write(out, view)
-                if written <= 0:
-                    raise OSError("short write")
-                view = view[written:]
-        os.fsync(out)
+        os.fsync(temporary_fd)
     finally:
-        os.close(out)
-    try:
-        os.link(temp, name, src_dir_fd=fd, dst_dir_fd=fd, follow_symlinks=False)
-    except Exception:
-        os.unlink(temp, dir_fd=fd)
-        raise
-    os.unlink(temp, dir_fd=fd)
-    os.fsync(fd)
+        os.close(temporary_fd)
+    os.link(temporary_name, destination_name, src_dir_fd=parent, dst_dir_fd=parent, follow_symlinks=False)
+    os.unlink(temporary_name, dir_fd=parent)
+    os.fsync(parent)
 finally:
-    os.close(fd)
+    os.close(parent)
 '''
 
 
@@ -410,14 +399,31 @@ def scp_to(node: Node, source: Path, destination: str, *, check: bool = True, re
     _outside_repository(source, repository)
     if not source.is_file() or source.is_symlink():
         raise ValueError("source must be a regular file")
-    destination, _ = _remote_destination(destination)
-    result = ssh(node, ["python3", "-c", _REMOTE_COPY_SCRIPT, _REMOTE_ROOT, destination], input=source.read_bytes(), check=False)
-    if check and result.returncode:
-        raise subprocess.CalledProcessError(result.returncode, ["ssh", node.ssh], result.stdout, result.stderr)
+    destination, parent = _remote_destination(destination)
+    temporary = parent + "/." + posixpath.basename(destination) + ".hat-copy-" + uuid.uuid4().hex
+    result = subprocess.run(
+        ["scp", *_transport_options(), "--", str(source), f"{node.ssh}:{temporary}"],
+        capture_output=True, check=False, timeout=SSH_TIMEOUT,
+    )
+    if not isinstance(result.returncode, int) or result.returncode == 0:
+        result = ssh(node, ["python3", "-c", _REMOTE_FINALIZE_SCRIPT, _REMOTE_ROOT, temporary, destination], check=False)
+    if isinstance(result.returncode, int) and result.returncode:
+        ssh(node, ["rm", "-f", "--", temporary], check=False)
+        if check:
+            raise subprocess.CalledProcessError(result.returncode, ["scp", node.ssh], result.stdout, result.stderr)
     return result
 
 
+def register_secret(value: str) -> None:
+    if value:
+        _LOADED_SECRET_VALUES.add(value)
+
+
 def redact(value: Any) -> Any:
+    if isinstance(value, str):
+        for secret in sorted(_LOADED_SECRET_VALUES, key=len, reverse=True):
+            value = value.replace(secret, "[REDACTED]")
+        return value
     if isinstance(value, dict):
         return {key: "[REDACTED]" if _SECRET.search(str(key)) else redact(item) for key, item in value.items()}
     if isinstance(value, list):
@@ -503,6 +509,7 @@ def load_linode_env(path: Path, nodes: list[Node] | None = None, repository: Pat
         if token:
             if token_seen:
                 raise ValueError("duplicate Linode token")
+            register_secret(next(group for group in token.groups() if group is not None))
             token_seen = True
         elif ident:
             key = ident.group(1)
