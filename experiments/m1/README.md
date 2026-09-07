@@ -47,3 +47,18 @@ python3 experiments/m1/run.py storage \
 ```
 
 Each run publishes its local evidence path (and no credentials) to the mode-`0600` pointer `~/.config/hat/m1-latest-storage-evidence`.
+
+## Provider-neutral fencing contract
+
+The operator-owned executable receives `inspect`, `power-off`, or `power-on` plus a temporary JSON target path. It must write exactly one JSON object to stdout. Evidence is accepted only when `action`, the complete `target`, request ID/time, completion time, terminal `state`, and strictly ordered observations are present. Promotion accepts only a fresh exact-target `power-off` completion whose terminal state is `offline`; request acceptance, timeout, malformed output, duplicate observations, identity mismatch, and `running` state fail closed.
+
+The optional non-destructive check validates every inventory target without requesting a power change:
+
+```sh
+python3 experiments/m1/run.py fence-inspect \
+  --inventory ~/.config/hat/m1-inventory.json \
+  --fence-command ~/.config/hat/m1-fence-linode \
+  --work-root /tmp/hat-m1
+```
+
+The Linode adapter is intentionally operator-private (`~/.config/hat/m1-fence-linode`), maps only the three IDs in the private env file, and never places the token in arguments or output.

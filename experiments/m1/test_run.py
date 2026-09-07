@@ -11,6 +11,7 @@ from unittest import mock
 
 from run import (
     Node, RunContext, _FINGERPRINT, _require_facts, _known_host_fingerprint,
+    invoke_fence, validate_fence_evidence, promotion_allowed,
     append_evidence, build_pinned_known_hosts, ensure_remote_root, init_remote,
     load_inventory, load_linode_env, new_run_context, require_private_file,
     redact, scp_to, ssh, storage, validate_inventory, _absolute_no_symlinks,
@@ -18,6 +19,57 @@ from run import (
 )
 
 FP = "SHA256:" + "A" * 43
+
+
+class FenceContractTests(unittest.TestCase):
+    def target(self):
+        return {"cluster": "test", "node": "old", "boot": "boot-1"}
+
+    def fake(self, directory, payload, *, exit_code=0, delay=0):
+        path = directory / "fake-fence"
+        path.write_text("#!/usr/bin/env python3\nimport json,sys,time\n"
+                        f"time.sleep({delay})\n"
+                        f"print({json.dumps(json.dumps(payload))})\n"
+                        f"sys.exit({exit_code})\n")
+        path.chmod(0o700)
+        return path
+
+    def evidence(self, target, *, action="power-off", state="offline"):
+        return {"action": action, "target": target, "request": {"id": "req-1", "time": "2026-01-01T00:00:00Z"},
+                "completion": {"time": "2026-01-01T00:00:01Z"}, "state": state,
+                "observations": [{"time": "2026-01-01T00:00:01Z", "state": state}]}
+
+    def test_only_fresh_exact_completed_isolation_promotes(self):
+        target = self.target()
+        valid = self.evidence(target)
+        self.assertTrue(validate_fence_evidence(valid, target, "power-off"))
+        self.assertTrue(promotion_allowed(valid, target))
+        for bad in (self.evidence(target, state="running"), self.evidence({**target, "boot": "new"}),
+                    {**valid, "completion": None}, {**valid, "request": {"id": "req-1"}}):
+            self.assertFalse(promotion_allowed(bad, target))
+
+    def test_invoke_rejects_malformed_failed_timeout_and_duplicate(self):
+        with tempfile.TemporaryDirectory() as parent:
+            directory, target = Path(parent), self.target()
+            cases = [("malformed", "not-json", 0, 0), ("failed", self.evidence(target), 1, 0),
+                     ("timeout", self.evidence(target), 0, 1), ("no-op", self.evidence(target, state="running"), 0, 0),
+                     ("mismatch", self.evidence({**target, "node": "other"}), 0, 0),
+                     ("delayed", self.evidence(target), 0, 0)]
+            for _, payload, exit_code, delay in cases:
+                path = directory / "fake"
+                if isinstance(payload, str):
+                    path.write_text("#!/bin/sh\nprintf 'not-json\\n'")
+                else:
+                    path = self.fake(directory, payload, exit_code=exit_code, delay=delay)
+                path.chmod(0o700)
+                result = invoke_fence(path, "power-off", target, timeout=0.05 if delay else 2)
+                expected = payload != "not-json" and exit_code == 0 and delay == 0 and payload.get("target") == target and payload.get("state") == "offline"
+                self.assertEqual(result["valid"], expected)
+            already_offline = self.evidence(target)
+            self.assertTrue(promotion_allowed(already_offline, target))
+            duplicate = self.evidence(target)
+            duplicate["observations"].append(duplicate["observations"][0])
+            self.assertFalse(promotion_allowed(duplicate, target))
 
 def inventory(names=("a", "b", "c")):
     return {"nodes": [

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime
 import hashlib
 import json
 import os
@@ -9,6 +10,7 @@ import posixpath
 import re
 import shlex
 import stat
+import sys
 import subprocess
 import tempfile
 import time
@@ -946,6 +948,90 @@ def _storage_matrix(nodes=None, context=None, evidence=None, repository=None, *,
     return result
 
 
+def _fence_time(value: Any) -> datetime.datetime:
+    if not isinstance(value, str):
+        raise ValueError("missing fence timestamp")
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("invalid fence timestamp") from exc
+    if parsed.tzinfo is None:
+        raise ValueError("fence timestamp must include timezone")
+    return parsed
+
+
+def validate_fence_evidence(evidence: Any, target: dict[str, Any], action: str) -> bool:
+    """Accept only one exact, completed provider observation; everything else is unknown."""
+    if action not in {"inspect", "power-off", "power-on"} or not isinstance(evidence, dict):
+        return False
+    required = {"action", "target", "request", "completion", "state", "observations"}
+    if set(evidence) != required or evidence["action"] != action or evidence["target"] != target:
+        return False
+    request = evidence["request"]
+    completion = evidence["completion"]
+    observations = evidence["observations"]
+    if (not isinstance(request, dict) or set(request) != {"id", "time"} or
+            not isinstance(request["id"], str) or not request["id"] or
+            not isinstance(completion, dict) or set(completion) != {"time"} or
+            not isinstance(observations, list) or not observations):
+        return False
+    try:
+        request_time = _fence_time(request["time"])
+        completion_time = _fence_time(completion["time"])
+    except ValueError:
+        return False
+    if completion_time < request_time:
+        return False
+    seen: set[tuple[str, str]] = set()
+    previous = None
+    for observation in observations:
+        if not isinstance(observation, dict) or set(observation) != {"time", "state"}:
+            return False
+        if not isinstance(observation["state"], str):
+            return False
+        try:
+            observed_at = _fence_time(observation["time"])
+        except ValueError:
+            return False
+        key = (observation["time"], observation["state"])
+        if key in seen or (previous is not None and observed_at <= previous):
+            return False
+        seen.add(key)
+        previous = observed_at
+    terminal = {"power-off": "offline", "power-on": "running"}.get(action)
+    return (terminal is None or evidence["state"] == terminal) and evidence["state"] == observations[-1]["state"] and previous >= completion_time
+
+
+def promotion_allowed(evidence: Any, target: dict[str, Any]) -> bool:
+    return validate_fence_evidence(evidence, target, "power-off")
+
+
+def invoke_fence(command: Path, action: str, target: dict[str, Any], *, timeout: float = 60.0) -> dict[str, Any]:
+    """Invoke the operator-owned executable without a shell or secret-bearing arguments."""
+    if action not in {"inspect", "power-off", "power-on"} or not isinstance(target, dict) or not target:
+        return {"valid": False, "reason": "invalid request"}
+    try:
+        if command.is_symlink() or not command.is_file() or not os.access(command, os.X_OK):
+            return {"valid": False, "reason": "fence command is not executable"}
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="hat-fence-", suffix=".json", delete=False) as target_file:
+            json.dump(target, target_file, sort_keys=True, separators=(",", ":"))
+            target_path = Path(target_file.name)
+        os.chmod(target_path, 0o600)
+        try:
+            result = subprocess.run([str(command), action, str(target_path)], capture_output=True, text=True, timeout=timeout, check=False)
+        finally:
+            target_path.unlink(missing_ok=True)
+        if result.returncode != 0 or not result.stdout.strip() or result.stdout.count("\n") > 1:
+            return {"valid": False, "reason": "fence command failed or returned non-single JSON"}
+        try:
+            evidence = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return {"valid": False, "reason": "malformed fence evidence"}
+        return {"valid": validate_fence_evidence(evidence, target, action), "evidence": evidence}
+    except (OSError, subprocess.TimeoutExpired):
+        return {"valid": False, "reason": "fence outcome unknown"}
+
+
 def storage(nodes=None, context=None, evidence=None, repository=None, *, s3_env=None, cleanup=False) -> StorageStatus:
     """Return a bounded NO-GO and preserve evidence when a provider operation raises."""
     try:
@@ -962,14 +1048,27 @@ def storage(nodes=None, context=None, evidence=None, repository=None, *, s3_env=
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("scenario", choices=["preflight", "init-remote", "storage"])
+    parser.add_argument("scenario", choices=["preflight", "init-remote", "storage", "fence-inspect"])
     parser.add_argument("--inventory", type=Path)
     parser.add_argument("--work-root", type=Path, required=True)
     parser.add_argument("--linode-env", type=Path)
     parser.add_argument("--s3-env", type=Path)
+    parser.add_argument("--fence-command", type=Path)
     parser.add_argument("--cleanup", action="store_true", help="delete fresh-prefix objects only after a passing matrix")
     args = parser.parse_args(argv)
     repository = Path(__file__).resolve().parents[2]
+    if args.scenario == "fence-inspect":
+        if args.inventory is None or args.fence_command is None:
+            parser.error("--inventory and --fence-command are required")
+        nodes = load_inventory(args.inventory, repository)
+        for node in nodes:
+            target = {"node": node.name, "instance_id": node.instance_id}
+            result = invoke_fence(args.fence_command, "inspect", target)
+            if not result.get("valid"):
+                print(f"fence inspect failed for {node.name}", file=sys.stderr)
+                return 2
+            print(f"fence inspect passed for {node.name}")
+        return 0
     if args.scenario == "storage":
         context = new_run_context(args.work_root, repository)
         evidence = context.local_root / "evidence.jsonl"
