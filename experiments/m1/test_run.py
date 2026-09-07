@@ -256,8 +256,8 @@ class RemoteRootTests(unittest.TestCase):
         self.assertTrue(any(c.args[1][0] == "rmdir" for c in call.call_args_list))
 
     def test_init_remote_builds_pins_independently_and_clears_state(self):
-        with mock.patch("run.build_pinned_known_hosts", return_value=Path("/tmp/k")) as pins, mock.patch("run.ensure_remote_root") as init:
-            init_remote([node("a"), node("b"), node("c")], self.ctx)
+        with mock.patch("run.build_pinned_known_hosts", return_value=Path("/tmp/k")) as pins, mock.patch("run.ensure_remote_root") as init, mock.patch("run._validate_local_context", return_value=self.ctx.local_root), mock.patch("run._require_preflight_marker"):
+            init_remote([Node("fm1", "root@a", 1, "a", "a", "SHA256:" + "A" * 43, "a"), Node("fm2", "root@b", 2, "b", "b", "SHA256:" + "B" * 43, "b"), Node("fm3", "root@c", 3, "c", "c", "SHA256:" + "C" * 43, "c")], self.ctx)
         self.assertEqual(pins.call_count, 1); self.assertEqual(init.call_count, 3)
 
 class FactsTests(unittest.TestCase):
@@ -315,8 +315,22 @@ class PreflightEvidenceTests(unittest.TestCase):
             bad = RunContext("20260907T010203Z-0123456789", repo, "/var/lib/hat-qualification/20260907T010203Z-0123456789")
             with self.assertRaises(ValueError): _preflight_impl([], bad, repo / "evidence.jsonl", repo)
 
+    def test_init_rejects_manual_context_and_evidence_escape(self):
+        from run import init_remote
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "root"; root.mkdir(mode=0o700)
+            bad = RunContext("20260907T010203Z-0123456789", root, "/var/lib/hat-qualification/20260907T010203Z-0123456789")
+            nodes = [Node("fm1", "root@a", 1, "a", "a", "SHA256:" + "A" * 43, "a"), Node("fm2", "root@b", 2, "b", "b", "SHA256:" + "B" * 43, "b"), Node("fm3", "root@c", 3, "c", "c", "SHA256:" + "C" * 43, "c")]
+            with self.assertRaises(ValueError): init_remote(nodes, bad, root / "evidence.jsonl")
+            ctx = new_run_context(Path(d))
+            marker = ctx.local_root / ".preflight-ok"; marker.write_text(ctx.run_id + "\\n"); marker.chmod(0o600)
+            with self.assertRaises(ValueError): init_remote(nodes, ctx, Path(d) / "outside.jsonl")
+            marker.unlink()
+            with mock.patch("run.build_pinned_known_hosts", return_value=Path(d) / "known"):
+                with self.assertRaises(ValueError): init_remote(nodes, ctx, ctx.local_root / "evidence.jsonl")
+
     def test_preflight_is_read_only_and_writes_fsynced_redacted_evidence(self):
-        n = [Node("a", "root@a", 1, "a", "a", FP, "a"), Node("b", "root@b", 2, "b", "b", FP, "b"), Node("c", "root@c", 3, "c", "c", FP, "c")]
+        n = [Node("fm1", "root@fm1", 1, "fm1", "fm1", "SHA256:" + "A" * 43, "fm1"), Node("fm2", "root@fm2", 2, "fm2", "fm2", "SHA256:" + "B" * 43, "fm2"), Node("fm3", "root@fm3", 3, "fm3", "fm3", "SHA256:" + "C" * 43, "fm3")]
         with tempfile.TemporaryDirectory() as d:
             ctx = new_run_context(Path(d))
             results = [subprocess.CompletedProcess([], 0, facts(x)["hostname"].encode()) for x in ("a", "b", "c")]

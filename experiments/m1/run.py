@@ -450,6 +450,17 @@ def load_linode_env(path: Path, nodes: list[Node] | None = None, repository: Pat
     return ids
 
 
+def _validate_nodes(nodes: list[Node]) -> None:
+    if not isinstance(nodes, list) or len(nodes) != 3 or {node.name for node in nodes} != {"fm1", "fm2", "fm3"}:
+        raise ValueError("nodes must be exactly fm1, fm2, and fm3")
+    if any(not isinstance(node, Node) or not node.hostname for node in nodes):
+        raise ValueError("invalid node prerequisites")
+    for field in ("ssh", "instance_id", "provider_label", "address", "host_key"):
+        values = [getattr(node, field) for node in nodes]
+        if len(set(values)) != 3:
+            raise ValueError(f"duplicate node {field}")
+
+
 def _validate_local_context(context: RunContext, repository: Path | None = None) -> Path:
     local_root = _absolute_no_symlinks(context.local_root)
     _outside_repository(local_root, repository or Path(__file__).resolve().parents[2])
@@ -465,14 +476,45 @@ def _validate_local_context(context: RunContext, repository: Path | None = None)
     return local_root
 
 
-def _preflight_impl(nodes: list[Node], context: RunContext, evidence: Path, repository: Path | None = None) -> None:
-    global _SSH_KNOWN_HOSTS
-    local_root = _validate_local_context(context, repository)
+def _validate_evidence_path(evidence: Path, local_root: Path, repository: Path | None = None) -> Path:
     evidence = _absolute_no_symlinks(evidence)
+    _outside_repository(evidence, repository or Path(__file__).resolve().parents[2])
     try:
         evidence.relative_to(local_root)
     except ValueError as exc:
         raise ValueError("evidence must be below the fresh local root") from exc
+    return evidence
+
+
+def _preflight_marker(context: RunContext) -> Path:
+    return context.local_root / ".preflight-ok"
+
+
+def _write_preflight_marker(context: RunContext) -> None:
+    marker = _preflight_marker(context)
+    fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        os.fchmod(fd, 0o600)
+        os.write(fd, (context.run_id + "\\n").encode("ascii"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _require_preflight_marker(context: RunContext) -> None:
+    marker = _preflight_marker(context)
+    if marker.is_symlink() or not marker.is_file():
+        raise ValueError("successful preflight marker is required")
+    st = marker.stat()
+    if st.st_uid != os.getuid() or (st.st_mode & 0o777) != 0o600 or marker.read_text(encoding="ascii") != context.run_id + "\\n":
+        raise ValueError("invalid successful preflight marker")
+
+
+def _preflight_impl(nodes: list[Node], context: RunContext, evidence: Path, repository: Path | None = None) -> None:
+    global _SSH_KNOWN_HOSTS
+    _validate_nodes(nodes)
+    local_root = _validate_local_context(context, repository)
+    evidence = _validate_evidence_path(evidence, local_root, repository)
     with tempfile.TemporaryDirectory(prefix="hat-known-hosts-") as directory:
         _SSH_KNOWN_HOSTS = build_pinned_known_hosts(nodes, Path(directory) / "pins")
         commands = {
@@ -491,7 +533,8 @@ def _preflight_impl(nodes: list[Node], context: RunContext, evidence: Path, repo
                 facts[label] = _stdout(result)
             _require_facts(node, facts)
             facts["host_key"] = node.host_key
-            append_evidence(evidence, {"event": "preflight", "facts": facts})
+            append_evidence(evidence, {"event": "preflight", "facts": facts}, repository)
+        _write_preflight_marker(context)
 
 
 def preflight(nodes: list[Node], context: RunContext, evidence: Path, repository: Path | None = None) -> None:
@@ -503,16 +546,20 @@ def preflight(nodes: list[Node], context: RunContext, evidence: Path, repository
         _REMOTE_ROOT = None
 
 
-def init_remote(nodes: list[Node], context: RunContext, evidence: Path | None = None) -> None:
-    """Mutating phase: pin keys independently, then atomically create each root."""
+def init_remote(nodes: list[Node], context: RunContext, evidence: Path | None = None, repository: Path | None = None) -> None:
+    """Mutating phase: require a successful preflight, then create each root."""
     global _SSH_KNOWN_HOSTS, _REMOTE_ROOT
+    _validate_nodes(nodes)
+    local_root = _validate_local_context(context, repository)
+    _require_preflight_marker(context)
+    evidence = _validate_evidence_path(evidence or (local_root / "evidence.jsonl"), local_root, repository)
     try:
         with tempfile.TemporaryDirectory(prefix="hat-known-hosts-") as directory:
             _SSH_KNOWN_HOSTS = build_pinned_known_hosts(nodes, Path(directory) / "pins")
             for node in nodes:
                 ensure_remote_root(node, context)
                 if evidence is not None:
-                    append_evidence(evidence, {"event": "init-remote", "node": node.name, "remote_root": context.remote_root})
+                    append_evidence(evidence, {"event": "init-remote", "node": node.name, "remote_root": context.remote_root}, repository)
     finally:
         _SSH_KNOWN_HOSTS = None
         _REMOTE_ROOT = None
@@ -528,12 +575,18 @@ def main(argv: list[str] | None = None) -> int:
     repository = Path(__file__).resolve().parents[2]
     nodes = load_inventory(args.inventory, repository)
     load_linode_env(args.linode_env, nodes, repository)
-    context = new_run_context(args.work_root, repository)
-    evidence = context.local_root / "evidence.jsonl"
     if args.scenario == "preflight":
-        preflight(nodes, context, evidence)
+        context = new_run_context(args.work_root, repository)
+        preflight(nodes, context, context.local_root / "evidence.jsonl", repository)
     else:
-        init_remote(nodes, context, evidence)
+        work_root = _absolute_no_symlinks(args.work_root)
+        candidates = sorted((p for p in work_root.iterdir() if p.is_dir() and _RUN_ID.fullmatch(p.name) and (p / ".preflight-ok").is_file()), reverse=True)
+        if not candidates:
+            raise ValueError("init-remote requires a successful preflight run")
+        local_root = candidates[0]
+        context = RunContext(local_root.name, local_root, f"/var/lib/hat-qualification/{local_root.name}")
+        _FRESH_LOCAL_ROOTS.add(str(local_root))
+        init_remote(nodes, context, local_root / "evidence.jsonl", repository)
     print(f"{args.scenario} passed: {len(nodes)} nodes")
     return 0
 
