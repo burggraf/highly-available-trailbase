@@ -30,6 +30,8 @@ from run import (
     sqlite_rows,
     outcomes,
     outcome_passes,
+    stop_gracefully,
+    CorrectnessFailure,
 )
 
 
@@ -150,6 +152,21 @@ class PromotionTests(unittest.TestCase):
 
 
 class ProcessOwnershipTests(unittest.TestCase):
+    def test_graceful_stop_fails_if_sigkill_is_required(self):
+        process = subprocess.Popen(
+            ["python3", "-c", "import signal,time; signal.signal(signal.SIGTERM, lambda *_: None); time.sleep(30)"],
+            start_new_session=True,
+        )
+        try:
+            time.sleep(0.05)
+            with self.assertRaises(CorrectnessFailure):
+                stop_gracefully([OwnedProcess(process, "stubborn")], timeout=0.05)
+            self.assertIsNotNone(process.poll())
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+
     def test_only_owned_processes_are_stopped(self):
         process = subprocess.Popen(
             ["python3", "-c", "import time; time.sleep(30)"],

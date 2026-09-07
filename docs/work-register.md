@@ -1,6 +1,6 @@
 # Work and issue register
 
-Status: planning backlog. **Nothing below is implemented or experimentally qualified.** IDs are stable document references, not GitHub issue numbers. Priorities: P0 = safety/feasibility blocker; P1 = required for a useful supported release; P2 = optional/later. “Proposed” is a decision to discuss, not an accepted implementation.
+Status: planning backlog with one bounded local experiment completed. The [M0 local report](reports/m0-local-failover.md) is evidence only for its explicit scope; it does not close the broader issues below. IDs are stable document references, not GitHub issue numbers. Priorities: P0 = safety/feasibility blocker; P1 = required for a useful supported release; P2 = optional/later. “Proposed” is a decision to discuss, not an accepted implementation.
 
 ## 1. Concrete build inventory
 
@@ -79,14 +79,14 @@ Prefer one small supervisor executable plus generated config and tests. Choose i
 | HAT-042 | P1 M4 | Replication cost/performance | Measure polling/list/GET/PUT, compaction, snapshots, per-epoch reseeds and egress; cost budget plus sustainable lag limits |
 | HAT-043 | P2 Later | Asset-release assistance, not distribution | Optional manifest/hash verification and rollout preflight; developer retains deployment responsibility |
 | HAT-044 | P1 M1 | Configuration/operator trust boundary | Validate names/paths/URLs, protect control API, audit privileged actions, reject conflicting inventories and unsafe force flags |
-| HAT-045 | P1 Before distribution | Licensing and supply chain | Select repo license; record upstream obligations, binary provenance/checksums, update/security process; do not choose a license silently |
+| HAT-045 | P1 Before distribution | Apache-2.0 selected by the owner; supply-chain work continues | Repo license recorded; M0 binary provenance/checksums documented; update/security process remains to be defined |
 | HAT-046 | P2 Later | Multi-region or zero-RPO redesign | Separate ADR and proof if requirements exceed asynchronous single-authority architecture |
 | HAT-047 | P1 M1 | Health/readiness contract | Separate agent liveness, primary write readiness, reader freshness and HA redundancy; safe alerts/restarts avoid promotion storms |
 | HAT-048 | P1 M0 | Complete DB inventory, including latent/new state | Do not rely only on built-in backup inventory; detect future `queue.db`, runtime-opened DBs and attachments; undeclared mutable state fails qualification |
 
 ## 5. First experiments, in dependency order
 
-**Next planned slice:** [M0 local follow-to-writer execution plan](plans/2026-09-07-m0-local-failover-execution-plan.md). It specifies the local three-database fixture, manual promotion, abrupt-loss measurements and new-epoch reseeding. It is not yet executed and does not complete the broader M0, S3/R2 or fencing gates below.
+**Completed bounded slice:** the [M0 local follow-to-writer plan](plans/2026-09-07-m0-local-failover-execution-plan.md) was executed on macOS ARM64; see the [sanitized report](reports/m0-local-failover.md) and [runnable harness](../experiments/m0/README.md). It supplies limited evidence for HAT-001, HAT-008, HAT-010, HAT-011, HAT-012, HAT-014, HAT-017, HAT-021 and HAT-022 without closing them. Linux, S3/R2, host failure, external fencing, interrupted page application and production behavior remain unqualified.
 
 1. **Reproducible baseline:** retrieve binaries, checksums and `--help`; initialize an isolated TrailBase fixture with main/session/attached DBs, auth, file columns, migrations, jobs, and a custom mutating GET. Record actual files/SQLite versions and writes.
 2. **Follower alone:** replicate and continuously restore each required DB with TrailBase stopped on the standby. Verify positions, checksums, fresh/idle behavior, restart, missing history, genuine kill mid-apply, corruption, shrink, and large DB recovery.

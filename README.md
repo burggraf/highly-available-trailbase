@@ -1,13 +1,14 @@
 # Highly Available TrailBase (HAT)
 
-A **planning-stage** project for a single-writer [TrailBase](https://github.com/trailbaseio/trailbase) cluster, using [Litestream](https://github.com/benbjohnson/litestream) continuous backup and continuous restore through S3-compatible object storage.
+An early-stage project for a single-writer [TrailBase](https://github.com/trailbaseio/trailbase) cluster, using [Litestream](https://github.com/benbjohnson/litestream) continuous backup and continuous restore through S3-compatible object storage.
 
-**No HA implementation or production-ready deployment is provided yet.** The documents describe the intended system, feasibility gates, and work required—not capabilities that HAT already has.
+**No production-ready HA deployment is provided.** A bounded local qualification harness now exists; the remaining documents describe the intended system, feasibility gates, and work required.
 
 ## Start here
 
 - [Master plan](docs/plans/2026-09-07-master-plan.md): goals, decisions, alternatives, milestones, and questions.
-- [M0 local experiment execution plan](docs/plans/2026-09-07-m0-local-failover-execution-plan.md): concrete tasks and checks for manual follow-to-writer promotion; not yet executed.
+- [M0 local experiment](experiments/m0/README.md) and [result report](docs/reports/m0-local-failover.md): runnable local follow-to-writer qualification and sanitized results.
+- [M0 execution plan](docs/plans/2026-09-07-m0-local-failover-execution-plan.md): the implemented task/check specification.
 - [Upstream findings](docs/upstream-findings.md): version-pinned evidence and important limitations.
 - [Architecture and failover protocol](docs/architecture.md): roles, fencing, replication history, promotion, and recovery.
 - [TrailBase state and application behavior](docs/trailbase-state.md): databases, authentication, storage, realtime, and jobs.
@@ -30,4 +31,6 @@ Important qualifications:
 - Multiple database files do not acquire a shared transactional restore point merely by using the same bucket.
 - TrailBase v0.33.11 opens databases writable and performs startup writes. A data-hot standby can follow with TrailBase stopped; a service-hot, query-serving standby needs upstream read-only support or a separately approved design.
 
-Research baseline: **2026-09-07**, TrailBase **v0.33.11**, Litestream **v0.5.17**. Recheck upstream before implementation and pin tested binaries rather than deploying a moving `latest` tag.
+Qualification baseline: **2026-09-07**, TrailBase **v0.33.11**, Litestream **v0.5.17**. Recheck upstream before further implementation and pin tested binaries rather than deploying a moving `latest` tag.
+
+Licensed under the [Apache License 2.0](LICENSE).

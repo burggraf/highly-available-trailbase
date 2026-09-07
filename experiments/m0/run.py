@@ -185,9 +185,22 @@ def validate_epoch_paths(old: dict[str, Path], new: dict[str, Path]) -> None:
         raise ValueError("epoch paths must be unique and non-aliased")
 
 
-def promote_candidate(children: list[OwnedProcess], databases: list[Path], start):
+def promote_candidate(children: list[OwnedProcess], databases: list[Path], start, *,
+                      txid_paths: list[Path] | None = None,
+                      follower_events: list[dict[str, object]] | None = None,
+                      epoch_paths: tuple[dict[str, Path], dict[str, Path]] | None = None,
+                      validator=None, follower_failures: list[str] | None = None):
     require_stopped(children)
     require_files(databases)
+    if follower_failures:
+        raise RuntimeError("follower lifecycle failed: " + ", ".join(follower_failures))
+    for path in txid_paths or []:
+        read_txid_sidecar(path)
+    promotion_error_gate(follower_events or [])
+    if epoch_paths:
+        validate_epoch_paths(*epoch_paths)
+    if validator:
+        validator()
     return start()
 
 
@@ -204,6 +217,24 @@ def kill_owned(child: OwnedProcess) -> tuple[int, int]:
     os.killpg(child.process.pid, signal.SIGKILL)
     child.process.wait()
     return sent, time.monotonic_ns()
+
+
+def stop_gracefully(children: list[OwnedProcess], timeout: float = 10.0) -> list[dict[str, object]]:
+    evidence = []
+    for child in children:
+        if child.process.poll() is not None:
+            raise CorrectnessFailure(f"{child.role} exited before graceful stop")
+        sent = time.monotonic_ns()
+        os.killpg(child.process.pid, signal.SIGTERM)
+        try:
+            child.process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            os.killpg(child.process.pid, signal.SIGKILL)
+            child.process.wait()
+            raise CorrectnessFailure(f"{child.role} required SIGKILL during graceful stop")
+        evidence.append({"role": child.role, "signal": "SIGTERM", "sent_ns": sent,
+                         "exit_ns": time.monotonic_ns(), "returncode": child.process.returncode})
+    return evidence
 
 
 def stop_owned(children: list[OwnedProcess], timeout: float = 10.0) -> None:
@@ -287,6 +318,7 @@ def owned_process(argv: list[str], role: str, cwd: Path, log_path: Path) -> Owne
         close_fds=True,
         env={"PATH": os.environ.get("PATH", ""), "PYTHONUNBUFFERED": "1"},
     )
+    append_ledger(cwd / "commands.jsonl", {"event": "spawn", "role": role, "argv": argv, "pid": process.pid})
     return OwnedProcess(process, role, log_path)
 
 
@@ -409,8 +441,10 @@ def write_litestream_config(root: Path, source: Path, epoch: str = "e1") -> tupl
 
 
 def sync_database(litestream: Path, socket_path: Path, database: Path) -> dict[str, object]:
+    argv = [str(litestream), "sync", "-socket", str(socket_path), "-wait", "-json", str(database)]
+    append_ledger(socket_path.parent / "commands.jsonl", {"event": "sync", "argv": argv, "database": database.name})
     completed = subprocess.run(
-        [str(litestream), "sync", "-socket", str(socket_path), "-wait", "-json", str(database)],
+        argv,
         capture_output=True, text=True, timeout=60,
     )
     if completed.returncode:
@@ -544,11 +578,20 @@ def run_follow(trail: Path, litestream: Path, root: Path) -> int:
             for index in range(start, end):
                 for api, prefix, offset in (("main_ops", "main", 0), ("aux_ops", "aux", 100000)):
                     row_id = offset + index
+                    op_key = f"e1-{prefix}-{index:06d}"
+                    submit_ns = time.monotonic_ns()
                     status, created = http_json("POST", f"{base}/api/records/v1/{api}", {
-                        "id": row_id, "op_key": f"e1-{prefix}-{index:06d}", "payload": payload,
+                        "id": row_id, "op_key": op_key, "payload": payload,
                     }, token)
+                    complete_ns = time.monotonic_ns()
                     if status not in (200, 201) or not isinstance(created, dict) or created.get("ids") != [str(row_id)]:
                         raise RuntimeError(f"measured write failed for {api}/{row_id}: {status} {created}")
+                    append_ledger(root / "operations.jsonl", {
+                        "db": prefix, "epoch": "e1", "op_key": op_key,
+                        "payload_sha256": hashlib.sha256(payload.encode()).hexdigest(),
+                        "submit_ns": submit_ns, "complete_ns": complete_ns,
+                        "response_status": status, "outcome": "acknowledged",
+                    })
             for name in ("main", "aux"):
                 observed = normalize_txid(sync_database(litestream, socket_path, paths[name])["replica_txid"])
                 if observed <= business_positions[name]:
@@ -581,14 +624,14 @@ def run_follow(trail: Path, litestream: Path, root: Path) -> int:
         quiesce_wall_ns = time.time_ns()
         if trail_child.process.poll() is not None:
             raise RuntimeError("TrailBase exited before intentional shutdown")
-        stop_owned([trail_child])
+        source_stop_evidence = stop_gracefully([trail_child])
         require_stopped([trail_child])
         for name, database in paths.items():
             synced = sync_database(litestream, socket_path, database)
             final[name] = normalize_txid(synced["replica_txid"])
         if replicator.process.poll() is not None:
             raise RuntimeError("replicator exited before intentional shutdown")
-        stop_owned([replicator])
+        source_stop_evidence.extend(stop_gracefully([replicator]))
         require_stopped([replicator])
         inventory = backup_inventory(root / "backup" / "e1")
         oracle = root / "oracle" / "e1"
@@ -658,7 +701,7 @@ def run_follow(trail: Path, litestream: Path, root: Path) -> int:
             "final_sync_txid": final, "selected_txid": selected,
             "logical_comparison": comparisons, "rows_per_business_db": 100,
             "payload_bytes": len(payload), "structural_check": "CHECK expressions not evaluated",
-            "quiesce_wall_ns": quiesce_wall_ns,
+            "quiesce_wall_ns": quiesce_wall_ns, "stop_evidence": source_stop_evidence,
         }, indent=2) + "\n")
     finally:
         stop_owned([child for child in (trail_child, replicator, *followers) if child is not None])
@@ -727,14 +770,14 @@ def rebuild_epoch2(trail: Path, litestream: Path, root: Path, writer_depot: Path
             raise RuntimeError("e2 session revocation did not advance")
         if writer.process.poll() is not None:
             raise RuntimeError("promoted writer exited before e2 quiesce")
-        stop_owned([writer])
+        stop_evidence = stop_gracefully([writer])
         final = {
             name: normalize_txid(sync_database(litestream, socket_path, database)["replica_txid"])
             for name, database in paths.items()
         }
         if replicator.process.poll() is not None:
             raise RuntimeError("e2 replicator exited before intentional stop")
-        stop_owned([replicator])
+        stop_evidence.extend(stop_gracefully([replicator]))
         selected = {}
         oracle = root / "oracle" / "e2"
         oracle.mkdir(parents=True)
@@ -762,6 +805,11 @@ def rebuild_epoch2(trail: Path, litestream: Path, root: Path, writer_depot: Path
             followed = sqlite_rows(copy_for_inspection(c_depot / "data" / f"{name}.db", inspection), table_map[name])
             restored = sqlite_rows(oracle / f"{name}.db", table_map[name])
             comparisons[name] = followed == restored
+            if name in ("main", "aux"):
+                recovered_e2 = {row[1]: row[2] for row in followed["hat_ops"] if str(row[1]).startswith(f"e2-{name}-")}
+                expected_e2 = {f"e2-{name}-{index:06d}": "epoch-two" for index in range(1, 11)}
+                if recovered_e2 != expected_e2:
+                    raise CorrectnessFailure(f"e2 expected application manifest mismatch for {name}")
         if not all(comparisons.values()):
             raise CorrectnessFailure(f"e2 C follower differs from finite restore: {comparisons}")
         if backup_inventory(root / "backup" / "e1") != e1_inventory:
@@ -771,6 +819,7 @@ def rebuild_epoch2(trail: Path, litestream: Path, root: Path, writer_depot: Path
             "selected_txid": selected, "logical_comparison": comparisons,
             "reseed_ms": (time.monotonic_ns() - reseed_started) / 1_000_000,
             "retained_session": "present", "revoked_session": "absent",
+            "stop_evidence": stop_evidence, "normalized_follower_errors": [],
         }
     finally:
         stop_owned([child for child in (replicator, *followers) if child is not None])
@@ -1014,12 +1063,20 @@ def run_crash(trail: Path, litestream: Path, root: Path) -> int:
             for api, name, offset in (("main_ops", "main", 2000), ("aux_ops", "aux", 102000)):
                 key = f"crash-{name}-{index:06d}"
                 submitted[name].add(key)
+                submit_ns = time.monotonic_ns()
                 write_status, created = http_json("POST", f"{base}/api/records/v1/{api}", {
                     "id": offset + index, "op_key": key, "payload": "crash-tail",
                 }, token)
+                complete_ns = time.monotonic_ns()
                 if write_status not in (200, 201) or not isinstance(created, dict):
                     raise RuntimeError(f"pre-crash write failed: {key}")
                 acknowledged[name].add(key)
+                append_ledger(root / "operations.jsonl", {
+                    "db": name, "epoch": "crash-e1", "op_key": key,
+                    "payload_sha256": hashlib.sha256(b"crash-tail").hexdigest(),
+                    "submit_ns": submit_ns, "complete_ns": complete_ns,
+                    "response_status": write_status, "outcome": "acknowledged",
+                })
         in_flight_key = "crash-main-inflight"
         submitted["main"].add(in_flight_key)
         request_started = threading.Event()
@@ -1043,8 +1100,15 @@ def run_crash(trail: Path, litestream: Path, root: Path) -> int:
             raise RuntimeError("in-flight mutation did not resolve")
         if request_result.get("status") in (200, 201):
             acknowledged["main"].add(in_flight_key)
+            in_flight_outcome = "acknowledged"
         else:
             ambiguous["main"].add(in_flight_key)
+            in_flight_outcome = "ambiguous"
+        append_ledger(root / "operations.jsonl", {
+            "db": "main", "epoch": "crash-e1", "op_key": in_flight_key,
+            "payload_sha256": hashlib.sha256(("z" * (8 * 1024 * 1024)).encode()).hexdigest(),
+            "response_status": request_result.get("status"), "outcome": in_flight_outcome,
+        })
         selected = {}
         oracle_probe = root / "oracle" / "crash-e1"
         oracle_probe.mkdir(parents=True)
@@ -1054,6 +1118,12 @@ def run_crash(trail: Path, litestream: Path, root: Path) -> int:
                 capture_output=True, text=True, timeout=60, check=True,
             )
             selected[name] = normalize_txid(json.loads(dry.stdout)["max_txid"])
+            restored = subprocess.run(
+                [str(litestream), "restore", "-txid", format_txid(selected[name]), "-o", str(oracle_probe / f"{name}.db"), (root / "backup" / "crash-e1" / name).as_uri()],
+                capture_output=True, text=True, timeout=60,
+            )
+            if restored.returncode:
+                raise RuntimeError(f"crash finite restore failed for {name}: {restored.stderr[-500:]}")
             follower = followers[("main", "session", "aux").index(name)]
             wait_for_txid(d_depot / "data" / f"{name}.db-txid", selected[name], follower)
         if any(child.process.poll() is not None for child in followers):
@@ -1061,6 +1131,14 @@ def run_crash(trail: Path, litestream: Path, root: Path) -> int:
         stop_owned(followers)
         for child in followers:
             check_follower_log(child)
+        table_map = {"main": ("hat_ops", "_user"), "session": ("_session",), "aux": ("hat_ops",)}
+        crash_comparisons = {}
+        for name in ("main", "session", "aux"):
+            followed = sqlite_rows(copy_for_inspection(d_depot / "data" / f"{name}.db", root / "evidence" / "crash-inspection"), table_map[name])
+            oracle_rows = sqlite_rows(oracle_probe / f"{name}.db", table_map[name])
+            crash_comparisons[name] = followed == oracle_rows
+        if not all(crash_comparisons.values()):
+            raise CorrectnessFailure(f"crash follower differs from finite oracle: {crash_comparisons}")
         evidence = root / "evidence" / "crash-follow-sidecars"
         evidence.mkdir(parents=True)
         databases = [d_depot / "data" / f"{name}.db" for name in ("main", "session", "aux")]
@@ -1090,15 +1168,20 @@ def run_crash(trail: Path, litestream: Path, root: Path) -> int:
         ):
             for index in range(1, 101):
                 row_status, row = http_json("GET", f"{b_base}/api/records/v1/{api}/{baseline_offset + index}", token=recovered_token)
-                if row_status != 200 or not isinstance(row, dict):
-                    raise CorrectnessFailure(f"sealed baseline lost after crash: {name}/{index}")
+                if (row_status != 200 or not isinstance(row, dict)
+                        or row.get("op_key") != f"e1-{name}-{index:06d}" or row.get("payload") != "x" * 8192):
+                    raise CorrectnessFailure(f"sealed baseline lost or corrupted after crash: {name}/{index}")
                 recovered[name].add(str(row["op_key"]))
             for index in range(1, 6):
                 row_status, row = http_json("GET", f"{b_base}/api/records/v1/{api}/{tail_offset + index}", token=recovered_token)
                 if row_status == 200 and isinstance(row, dict):
+                    if row.get("op_key") != f"crash-{name}-{index:06d}" or row.get("payload") != "crash-tail":
+                        raise CorrectnessFailure(f"crash tail payload mismatch: {name}/{index}")
                     recovered[name].add(str(row["op_key"]))
         row_status, row = http_json("GET", f"{b_base}/api/records/v1/main_ops/888888", token=recovered_token)
         if row_status == 200 and isinstance(row, dict):
+            if row.get("op_key") != in_flight_key or row.get("payload") != "z" * (8 * 1024 * 1024):
+                raise CorrectnessFailure("recovered in-flight payload mismatch")
             recovered["main"].add(str(row["op_key"]))
         measured = {
             name: outcomes(acknowledged[name], set(), ambiguous[name], recovered[name], submitted[name])
@@ -1109,6 +1192,7 @@ def run_crash(trail: Path, litestream: Path, root: Path) -> int:
         epoch2 = rebuild_epoch2(trail, litestream, root, d_depot, root / "c" / "traildepot", b_child, b_base, recovered_token)
         (root / "result.json").write_text(json.dumps({
             "scenario": "crash", "status": "PASS", "selected_txid": selected,
+            "logical_comparison": crash_comparisons, "normalized_follower_errors": [],
             "trail_signal_ns": trail_sent, "trail_exit_ns": trail_exited,
             "replicator_signal_ns": replica_sent, "replicator_exit_ns": replica_exited,
             "outcomes": measured, "in_flight": "acknowledged" if in_flight_key in acknowledged["main"] else "ambiguous",
@@ -1158,7 +1242,8 @@ def run_guards(trail: Path, litestream: Path, root: Path) -> int:
     shutil.copytree(source, malformed_dir)
     (malformed_dir / "main.db-txid").write_text("malformed")
     try:
-        read_txid_sidecar(malformed_dir / "main.db-txid")
+        promote_candidate([], [malformed_dir / f"{name}.db" for name in ("main", "session", "aux")], forbidden_start,
+                          txid_paths=[malformed_dir / "main.db-txid"])
     except ValueError:
         results["malformed_txid"] = "refused"
     else:
@@ -1168,16 +1253,16 @@ def run_guards(trail: Path, litestream: Path, root: Path) -> int:
     corrupt = corrupt_dir / "main.db"
     corrupt.write_bytes(corrupt.read_bytes()[:100])
     try:
-        sqlite_rows(corrupt, ("hat_ops",))
+        promote_candidate([], [corrupt_dir / f"{name}.db" for name in ("main", "session", "aux")], forbidden_start,
+                          validator=lambda: sqlite_rows(corrupt, ("hat_ops",)))
     except (CorrectnessFailure, sqlite3.DatabaseError):
         results["truncated_database"] = "refused"
     else:
         raise CorrectnessFailure("truncated database passed validation")
     try:
-        validate_epoch_paths(
-            {name: root / "backup" / "e1" / name for name in ("main", "session", "aux")},
-            {name: root / "backup" / "e1" / name for name in ("main", "session", "aux")},
-        )
+        reused = {name: root / "backup" / "e1" / name for name in ("main", "session", "aux")}
+        promote_candidate([], [guard_root / f"{name}.db" for name in ("main", "session", "aux")], forbidden_start,
+                          epoch_paths=(reused, reused))
     except ValueError:
         results["reused_epoch"] = "refused"
     else:
@@ -1187,7 +1272,8 @@ def run_guards(trail: Path, litestream: Path, root: Path) -> int:
     )
     exited.process.wait(timeout=5)
     try:
-        wait_for_txid(root / "never-created-txid", 1, exited, timeout=0.1)
+        promote_candidate([], [guard_root / f"{name}.db" for name in ("main", "session", "aux")], forbidden_start,
+                          follower_failures=["unexpected follower exit"])
     except RuntimeError:
         results["unexpected_exit"] = "refused"
     else:
@@ -1197,7 +1283,11 @@ def run_guards(trail: Path, litestream: Path, root: Path) -> int:
     )
     try:
         try:
-            wait_for_txid(root / "never-created-txid", 1, stalled, timeout=0.1)
+            try:
+                wait_for_txid(root / "never-created-txid", 1, stalled, timeout=0.1)
+            except RuntimeError:
+                promote_candidate([], [guard_root / f"{name}.db" for name in ("main", "session", "aux")], forbidden_start,
+                                  follower_failures=["catch-up timeout"])
         except RuntimeError:
             results["catchup_timeout"] = "refused"
         else:
@@ -1207,7 +1297,8 @@ def run_guards(trail: Path, litestream: Path, root: Path) -> int:
     apply_error = parse_follower_line('time=2026-01-01T00:00:00Z level=ERROR msg="follow: error applying updates"')
     later_progress = parse_follower_line('time=2026-01-01T00:00:01Z level=INFO msg="follow: applied updates"')
     try:
-        promotion_error_gate([apply_error, later_progress])
+        promote_candidate([], [guard_root / f"{name}.db" for name in ("main", "session", "aux")], forbidden_start,
+                          follower_events=[apply_error, later_progress])
     except CorrectnessFailure:
         results["apply_error_then_progress"] = "refused"
     else:
@@ -1215,6 +1306,41 @@ def run_guards(trail: Path, litestream: Path, root: Path) -> int:
     if starts:
         raise CorrectnessFailure("a refusal control invoked writable startup")
     (root / "result.json").write_text(json.dumps({"scenario": "guards", "status": "PASS", "controls": results}, indent=2) + "\n")
+    return 0
+
+
+def run_all(trail: Path, litestream: Path, root: Path, repeat: int) -> int:
+    if repeat < 1:
+        raise ValueError("repeat must be positive")
+    results = []
+    scenarios = (("follow", run_follow), ("graceful", run_graceful), ("crash", run_crash), ("lagged-crash", run_lagged_crash))
+    for iteration in range(1, repeat + 1):
+        for name, runner in scenarios:
+            scenario_root = root / f"{name}-{iteration}"
+            scenario_root.mkdir(mode=0o700)
+            runner(trail, litestream, scenario_root)
+            result = json.loads((scenario_root / "result.json").read_text())
+            operation_count = sum(1 for _ in (scenario_root / "operations.jsonl").open()) if (scenario_root / "operations.jsonl").exists() else 0
+            command_count = sum(1 for _ in (scenario_root / "commands.jsonl").open()) if (scenario_root / "commands.jsonl").exists() else 0
+            results.append({"iteration": iteration, **result, "evidence": {
+                "operations": operation_count, "commands": command_count,
+                "operations_ref": "operations.jsonl", "commands_ref": "commands.jsonl",
+                "logs_ref": "logs/", "log_isolation": "private run directory",
+            }})
+    guards_root = root / "guards"
+    guards_root.mkdir(mode=0o700)
+    run_guards(trail, litestream, guards_root)
+    results.append({"iteration": 1, **json.loads((guards_root / "result.json").read_text()),
+                    "evidence": {"commands_ref": "commands.jsonl", "logs_ref": "logs/", "log_isolation": "private run directory"}})
+    summary = {
+        "scenario": "all", "status": "PASS", "repeat": repeat,
+        "platform": {"system": __import__("platform").system(), "machine": __import__("platform").machine()},
+        "python": sys.version, "sqlite": sqlite3.sqlite_version,
+        "trail_sha256": hashlib.sha256(trail.read_bytes()).hexdigest(),
+        "litestream_sha256": hashlib.sha256(litestream.read_bytes()).hexdigest(),
+        "results": results,
+    }
+    (root / "result.json").write_text(json.dumps(summary, indent=2) + "\n")
     return 0
 
 
@@ -1263,6 +1389,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repeat", type=int, default=1)
     args = parser.parse_args(argv)
     root = require_private_run_root(args.work_root / f"run-{time.time_ns()}", Path(__file__).resolve().parents[2])
+    if args.scenario == "all":
+        if not args.trail or not args.litestream:
+            parser.error("all requires --trail and --litestream")
+        return run_all(args.trail.absolute(), args.litestream.absolute(), root, args.repeat)
     if args.scenario == "preflight":
         if not args.trail or not args.litestream:
             parser.error("preflight requires --trail and --litestream")
