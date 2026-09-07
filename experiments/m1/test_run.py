@@ -705,8 +705,11 @@ class StorageQualificationTests(unittest.TestCase):
         self.assertEqual(unconditional["get-unconditional"]["request_payload_sha256"], hashlib.sha256(b"ordinary").hexdigest())
         self.assertEqual(unconditional["get-unconditional"]["response_payload_sha256"], hashlib.sha256(b"ordinary").hexdigest())
         self.assertEqual(unconditional["head-unconditional"]["etag"], unconditional["get-unconditional"]["etag"])
+        self.assertEqual(unconditional["put-unconditional"]["method"], "PUT")
+        self.assertEqual(unconditional["put-unconditional"]["key"], "qualification/20260907T000000Z-0123456789/control/unconditional")
         self.assertEqual(next(event for event in events if event["operation"] == "put-create")["request_headers"], {"If-None-Match": "*"})
         self.assertEqual(next(event for event in events if event["operation"] == "delete-stale-refused")["request_headers"], {"If-Match": '"' + hashlib.md5(b"old").hexdigest() + '"'})
+        self.assertTrue(all(event.get("method") and event.get("key") for event in events if "status" in event))
         result = events[-1]
         self.assertEqual(result["result"], "PASS")
         self.assertEqual(result["failures"], [])
@@ -746,6 +749,16 @@ class StorageQualificationTests(unittest.TestCase):
         self.assertIs(status, StorageStatus.PASS)
         reconciliation = next(event for event in events if event.get("operation") == "discarded-response-reconciliation")
         self.assertEqual(reconciliation["result"], "discarded")
+
+    def test_race_requires_refusal_for_non_winner(self):
+        class RaceErrorClient(_StorageClient):
+            def put(self, key, body, **kwargs):
+                if key.endswith("race/create") and body == b"create-b":
+                    return self._result(500)
+                return super().put(key, body, **kwargs)
+        status, events = self.run_storage(RaceErrorClient())
+        self.assertIs(status, StorageStatus.NO_GO)
+        self.assertIn("create race did not produce one winner and one expected refusal", events[-1]["failures"])
 
     def test_storage_no_go_continues_after_stale_delete_capability_failure(self):
         status, events = self.run_storage(_StorageClient(broken_stale_delete=True))
