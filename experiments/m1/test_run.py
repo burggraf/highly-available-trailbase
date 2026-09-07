@@ -63,6 +63,15 @@ class InventoryTests(unittest.TestCase):
         value = inventory(); value["nodes"][0]["ssh"] = "root@other.example"
         with self.assertRaises(ValueError): validate_inventory(value)
 
+    def test_rejects_malformed_endpoint_names(self):
+        for field in ("address", "hostname"):
+            for value in (".bad", "bad.", "bad..name", "bad_name", "-bad", "bad-"):
+                value_data = inventory()
+                value_data["nodes"][0][field] = value
+                if field == "address":
+                    value_data["nodes"][0]["ssh"] = "root@" + value
+                with self.assertRaises(ValueError): validate_inventory(value_data)
+
     def test_rejects_bad_fingerprint_and_count(self):
         value = inventory(); value["nodes"][0]["host_key"] = "SHA256:bad"
         with self.assertRaises(ValueError): validate_inventory(value)

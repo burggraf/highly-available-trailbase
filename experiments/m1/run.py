@@ -19,6 +19,7 @@ from typing import Any
 
 _NODE_KEYS = {"name", "ssh", "instance_id", "provider_label", "address", "host_key", "hostname"}
 _SAFE = re.compile(r"^[A-Za-z0-9._-]+$")
+_DNS = re.compile(r"^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$")
 _RUN_ID = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{10}$")
 _FINGERPRINT = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
 _SECRET = re.compile(
@@ -60,6 +61,9 @@ def _absolute_no_symlinks(path: Path) -> Path:
     # macOS presents these aliases as symlinks; use their effective paths without
     # weakening checks on any requested descendant or private boundary.
     for alias, target in ((Path("/tmp"), Path("/private/tmp")), (Path("/var"), Path("/private/var"))):
+        # Darwin exposes these aliases as symlinks; do not invent them on Unix.
+        if not alias.is_symlink():
+            continue
         try:
             relative = absolute.relative_to(alias)
         except ValueError:
@@ -116,6 +120,12 @@ def _valid_text(value: Any, field: str) -> str:
     return value
 
 
+def _valid_endpoint(value: Any, field: str) -> str:
+    if not isinstance(value, str) or not _DNS.fullmatch(value):
+        raise ValueError(f"invalid {field}")
+    return value
+
+
 def validate_inventory(value: dict[str, Any]) -> list[Node]:
     if not isinstance(value, dict) or set(value) != {"nodes"} or not isinstance(value["nodes"], list):
         raise ValueError("inventory must contain only nodes")
@@ -129,7 +139,7 @@ def validate_inventory(value: dict[str, Any]) -> list[Node]:
         ssh_name = raw["ssh"]
         if not isinstance(ssh_name, str) or not ssh_name.startswith("root@"):
             raise ValueError("SSH user must be root")
-        address = _valid_text(raw["address"], "address")
+        address = _valid_endpoint(raw["address"], "address")
         match = re.fullmatch(r"root@([A-Za-z0-9.-]+)", ssh_name)
         if not match or match.group(1) != address:
             raise ValueError("SSH target must be root@address")
@@ -138,7 +148,7 @@ def validate_inventory(value: dict[str, Any]) -> list[Node]:
             raise ValueError("invalid host key fingerprint")
         if not isinstance(raw["instance_id"], int) or isinstance(raw["instance_id"], bool) or raw["instance_id"] <= 0:
             raise ValueError("invalid instance ID")
-        hostname = _valid_text(raw["hostname"], "hostname")
+        hostname = _valid_endpoint(raw["hostname"], "hostname")
         nodes.append(Node(name, ssh_name, raw["instance_id"], _valid_text(raw["provider_label"], "provider label"), address, host_key, hostname))
     if {node.name for node in nodes} != {"fm1", "fm2", "fm3"}:
         raise ValueError("inventory names must be exactly fm1, fm2, and fm3")
@@ -374,7 +384,12 @@ try:
             chunk = os.read(0, 1024 * 1024)
             if not chunk:
                 break
-            os.write(out, chunk)
+            view = memoryview(chunk)
+            while view:
+                written = os.write(out, view)
+                if written <= 0:
+                    raise OSError("short write")
+                view = view[written:]
         os.fsync(out)
     finally:
         os.close(out)
@@ -512,9 +527,9 @@ def _validate_node_fields(node: Node) -> None:
     if not isinstance(node, Node):
         raise ValueError("invalid node")
     _valid_text(node.name, "name")
-    _valid_text(node.address, "address")
+    _valid_endpoint(node.address, "address")
     _valid_text(node.provider_label, "provider label")
-    _valid_text(node.hostname, "hostname")
+    _valid_endpoint(node.hostname, "hostname")
     if not isinstance(node.ssh, str) or re.fullmatch(r"root@([A-Za-z0-9.-]+)", node.ssh) is None:
         raise ValueError("SSH user must be root")
     if node.ssh != f"root@{node.address}":
