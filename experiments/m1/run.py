@@ -761,11 +761,11 @@ def init_remote(nodes: list[Node], context: RunContext, evidence: Path | None = 
         _REMOTE_ROOT = None
 
 
-def storage(nodes=None, context=None, evidence=None, repository=None, *, s3_env=None, cleanup=False) -> StorageStatus:
+def _storage_matrix(nodes=None, context=None, evidence=None, repository=None, *, s3_env=None, cleanup=False) -> StorageStatus:
     """Collect the complete fresh-prefix matrix; capability mismatches produce NO-GO."""
     from concurrent.futures import ThreadPoolExecutor
     from xml.etree import ElementTree
-    from s3 import client_from_env, header_value, Reconciliation
+    from s3 import client_from_env, header_value, quote_etag, Reconciliation
     if s3_env is None: raise ValueError("private S3 env is required")
     client = client_from_env(s3_env, repository)
     prefix = f"qualification/{context.run_id}/"
@@ -780,11 +780,12 @@ def storage(nodes=None, context=None, evidence=None, repository=None, *, s3_env=
     def check(condition, message):
         if not condition and message not in failures: failures.append(message)
 
-    def record(name, result, request_body=b"", **extra):
+    def record(name, result, request_body=b"", request_headers=None, **extra):
         status, headers, data = result
         event = {"operation": name, "status": status,
             "request_id": header_value(headers, "x-amz-request-id") or header_value(headers, "x-request-id"),
-            "etag": etag(result), "request_payload_sha256": hashlib.sha256(request_body).hexdigest(),
+            "etag": etag(result), "request_headers": dict(request_headers or {}),
+            "request_payload_sha256": hashlib.sha256(request_body).hexdigest(),
             "response_payload_sha256": hashlib.sha256(data).hexdigest()}
         event.update(extra)
         append_evidence(evidence, event, repository)
@@ -809,41 +810,46 @@ def storage(nodes=None, context=None, evidence=None, repository=None, *, s3_env=
     append_evidence(evidence, {"operation": "unconditional-verification", "etag": unconditional_etag,
         "expected_payload_sha256": unconditional_hash, "head_payload_sha256": hashlib.sha256(unconditional_head[2]).hexdigest(),
         "get_payload_sha256": hashlib.sha256(unconditional_get[2]).hexdigest(), "valid": not failures}, repository)
-    if unconditional_get[0] == 200: expected_objects.add(unconditional_key)
+    unconditional_delete = record("delete-unconditional", client.delete(unconditional_key))
+    unconditional_absent_head = record("head-after-delete-unconditional", client.head(unconditional_key))
+    unconditional_absent_get = record("get-after-delete-unconditional", client.get(unconditional_key))
+    check(unconditional_delete[0] in success and unconditional_absent_head[0] == unconditional_absent_get[0] == 404,
+        "unconditional DELETE failed")
+    if unconditional_absent_get[0] == 200: expected_objects.add(unconditional_key)
 
     key = prefix + "control/object"
-    created = record("put-create", client.put(key, b"one", if_none_match=True), b"one")
+    created = record("put-create", client.put(key, b"one", if_none_match=True), b"one", request_headers={"If-None-Match": "*"})
     original = etag(created)
     check(created[0] in success and bool(original), "conditional create failed")
     head = record("head-created", client.head(key)); got = record("get-created", client.get(key))
     check(head[0] == got[0] == 200 and etag(head) == etag(got) == original and got[2] == b"one", "created object did not match bytes/ETag")
-    refused_create = record("put-create-refused", client.put(key, b"other", if_none_match=True), b"other")
+    refused_create = record("put-create-refused", client.put(key, b"other", if_none_match=True), b"other", request_headers={"If-None-Match": "*"})
     check(refused_create[0] in refused, "existing conditional create was not refused")
     unchanged = record("get-after-create-refused", client.get(key))
     check(unchanged[0] == 200 and etag(unchanged) == original and unchanged[2] == b"one", "refused create changed object")
-    replaced = record("put-replace", client.put(key, b"two", etag=original), b"two")
+    replaced = record("put-replace", client.put(key, b"two", etag=original), b"two", request_headers={"If-Match": quote_etag(original)})
     current = etag(replaced)
     check(replaced[0] in success and bool(current), "current conditional replace failed")
     current_get = record("get-after-replace", client.get(key))
     check(current_get[0] == 200 and etag(current_get) == current and current_get[2] == b"two", "replacement bytes/ETag mismatch")
-    stale_replace = record("put-stale-refused", client.put(key, b"bad", etag=original), b"bad")
+    stale_replace = record("put-stale-refused", client.put(key, b"bad", etag=original), b"bad", request_headers={"If-Match": quote_etag(original)})
     check(stale_replace[0] in refused, "stale conditional replace was not refused")
     after_stale_replace = record("get-after-stale-replace", client.get(key))
     check(after_stale_replace[0] == 200 and etag(after_stale_replace) == current and after_stale_replace[2] == b"two", "stale replace changed replacement")
     expected_objects.add(key)
 
     missing_replace_key = prefix + "control/missing-replace"
-    missing_replace = record("put-replace-missing", client.put(missing_replace_key, b"bad", etag='"missing"'), b"bad")
+    missing_replace = record("put-replace-missing", client.put(missing_replace_key, b"bad", etag='"missing"'), b"bad", request_headers={"If-Match": '"missing"'})
     check(missing_replace[0] in {404, *refused}, "missing conditional replace was not refused")
     check(record("head-after-missing-replace", client.head(missing_replace_key))[0] == 404, "missing conditional replace created object")
 
     stale_delete_key = prefix + "control/stale-delete"
-    stale_created = record("put-stale-delete-seed", client.put(stale_delete_key, b"old", if_none_match=True), b"old")
+    stale_created = record("put-stale-delete-seed", client.put(stale_delete_key, b"old", if_none_match=True), b"old", request_headers={"If-None-Match": "*"})
     stale_old = etag(stale_created)
-    stale_replaced = record("put-stale-delete-replace", client.put(stale_delete_key, b"replacement", etag=stale_old), b"replacement")
+    stale_replaced = record("put-stale-delete-replace", client.put(stale_delete_key, b"replacement", etag=stale_old), b"replacement", request_headers={"If-Match": quote_etag(stale_old)})
     stale_current = etag(stale_replaced)
     check(stale_created[0] in success and stale_replaced[0] in success and bool(stale_current), "stale-delete setup failed")
-    stale_delete = record("delete-stale-refused", client.delete(stale_delete_key, etag=stale_old))
+    stale_delete = record("delete-stale-refused", client.delete(stale_delete_key, etag=stale_old), request_headers={"If-Match": quote_etag(stale_old)})
     check(stale_delete[0] in refused, "stale conditional DELETE was not refused")
     stale_final_head = record("head-after-stale-delete", client.head(stale_delete_key))
     stale_final_get = record("get-after-stale-delete", client.get(stale_delete_key))
@@ -851,13 +857,13 @@ def storage(nodes=None, context=None, evidence=None, repository=None, *, s3_env=
     if stale_final_get[0] == 200: expected_objects.add(stale_delete_key)
 
     missing_delete_key = prefix + "control/missing-delete"
-    missing_delete = record("delete-missing", client.delete(missing_delete_key, etag='"missing"'))
+    missing_delete = record("delete-missing", client.delete(missing_delete_key, etag='"missing"'), request_headers={"If-Match": '"missing"'})
     check(missing_delete[0] in {404, *refused}, "missing conditional DELETE was not refused")
     check(record("head-after-delete-missing", client.head(missing_delete_key))[0] == 404, "missing object appeared after conditional DELETE")
 
     current_delete_key = prefix + "control/current-delete"
-    delete_seed = record("put-current-delete-seed", client.put(current_delete_key, b"delete-me", if_none_match=True), b"delete-me")
-    delete_current = record("delete-current", client.delete(current_delete_key, etag=etag(delete_seed)))
+    delete_seed = record("put-current-delete-seed", client.put(current_delete_key, b"delete-me", if_none_match=True), b"delete-me", request_headers={"If-None-Match": "*"})
+    delete_current = record("delete-current", client.delete(current_delete_key, etag=etag(delete_seed)), request_headers={"If-Match": quote_etag(etag(delete_seed))})
     check(delete_seed[0] in success and delete_current[0] in success, "current conditional DELETE failed")
     check(record("head-after-delete-current", client.head(current_delete_key))[0] == 404, "current conditional DELETE left object")
 
@@ -865,7 +871,7 @@ def storage(nodes=None, context=None, evidence=None, repository=None, *, s3_env=
     create_bodies = (b"create-a", b"create-b")
     with ThreadPoolExecutor(max_workers=2) as pool:
         creates = list(pool.map(lambda body: client.put(race_create_key, body, if_none_match=True), create_bodies))
-    for index, (result, body) in enumerate(zip(creates, create_bodies), 1): record(f"race-create-{index}", result, body)
+    for index, (result, body) in enumerate(zip(creates, create_bodies), 1): record(f"race-create-{index}", result, body, request_headers={"If-None-Match": "*"})
     create_winners = [(result, body) for result, body in zip(creates, create_bodies) if result[0] in success]
     create_final = record("race-create-final", client.get(race_create_key))
     check(len(create_winners) == 1, "create race was not single-winner")
@@ -879,11 +885,11 @@ def storage(nodes=None, context=None, evidence=None, repository=None, *, s3_env=
     if create_final[0] == 200: expected_objects.add(race_create_key)
 
     race_replace_key = prefix + "race/replace"
-    race_seed = record("race-replace-seed", client.put(race_replace_key, b"seed", if_none_match=True), b"seed")
+    race_seed = record("race-replace-seed", client.put(race_replace_key, b"seed", if_none_match=True), b"seed", request_headers={"If-None-Match": "*"})
     replace_bodies = (b"replace-a", b"replace-b")
     with ThreadPoolExecutor(max_workers=2) as pool:
         replaces = list(pool.map(lambda body: client.put(race_replace_key, body, etag=etag(race_seed)), replace_bodies))
-    for index, (result, body) in enumerate(zip(replaces, replace_bodies), 1): record(f"race-replace-{index}", result, body)
+    for index, (result, body) in enumerate(zip(replaces, replace_bodies), 1): record(f"race-replace-{index}", result, body, request_headers={"If-Match": quote_etag(etag(race_seed))})
     replace_winners = [(result, body) for result, body in zip(replaces, replace_bodies) if result[0] in success]
     replace_final = record("race-replace-final", client.get(race_replace_key))
     check(len(replace_winners) == 1, "replace race was not single-winner")
@@ -899,7 +905,7 @@ def storage(nodes=None, context=None, evidence=None, repository=None, *, s3_env=
     uncertain_key, uncertain_body = prefix + "reconcile", b"uncertain-write"
     discarded = client.put_discarded(uncertain_key, uncertain_body, if_none_match=True)
     reconciliation = client.reconcile_put_detailed(uncertain_key, uncertain_body)
-    append_evidence(evidence, {"operation": "discarded-response-reconciliation", "outcome": discarded.value,
+    append_evidence(evidence, {"operation": "discarded-response-reconciliation", "request_headers": {"If-None-Match": "*"}, "outcome": discarded.value,
         "result": reconciliation.outcome.value,
         "expected_payload_sha256": hashlib.sha256(uncertain_body).hexdigest(),
         "probes": [probe.__dict__ for probe in reconciliation.probes]}, repository)
@@ -935,6 +941,21 @@ def storage(nodes=None, context=None, evidence=None, repository=None, *, s3_env=
     append_evidence(evidence, {"operation": "storage-result", "result": result.value, "failures": failures}, repository)
     return result
 
+
+def storage(nodes=None, context=None, evidence=None, repository=None, *, s3_env=None, cleanup=False) -> StorageStatus:
+    """Return a bounded NO-GO and preserve evidence when a provider operation raises."""
+    try:
+        return _storage_matrix(nodes, context, evidence, repository, s3_env=s3_env, cleanup=cleanup)
+    except Exception as exc:
+        failure = "storage operation raised before matrix completion"
+        try:
+            append_evidence(evidence, {"operation": "storage-error", "exception_type": type(exc).__name__, "failure": failure}, repository)
+            append_evidence(evidence, {"operation": "storage-result", "result": StorageStatus.NO_GO.value, "failures": [failure]}, repository)
+        except Exception:
+            pass
+        return StorageStatus.NO_GO
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("scenario", choices=["preflight", "init-remote", "storage"])
@@ -948,8 +969,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.scenario == "storage":
         context = new_run_context(args.work_root, repository)
         evidence = context.local_root / "evidence.jsonl"
-        result = storage(context=context, evidence=evidence, repository=repository, s3_env=args.s3_env, cleanup=args.cleanup)
-        write_latest_storage_evidence_pointer(evidence)
+        try:
+            result = storage(context=context, evidence=evidence, repository=repository, s3_env=args.s3_env, cleanup=args.cleanup)
+        finally:
+            write_latest_storage_evidence_pointer(evidence)
         print(f"storage {result.value}")
         return 0 if result is StorageStatus.PASS else 2
     if args.inventory is None or args.linode_env is None:

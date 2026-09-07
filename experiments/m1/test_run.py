@@ -700,11 +700,13 @@ class StorageQualificationTests(unittest.TestCase):
         status, events = self.run_storage(_StorageClient())
         self.assertIs(status, StorageStatus.PASS)
         operations = {event.get("operation") for event in events}
-        self.assertTrue({"put-unconditional", "head-unconditional", "get-unconditional", "put-replace-missing", "delete-current", "race-create-final", "race-create-lineage", "race-replace-final", "race-replace-lineage", "list", "discarded-response-reconciliation", "storage-result"}.issubset(operations))
+        self.assertTrue({"put-unconditional", "head-unconditional", "get-unconditional", "delete-unconditional", "head-after-delete-unconditional", "put-replace-missing", "delete-current", "race-create-final", "race-create-lineage", "race-replace-final", "race-replace-lineage", "list", "discarded-response-reconciliation", "storage-result"}.issubset(operations))
         unconditional = {event["operation"]: event for event in events if event.get("operation", "").endswith("-unconditional")}
         self.assertEqual(unconditional["get-unconditional"]["request_payload_sha256"], hashlib.sha256(b"ordinary").hexdigest())
         self.assertEqual(unconditional["get-unconditional"]["response_payload_sha256"], hashlib.sha256(b"ordinary").hexdigest())
         self.assertEqual(unconditional["head-unconditional"]["etag"], unconditional["get-unconditional"]["etag"])
+        self.assertEqual(next(event for event in events if event["operation"] == "put-create")["request_headers"], {"If-None-Match": "*"})
+        self.assertEqual(next(event for event in events if event["operation"] == "delete-stale-refused")["request_headers"], {"If-Match": '"' + hashlib.md5(b"old").hexdigest() + '"'})
         result = events[-1]
         self.assertEqual(result["result"], "PASS")
         self.assertEqual(result["failures"], [])
@@ -752,6 +754,16 @@ class StorageQualificationTests(unittest.TestCase):
         self.assertIn("delete-current", operations)
         self.assertIn("discarded-response-reconciliation", operations)
         self.assertIn("stale conditional DELETE was not refused", events[-1]["failures"])
+        self.assertEqual(events[-1]["result"], "NO-GO")
+
+    def test_storage_converts_request_exception_to_bounded_no_go_evidence(self):
+        class FailingClient(_StorageClient):
+            def get(self, key):
+                raise TimeoutError("provider timeout")
+        status, events = self.run_storage(FailingClient())
+        self.assertIs(status, StorageStatus.NO_GO)
+        self.assertEqual(events[-2]["operation"], "storage-error")
+        self.assertEqual(events[-2]["exception_type"], "TimeoutError")
         self.assertEqual(events[-1]["result"], "NO-GO")
 
     def test_storage_cli_has_distinct_pass_and_no_go_exit_status(self):

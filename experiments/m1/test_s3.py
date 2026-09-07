@@ -13,6 +13,11 @@ class SigV4Tests(unittest.TestCase):
         signed = c.signed_request("GET", "/test.txt", {"Range": "bytes=0-9"}, b"", timestamp="20130524T000000Z")
         self.assertEqual(signed.headers["Authorization"], "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request, SignedHeaders=host;range;x-amz-content-sha256;x-amz-date, Signature=f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41")
 
+    def test_canonical_query_sorts_percent_encoded_pairs(self):
+        c = S3Client("examplebucket", "us-east-1", "AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "https://examplebucket.s3.amazonaws.com")
+        signed = c.signed_request("GET", "/test.txt", {}, b"", query={"é": "a/b", "a~": "x y"}, timestamp="20130524T000000Z")
+        self.assertEqual(signed.headers["Authorization"], "AWS4-HMAC-SHA256 Credential=AKIAIOSFODNN7EXAMPLE/20130524/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=5a078d6b8de01f0c2e19281b18c50efe5a2aed6181dec1ea5e351befb39ebfb0")
+
     def test_status_and_quoted_etag(self):
         self.assertEqual(quote_etag('abc'), '"abc"')
         self.assertEqual(quote_etag('"abc"'), '"abc"')

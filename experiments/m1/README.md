@@ -37,7 +37,7 @@ python3 experiments/m1/run.py storage \
   --work-root ~/.config/hat/m1-storage-runs
 ```
 
-The storage run uses a fresh unique prefix and records its complete operation matrix in a mode-`0600` evidence file below the private work root. It prints `storage PASS` and exits `0` when all capabilities hold; capability mismatches are fully collected, print `storage NO-GO`, and exit `2`. Fresh local and remote artifacts are preserved by default, including after `NO-GO`; cleanup is explicit opt-in and runs only after an accepted `PASS`:
+The storage run uses a fresh unique prefix and records its complete operation matrix—including ordinary unconditional PUT/DELETE, conditional headers, and races—in a mode-`0600` evidence file below the private work root. Provider/request exceptions are recorded as bounded `NO-GO` results. It prints `storage PASS` and exits `0` when all capabilities hold; capability mismatches are fully collected, print `storage NO-GO`, and exit `2`. Fresh local and remote artifacts are preserved by default, including after `NO-GO`; cleanup is explicit opt-in and runs only after an accepted `PASS`:
 
 ```sh
 python3 experiments/m1/run.py storage \

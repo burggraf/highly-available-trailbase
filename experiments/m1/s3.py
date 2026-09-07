@@ -72,6 +72,11 @@ def _hmac(key: bytes, text: str) -> bytes:
     return hmac.new(key, text.encode(), hashlib.sha256).digest()
 
 
+def _canonical_query(query: dict[str, str] | None) -> str:
+    encoded = [(quote(str(key), safe="-_.~"), quote(str(value), safe="-_.~")) for key, value in (query or {}).items()]
+    return "&".join(f"{key}={value}" for key, value in sorted(encoded))
+
+
 class S3Client:
     def __init__(self, bucket: str, region: str, access_key: str, secret_key: str, endpoint: str):
         if not re.fullmatch(r"[A-Za-z0-9.-]+", bucket) or not region or not endpoint.startswith("https://"):
@@ -93,7 +98,7 @@ class S3Client:
         canonical_headers = "".join(f"{k}:{' '.join(actual[k].split())}\n" for k in sorted(actual))
         signed = ";".join(sorted(actual))
         canonical_uri = "/" + "/".join(quote(part, safe="-_.~") for part in path.lstrip("/").split("/"))
-        canonical_query = "&".join(f"{quote(str(k), safe='-_.~')}={quote(str(v), safe='-_.~')}" for k, v in sorted((query or {}).items()))
+        canonical_query = _canonical_query(query)
         canonical = "\n".join((method.upper(), canonical_uri, canonical_query, canonical_headers, signed, payload_hash))
         scope = f"{day}/{self.region}/s3/aws4_request"
         string = "\n".join(("AWS4-HMAC-SHA256", now, scope, hashlib.sha256(canonical.encode()).hexdigest()))
@@ -108,7 +113,7 @@ class S3Client:
     def request(self, method: str, key: str = "", *, body: bytes = b"", headers: dict[str, str] | None = None, query: dict[str, str] | None = None) -> tuple[int, dict[str, str], bytes]:
         path = ("/" + self.bucket + "/" + key) if key else ("/" + self.bucket)
         signed = self.signed_request(method, path, headers or {}, body, query=query)
-        url = signed.url + (("?" + "&".join(f"{quote(str(k), safe='-_.~')}={quote(str(v), safe='-_.~')}" for k, v in sorted((query or {}).items()))) if query else "")
+        url = signed.url + (("?" + _canonical_query(query)) if query else "")
         try:
             with urlopen(Request(url, data=body if method not in {"GET", "HEAD"} else None, headers=signed.headers, method=method), timeout=30) as response:
                 return response.status, dict(response.headers.items()), response.read()
