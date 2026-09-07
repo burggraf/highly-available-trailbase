@@ -7,6 +7,14 @@ from s3 import S3Client, classify_status, load_s3_env, quote_etag, Reconciliatio
 
 
 class SigV4Tests(unittest.TestCase):
+    def test_endpoint_requires_https_dns_origin_and_safe_host(self):
+        for endpoint in ("http://s3.example", "https://user@s3.example", "https://s3.example/path", "https://s3.example?x=1", "https://s3.example#frag", "https://s3.example:0", "https://s3.example:65536", "https://-bad.example"):
+            with self.subTest(endpoint=endpoint), self.assertRaises(ValueError):
+                S3Client("b", "r", "a", "s", endpoint)
+        c = S3Client("b", "r", "a", "s", "https://s3.example:8443/")
+        self.assertEqual(c._host, "s3.example:8443")
+        self.assertEqual(c.endpoint, "https://s3.example:8443")
+
     def test_published_aws_get_vector(self):
         # AWS S3 worked example credentials/date and GET request.
         c = S3Client("examplebucket", "us-east-1", "AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "https://examplebucket.s3.amazonaws.com")
@@ -54,6 +62,13 @@ class SigV4Tests(unittest.TestCase):
             result = c.reconcile_put_detailed("k", b"data", '"x"')
         self.assertEqual(result.outcome, Reconciliation.DISCARDED)
         self.assertEqual([(probe.method, probe.status, probe.request_id) for probe in result.probes], [("HEAD", 404, "r"), ("GET", 404, "g")])
+
+    def test_reconcile_paired_404_agrees_with_storage_result(self):
+        c = S3Client("b", "r", "a", "s", "https://s3.example")
+        with mock.patch.object(c, "head", return_value=(404, {}, b"")), mock.patch.object(c, "get", return_value=(404, {}, b"")):
+            detailed = c.reconcile_put_detailed("k", b"data")
+        self.assertEqual(detailed.outcome, Reconciliation.DISCARDED)
+        self.assertEqual(detailed.probes[-2].status, detailed.probes[-1].status)
 
     def test_reconcile_requires_exact_etag_and_bytes(self):
         c = S3Client("b", "r", "a", "s", "https://s3.example")

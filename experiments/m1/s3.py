@@ -79,12 +79,24 @@ def _canonical_query(query: dict[str, str] | None) -> str:
 
 class S3Client:
     def __init__(self, bucket: str, region: str, access_key: str, secret_key: str, endpoint: str):
-        if not re.fullmatch(r"[A-Za-z0-9.-]+", bucket) or not region or not endpoint.startswith("https://"):
+        if not re.fullmatch(r"[A-Za-z0-9.-]+", bucket) or not region:
+            raise ValueError("invalid S3 endpoint configuration")
+        try:
+            parts = urlsplit(endpoint)
+            host = parts.hostname
+            port = parts.port
+        except ValueError as exc:
+            raise ValueError("invalid S3 endpoint configuration") from exc
+        labels = host.split(".") if host else []
+        valid_host = (len(host or "") <= 253 and all(re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label) for label in labels))
+        if (parts.scheme != "https" or not valid_host or parts.username is not None or parts.password is not None
+                or parts.path not in {"", "/"} or parts.query or parts.fragment or any(ord(char) < 32 or ord(char) == 127 for char in endpoint)
+                or (port is not None and not 1 <= port <= 65535)):
             raise ValueError("invalid S3 endpoint configuration")
         self.bucket, self.region = bucket, region
         self.access_key, self.secret_key = access_key, secret_key
-        self.endpoint = endpoint.rstrip("/")
-        self._host = urlsplit(self.endpoint).netloc
+        self.endpoint = f"https://{host}{':' + str(port) if port is not None else ''}"
+        self._host = f"{host}{':' + str(port) if port is not None else ''}"
 
     def signed_request(self, method: str, path: str, headers: dict[str, str], body: bytes, *, query: dict[str, str] | None = None, timestamp: str | None = None) -> SignedRequest:
         import datetime
