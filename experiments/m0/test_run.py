@@ -27,6 +27,8 @@ from run import (
     promote_candidate,
     validate_epoch_paths,
     copy_for_inspection,
+    outcomes,
+    outcome_passes,
 )
 
 
@@ -69,6 +71,31 @@ class ReadinessTests(unittest.TestCase):
         child = OwnedProcess(mock.Mock(poll=mock.Mock(return_value=None)), "trail")
         with mock.patch("run.http_request", side_effect=[(200, b"Ok"), (403, b"")]):
             wait_ready("http://127.0.0.1:1", child, timeout=0.1)
+
+
+class OutcomeTests(unittest.TestCase):
+    def test_acknowledged_and_ambiguous_are_distinct(self):
+        result = outcomes({"a", "b"}, set(), {"c"}, {"a", "c"}, {"a", "b", "c"})
+        self.assertEqual(result["lost_acknowledged"], ["b"])
+        self.assertEqual(result["recovered_ambiguous"], ["c"])
+        self.assertEqual(result["recovered_rejected"], [])
+        self.assertEqual(result["unexpected"], [])
+
+    def test_recovered_rejection_is_not_ambiguous(self):
+        result = outcomes(set(), {"denied"}, set(), {"denied"}, {"denied"})
+        self.assertEqual(result["recovered_rejected"], ["denied"])
+        self.assertEqual(result["recovered_ambiguous"], [])
+        self.assertFalse(outcome_passes(result))
+
+    def test_outcome_classes_must_partition_submissions(self):
+        with self.assertRaises(ValueError):
+            outcomes({"same"}, {"same"}, set(), set(), {"same"})
+        with self.assertRaises(ValueError):
+            outcomes(set(), set(), set(), set(), {"missing"})
+
+    def test_unexpected_recovered_operation_fails(self):
+        result = outcomes(set(), set(), set(), {"unexpected"}, set())
+        self.assertFalse(outcome_passes(result))
 
 
 class PromotionTests(unittest.TestCase):

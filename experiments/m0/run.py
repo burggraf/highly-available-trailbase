@@ -18,6 +18,7 @@ import shutil
 import sqlite3
 import hashlib
 import shlex
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -160,6 +161,22 @@ def validate_binary_versions(expected: dict[str, str], actual: dict[str, str]) -
         raise ValueError(f"binary versions do not match: expected {expected}, got {actual}")
 
 
+def outcomes(acknowledged: set[str], rejected: set[str], ambiguous: set[str], recovered: set[str], submitted: set[str]) -> dict[str, list[str]]:
+    if (acknowledged & rejected or acknowledged & ambiguous or rejected & ambiguous
+            or (acknowledged | rejected | ambiguous) != submitted):
+        raise ValueError("outcome classes must partition submitted operations")
+    return {
+        "lost_acknowledged": sorted(acknowledged - recovered),
+        "recovered_ambiguous": sorted(recovered & ambiguous),
+        "recovered_rejected": sorted(recovered & rejected),
+        "unexpected": sorted(recovered - submitted),
+    }
+
+
+def outcome_passes(result: dict[str, list[str]]) -> bool:
+    return not result["recovered_rejected"] and not result["unexpected"]
+
+
 def validate_epoch_paths(old: dict[str, Path], new: dict[str, Path]) -> None:
     if set(old) != set(new):
         raise ValueError("epoch database mappings differ")
@@ -178,6 +195,15 @@ def require_stopped(children: list[OwnedProcess]) -> None:
     live = [child.role for child in children if child.process.poll() is None]
     if live:
         raise RuntimeError("cannot promote while processes are alive: " + ", ".join(live))
+
+
+def kill_owned(child: OwnedProcess) -> tuple[int, int]:
+    if child.process.poll() is not None:
+        raise RuntimeError(f"{child.role} exited before fault injection")
+    sent = time.monotonic_ns()
+    os.killpg(child.process.pid, signal.SIGKILL)
+    child.process.wait()
+    return sent, time.monotonic_ns()
 
 
 def stop_owned(children: list[OwnedProcess], timeout: float = 10.0) -> None:
@@ -360,8 +386,8 @@ def run_fixture(trail: Path, litestream: Path, root: Path) -> int:
     return 0
 
 
-def write_litestream_config(root: Path, source: Path) -> tuple[Path, Path]:
-    socket_path = root / "a.sock"
+def write_litestream_config(root: Path, source: Path, epoch: str = "e1") -> tuple[Path, Path]:
+    socket_path = root / f"{epoch}.sock"
     if len(str(socket_path).encode()) >= 100:
         raise ValueError("Litestream socket path is too long")
     lines = [
@@ -372,12 +398,12 @@ def write_litestream_config(root: Path, source: Path) -> tuple[Path, Path]:
         database = source / f"{name}.db"
         lines.extend([
             f"  - path: {json.dumps(str(database))}",
-            f"    meta-path: {json.dumps(str(root / 'meta' / 'e1' / name))}",
+            f"    meta-path: {json.dumps(str(root / 'meta' / epoch / name))}",
             "    replica:", "      type: file",
-            f"      path: {json.dumps(str(root / 'backup' / 'e1' / name))}",
+            f"      path: {json.dumps(str(root / 'backup' / epoch / name))}",
             "      sync-interval: 1s",
         ])
-    path = root / "a.yml"
+    path = root / f"{epoch}.yml"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path, socket_path
 
@@ -700,6 +726,284 @@ def run_graceful(trail: Path, litestream: Path, root: Path) -> int:
     return 0
 
 
+def append_ledger(path: Path, event: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(event, sort_keys=True) + "\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def run_lagged_crash(trail: Path, litestream: Path, root: Path) -> int:
+    run_follow(trail, litestream, root)
+    baseline_result = json.loads((root / "result.json").read_text())
+    sealed_inventory = backup_inventory(root / "backup" / "e1")
+    a_depot = root / "a" / "traildepot"
+    b_depot = root / "b" / "traildepot"
+    port = free_loopback_port()
+    base = f"http://127.0.0.1:{port}"
+    a_child = owned_process(
+        [str(trail), "--depot", str(a_depot), "run", "--address", f"127.0.0.1:{port}", "--stderr-logging"],
+        "trail-a-lagged", root, root / "logs" / "trail-a-lagged.log",
+    )
+    late_refresh = ""
+    ledger = root / "operations.jsonl"
+    submitted = {name: set() for name in ("main", "aux")}
+    acknowledged = {name: set() for name in ("main", "aux")}
+    rejected = {name: set() for name in ("main", "aux")}
+    try:
+        wait_ready(base, a_child)
+        status, login = http_json("POST", f"{base}/api/auth/v1/login", {"username": FIXTURE_USERNAME, "password": "m0-local-only-password"})
+        if status != 200 or not isinstance(login, dict):
+            raise RuntimeError("lagged writer login failed")
+        token = str(login["auth_token"])
+        for name in ("main", "aux"):
+            submitted[name].update(f"e1-{name}-{index:06d}" for index in range(1, 101))
+            acknowledged[name].update(submitted[name])
+        for index in range(1, 11):
+            for api, name, offset in (("main_ops", "main", 1000), ("aux_ops", "aux", 101000)):
+                key = f"lagged-{name}-{index:06d}"
+                submitted[name].add(key)
+                started = time.monotonic_ns()
+                status, created = http_json("POST", f"{base}/api/records/v1/{api}", {
+                    "id": offset + index, "op_key": key, "payload": "unreplicated",
+                }, token)
+                completed = time.monotonic_ns()
+                if status not in (200, 201) or not isinstance(created, dict):
+                    raise RuntimeError(f"lagged write failed: {api}/{key}")
+                acknowledged[name].add(key)
+                append_ledger(ledger, {"db": name, "epoch": "e1", "op_key": key, "outcome": "acknowledged", "submit_ns": started, "complete_ns": completed})
+        denied_key = "denied-main-000001"
+        submitted["main"].add(denied_key)
+        denied_status, _ = http_request("POST", f"{base}/api/records/v1/main_ops", {
+            "id": 999999, "op_key": denied_key, "payload": "must-not-exist",
+        })
+        if denied_status not in (401, 403):
+            raise RuntimeError(f"denied write returned unexpected status: {denied_status}")
+        rejected["main"].add(denied_key)
+        append_ledger(ledger, {"db": "main", "epoch": "e1", "op_key": denied_key, "outcome": "rejected"})
+        late_status, late_login = http_json("POST", f"{base}/api/auth/v1/login", {"username": FIXTURE_USERNAME, "password": "m0-local-only-password"})
+        if late_status != 200 or not isinstance(late_login, dict):
+            raise RuntimeError("late login failed")
+        late_refresh = str(late_login["refresh_token"])
+        signal_sent_ns, exit_observed_ns = kill_owned(a_child)
+    finally:
+        stop_owned([a_child])
+    if backup_inventory(root / "backup" / "e1") != sealed_inventory:
+        raise CorrectnessFailure("sealed e1 changed during lagged crash")
+    databases = [b_depot / "data" / f"{name}.db" for name in ("main", "session", "aux")]
+    evidence = root / "evidence" / "lagged-follow-sidecars"
+    evidence.mkdir(parents=True)
+    for database in databases:
+        sidecar = database.with_name(database.name + "-txid")
+        require_files([sidecar])
+        shutil.move(sidecar, evidence / sidecar.name)
+    b_port = free_loopback_port()
+    b_base = f"http://127.0.0.1:{b_port}"
+    b_child = promote_candidate([], databases, lambda: owned_process(
+        [str(trail), "--depot", str(b_depot), "run", "--address", f"127.0.0.1:{b_port}", "--stderr-logging"],
+        "trail-b-lagged", root, root / "logs" / "trail-b-lagged.log",
+    ))
+    try:
+        wait_ready(b_base, b_child)
+        fixture_auth = json.loads((root / "fixture-private.json").read_text())
+        baseline_retained, _ = http_json("POST", f"{b_base}/api/auth/v1/refresh", {"refresh_token": fixture_auth["retained_refresh"]})
+        baseline_revoked, _ = http_json("POST", f"{b_base}/api/auth/v1/refresh", {"refresh_token": fixture_auth["revoked_refresh"]})
+        late_status, _ = http_json("POST", f"{b_base}/api/auth/v1/refresh", {"refresh_token": late_refresh})
+        if baseline_retained != 200 or baseline_revoked == 200 or late_status == 200:
+            raise CorrectnessFailure("lagged auth outcomes are incorrect")
+        status, login = http_json("POST", f"{b_base}/api/auth/v1/login", {"username": FIXTURE_USERNAME, "password": "m0-local-only-password"})
+        if status != 200 or not isinstance(login, dict):
+            raise CorrectnessFailure("recovered login failed")
+        token = str(login["auth_token"])
+        recovered = {"main": set(), "aux": set()}
+        for api, name, baseline_offset, tail_offset in (
+            ("main_ops", "main", 0, 1000), ("aux_ops", "aux", 100000, 101000),
+        ):
+            for index in range(1, 101):
+                row_status, row = http_json("GET", f"{b_base}/api/records/v1/{api}/{baseline_offset + index}", token=token)
+                if row_status != 200 or not isinstance(row, dict):
+                    raise CorrectnessFailure(f"sealed baseline missing: {name}/{index}")
+                recovered[name].add(str(row["op_key"]))
+            for index in range(1, 11):
+                row_status, _ = http_json("GET", f"{b_base}/api/records/v1/{api}/{tail_offset + index}", token=token)
+                if row_status == 200:
+                    recovered[name].add(f"lagged-{name}-{index:06d}")
+            if name == "main":
+                denied_status, _ = http_json("GET", f"{b_base}/api/records/v1/main_ops/999999", token=token)
+                if denied_status == 200:
+                    recovered[name].add(denied_key)
+        measurements = {
+            name: outcomes(acknowledged[name], rejected[name], set(), recovered[name], submitted[name])
+            for name in ("main", "aux")
+        }
+        if any(len(measurements[name]["lost_acknowledged"]) != 10 for name in measurements):
+            raise CorrectnessFailure(f"lagged loss detector did not find ten writes per DB: {measurements}")
+        if not all(outcome_passes(value) for value in measurements.values()):
+            raise CorrectnessFailure(f"invalid lagged recovered outcomes: {measurements}")
+        (root / "result.json").write_text(json.dumps({
+            "scenario": "lagged-crash", "status": "PASS", "baseline": baseline_result,
+            "signal_sent_ns": signal_sent_ns, "exit_observed_ns": exit_observed_ns,
+            "outcomes": measurements,
+            "auth": {"baseline_retained": "accepted", "baseline_revoked": "rejected", "late": "rejected"},
+        }, indent=2) + "\n")
+    finally:
+        stop_owned([b_child])
+    return 0
+
+
+def run_crash(trail: Path, litestream: Path, root: Path) -> int:
+    run_follow(trail, litestream, root)
+    a_depot = root / "a" / "traildepot"
+    d_depot = root / "crash-b" / "traildepot"
+    write_fixture(d_depot)
+    shutil.copytree(a_depot / "secrets", d_depot / "secrets")
+    source = a_depot / "data"
+    paths = validate_inventory({name: source / f"{name}.db" for name in ("main", "session", "aux")})
+    config, socket_path = write_litestream_config(root, source, "crash-e1")
+    port = free_loopback_port()
+    base = f"http://127.0.0.1:{port}"
+    children: list[OwnedProcess] = []
+    followers: list[OwnedProcess] = []
+    try:
+        trail_child = owned_process(
+            [str(trail), "--depot", str(a_depot), "run", "--address", f"127.0.0.1:{port}", "--stderr-logging"],
+            "trail-a-crash", root, root / "logs" / "trail-a-crash.log",
+        )
+        children.append(trail_child)
+        replicator = owned_process(
+            [str(litestream), "replicate", "-config", str(config)],
+            "litestream-a-crash", root, root / "logs" / "replicator-a-crash.log",
+        )
+        children.append(replicator)
+        wait_ready(base, trail_child)
+        wait_for_path(socket_path, replicator)
+        initial = {}
+        for name, database in paths.items():
+            initial[name] = normalize_txid(sync_database(litestream, socket_path, database)["replica_txid"])
+        for name in ("main", "session", "aux"):
+            output = d_depot / "data" / f"{name}.db"
+            output.parent.mkdir(parents=True, exist_ok=True)
+            child = owned_process(
+                [str(litestream), "restore", "-f", "-follow-interval", "1s", "-o", str(output), (root / "backup" / "crash-e1" / name).as_uri()],
+                f"crash-follower-{name}", root, root / "logs" / f"crash-follower-{name}.log",
+            )
+            followers.append(child)
+            wait_for_txid(output.with_name(output.name + "-txid"), initial[name], child)
+        status, login = http_json("POST", f"{base}/api/auth/v1/login", {"username": FIXTURE_USERNAME, "password": "m0-local-only-password"})
+        if status != 200 or not isinstance(login, dict):
+            raise RuntimeError("crash writer login failed")
+        token = str(login["auth_token"])
+        submitted = {name: {f"e1-{name}-{index:06d}" for index in range(1, 101)} for name in ("main", "aux")}
+        acknowledged = {name: set(values) for name, values in submitted.items()}
+        ambiguous = {"main": set(), "aux": set()}
+        for index in range(1, 6):
+            for api, name, offset in (("main_ops", "main", 2000), ("aux_ops", "aux", 102000)):
+                key = f"crash-{name}-{index:06d}"
+                submitted[name].add(key)
+                write_status, created = http_json("POST", f"{base}/api/records/v1/{api}", {
+                    "id": offset + index, "op_key": key, "payload": "crash-tail",
+                }, token)
+                if write_status not in (200, 201) or not isinstance(created, dict):
+                    raise RuntimeError(f"pre-crash write failed: {key}")
+                acknowledged[name].add(key)
+        in_flight_key = "crash-main-inflight"
+        submitted["main"].add(in_flight_key)
+        request_started = threading.Event()
+        request_result: dict[str, object] = {}
+        def issue_in_flight() -> None:
+            request_started.set()
+            try:
+                request_result["status"], request_result["body"] = http_json("POST", f"{base}/api/records/v1/main_ops", {
+                    "id": 888888, "op_key": in_flight_key, "payload": "z" * (8 * 1024 * 1024),
+                }, token)
+            except Exception as exc:
+                request_result["error"] = repr(exc)
+        request_thread = threading.Thread(target=issue_in_flight, daemon=True)
+        request_thread.start()
+        if not request_started.wait(timeout=5):
+            raise RuntimeError("in-flight mutation did not start")
+        trail_sent, trail_exited = kill_owned(trail_child)
+        replica_sent, replica_exited = kill_owned(replicator)
+        request_thread.join(timeout=10)
+        if request_thread.is_alive():
+            raise RuntimeError("in-flight mutation did not resolve")
+        if request_result.get("status") in (200, 201):
+            acknowledged["main"].add(in_flight_key)
+        else:
+            ambiguous["main"].add(in_flight_key)
+        selected = {}
+        oracle_probe = root / "oracle" / "crash-e1"
+        oracle_probe.mkdir(parents=True)
+        for name in ("main", "session", "aux"):
+            dry = subprocess.run(
+                [str(litestream), "restore", "-dry-run", "-json", "-o", str(oracle_probe / f"{name}.db"), (root / "backup" / "crash-e1" / name).as_uri()],
+                capture_output=True, text=True, timeout=60, check=True,
+            )
+            selected[name] = normalize_txid(json.loads(dry.stdout)["max_txid"])
+            follower = followers[("main", "session", "aux").index(name)]
+            wait_for_txid(d_depot / "data" / f"{name}.db-txid", selected[name], follower)
+        if any(child.process.poll() is not None for child in followers):
+            raise RuntimeError("crash follower exited unexpectedly")
+        stop_owned(followers)
+        for child in followers:
+            check_follower_log(child)
+        evidence = root / "evidence" / "crash-follow-sidecars"
+        evidence.mkdir(parents=True)
+        databases = [d_depot / "data" / f"{name}.db" for name in ("main", "session", "aux")]
+        for database in databases:
+            sidecar = database.with_name(database.name + "-txid")
+            shutil.move(sidecar, evidence / sidecar.name)
+        b_port = free_loopback_port()
+        b_base = f"http://127.0.0.1:{b_port}"
+        b_child = promote_candidate(followers, databases, lambda: owned_process(
+            [str(trail), "--depot", str(d_depot), "run", "--address", f"127.0.0.1:{b_port}", "--stderr-logging"],
+            "trail-b-crash", root, root / "logs" / "trail-b-crash.log",
+        ))
+        children.append(b_child)
+        wait_ready(b_base, b_child)
+        fixture_auth = json.loads((root / "fixture-private.json").read_text())
+        retained_status, _ = http_json("POST", f"{b_base}/api/auth/v1/refresh", {"refresh_token": fixture_auth["retained_refresh"]})
+        revoked_status, _ = http_json("POST", f"{b_base}/api/auth/v1/refresh", {"refresh_token": fixture_auth["revoked_refresh"]})
+        if retained_status != 200 or revoked_status == 200:
+            raise CorrectnessFailure("baseline auth failed after crash")
+        status, recovered_login = http_json("POST", f"{b_base}/api/auth/v1/login", {"username": FIXTURE_USERNAME, "password": "m0-local-only-password"})
+        if status != 200 or not isinstance(recovered_login, dict):
+            raise CorrectnessFailure("crash recovery login failed")
+        recovered_token = str(recovered_login["auth_token"])
+        recovered = {"main": set(), "aux": set()}
+        for api, name, baseline_offset, tail_offset in (
+            ("main_ops", "main", 0, 2000), ("aux_ops", "aux", 100000, 102000),
+        ):
+            for index in range(1, 101):
+                row_status, row = http_json("GET", f"{b_base}/api/records/v1/{api}/{baseline_offset + index}", token=recovered_token)
+                if row_status != 200 or not isinstance(row, dict):
+                    raise CorrectnessFailure(f"sealed baseline lost after crash: {name}/{index}")
+                recovered[name].add(str(row["op_key"]))
+            for index in range(1, 6):
+                row_status, row = http_json("GET", f"{b_base}/api/records/v1/{api}/{tail_offset + index}", token=recovered_token)
+                if row_status == 200 and isinstance(row, dict):
+                    recovered[name].add(str(row["op_key"]))
+        row_status, row = http_json("GET", f"{b_base}/api/records/v1/main_ops/888888", token=recovered_token)
+        if row_status == 200 and isinstance(row, dict):
+            recovered["main"].add(str(row["op_key"]))
+        measured = {
+            name: outcomes(acknowledged[name], set(), ambiguous[name], recovered[name], submitted[name])
+            for name in ("main", "aux")
+        }
+        if not all(outcome_passes(value) for value in measured.values()):
+            raise CorrectnessFailure(f"crash outcome classification failed: {measured}")
+        (root / "result.json").write_text(json.dumps({
+            "scenario": "crash", "status": "PASS", "selected_txid": selected,
+            "trail_signal_ns": trail_sent, "trail_exit_ns": trail_exited,
+            "replicator_signal_ns": replica_sent, "replicator_exit_ns": replica_exited,
+            "outcomes": measured, "in_flight": "acknowledged" if in_flight_key in acknowledged["main"] else "ambiguous",
+        }, indent=2) + "\n")
+    finally:
+        stop_owned([*children, *followers])
+    return 0
+
+
 def run_preflight(trail: Path, litestream: Path, root: Path) -> int:
     if not trail.is_file() or not os.access(trail, os.X_OK):
         raise RuntimeError(f"TrailBase executable is not runnable: {trail}")
@@ -761,6 +1065,14 @@ def main(argv: list[str] | None = None) -> int:
         if not args.trail or not args.litestream:
             parser.error("graceful requires --trail and --litestream")
         return run_graceful(args.trail.absolute(), args.litestream.absolute(), root)
+    if args.scenario == "lagged-crash":
+        if not args.trail or not args.litestream:
+            parser.error("lagged-crash requires --trail and --litestream")
+        return run_lagged_crash(args.trail.absolute(), args.litestream.absolute(), root)
+    if args.scenario == "crash":
+        if not args.trail or not args.litestream:
+            parser.error("crash requires --trail and --litestream")
+        return run_crash(args.trail.absolute(), args.litestream.absolute(), root)
     raise RuntimeError(f"scenario not implemented yet: {args.scenario}")
 
 
