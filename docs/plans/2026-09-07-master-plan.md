@@ -10,16 +10,16 @@ The user selected this policy during planning:
 
 > Safety first: automatic promotion only with proven fencing and a defined data-loss budget; otherwise stop for operator review.
 
-**Deployment target chosen:** cloud VMs first. Bare-metal and orchestrator-specific deployments are deferred.
+**Deployment target chosen:** provider-independent cloud VMs/VPSs first. Hosting-provider selection, SDKs, adapters, account details, and provider-specific provisioning are outside this repository. Bare-metal and orchestrator-specific deployments are deferred.
 
-These decisions approve the safety direction and deployment class, not a particular cloud provider/fencing backend, numeric RPO/RTO, or all design proposals below. Those remain open decisions.
+These decisions approve the safety direction and deployment class, not numeric RPO/RTO or all design proposals below. No hosting provider needs to be selected to complete this plan. HAT defines capabilities and safety contracts; operators validate their deployment against them before enabling automatic failover.
 
 In scope:
 
 - Failure detection, cluster-wide leadership, fencing, promotion, switchover, and safe rejoin.
 - Main, session, and declared attached databases; separate per-node logs.
 - Storage objects, auth secrets, realtime connections, jobs, schema/config compatibility, routing, and observability.
-- Recovery drills, failure injection, provider qualification, operating procedures, and eventual packaging.
+- Recovery drills, failure injection, portable capability checks, operating procedures, and eventual packaging.
 - Optional read scaling, without treating HTTP GET as a read-only guarantee.
 
 Out of scope initially:
@@ -49,7 +49,7 @@ Until these pass, HAT is an HA design experiment, not a production availability 
 | Existing consensus-backed coordinator + the same supervisor/fence | Preferable where etcd/Consul or an equivalent managed control plane already exists | Adds a dependency otherwise; election still does not fence SQLite or make backups synchronous | Keep as an alternative, not a second v1 backend |
 | Synchronous/quorum database or replication architecture | Appropriate if acknowledged-write loss is forbidden | Changes the core TrailBase/Litestream premise; needs a separate compatibility evaluation | Revisit only if requirements demand it |
 
-Within the chosen cloud-VM target, the proposed initial deployment is two or three Linux VMs in separate failure domains, an existing HA ingress service, one S3/R2 endpoint, and a cloud-control-plane fence that works independently of the guest OS and application process. Two nodes can coordinate through a single authoritative object-store lease; adding a third node does **not** magically create data quorum replication.
+Within the chosen cloud-VM/VPS target, the proposed initial deployment is two or three Linux VMs in separate failure domains, an existing HA ingress service, one S3-compatible endpoint, and an operator-supplied independent fence. HAT consumes a provider-neutral fencing contract; any hosting-specific implementation remains outside this repo. Two nodes can coordinate through a single authoritative object-store lease; adding a third node does **not** magically create data quorum replication.
 
 Start with data-hot standbys: restore processes stay running, but TrailBase is stopped. Add service-hot read replicas only after the read-only gate. This is an explicit reduction of initial scope, not a claim to have solved the requested hot application standby yet.
 
@@ -86,18 +86,18 @@ Even primary-only reads cannot guarantee that data survives subsequent failover.
 
 | Stage | Deliverable | Exit condition |
 | --- | --- | --- |
-| M0: qualify the premise | Version-pinned experiments and compatibility report | Follow/recovery, writable startup, multi-DB policy, provider CAS, and chosen fencing assumptions demonstrated; limitations recorded |
-| M1: recover safely by operator command | Minimal supervisor, single deployment backend, data-hot standbys, manual promotion/rejoin, primary-only ingress, runbooks | Repeated fence/promote/rejoin drills; no shared-prefix corruption; no unfenced override; recover all supported state |
+| M0: qualify the premise | Version-pinned experiments and compatibility report | Follow/recovery, writable startup, multi-DB policy, storage CAS, and fencing contract demonstrated in a controlled harness; deployment assumptions recorded |
+| M1: recover safely by operator command | Minimal supervisor, generic Linux VM setup, operator-supplied fence, data-hot standbys, manual promotion/rejoin, primary-only ingress, runbooks | Repeated fence/promote/rejoin drills; no shared-prefix corruption; no unfenced override; recover all supported state |
 | M2: automate bounded failover | Detection, eligibility/RPO policy, race-safe election, resumable transitions, alerts | Partition/suspension/process-crash tests pass; explicit RPO/RTO evidence; unknown states stop safely |
 | M3: optional read scaling | Qualified read-only TrailBase mode, route allowlist, lag gates, auth restrictions | Hidden-write audit and concurrent-follow tests pass; stale/security behavior documented and tested |
-| M4: operational hardening | S3 and R2 qualification, restore/PITR drills, upgrade checks, cost/load tests, packaging | Published support matrix and measured SLO envelope; second provider earns support through testing |
+| M4: operational hardening | S3/R2 compatibility checks, private VPS integration drills, restore/PITR drills, upgrade checks, cost/load tests, packaging | Published capability matrix and measured SLO envelope; sanitized evidence, no hosting-provider certification or integrations |
 | Later | Realtime replay, durable jobs, richer rollout helpers, aggregated log analytics | Only when demanded by application requirements |
 
-M1 is deliberately manual before M2 automation; the project goal remains automatic HA. Platform support and provider support may be narrower at each stage.
+M1 is deliberately manual before M2 automation; the project goal remains automatic HA. Supported OS/storage capabilities may be narrower at each stage. Test fixtures prove controller behavior, not that every VPS can supply a reliable fence; each deployment must validate that capability before enabling automation.
 
 ## 7. What HAT will build
 
-A small supervisor around existing binaries, not a TrailBase fork by default. Its responsibilities are process ownership, role transitions, lease integration, readiness, epoch metadata, promotion checks, and operator actions. Reuse one established ingress and one proven external fence rather than designing pluggable frameworks first.
+A small supervisor around existing binaries, not a TrailBase fork by default. Its responsibilities are process ownership, role transitions, lease integration, readiness, epoch metadata, promotion checks, and operator actions. Reuse an established ingress and a small operator-supplied fencing boundary rather than building hosting-provider adapters or a plugin framework.
 
 [Work register](../work-register.md) specifies components, dependencies, acceptance tests, and stable issue IDs. [Deployment contract](../deployment.md) specifies desired node and bucket setup; examples are illustrative, not installable configurations. [TrailBase state](../trailbase-state.md) enumerates state that database replication alone does not cover.
 
@@ -107,11 +107,11 @@ Execution planning comes after M0: choose implementation language/backend, turn 
 
 Priority order:
 
-1. **Cloud provider/fencing:** cloud VMs are selected. Which VM provider should we qualify first, and what confirmed power-off/termination and restart-prevention guarantees does its control plane provide?
+1. **Fencing contract:** define the evidence, timeout, retry, and restart-prevention requirements for an operator-supplied fence. Hosting-provider choice is not a project decision; deployment-specific validation comes later.
 2. **Loss and downtime:** what acknowledged-write loss is acceptable, and for which data? What write/API RTO is useful? Is operator review acceptable when loss cannot be bounded?
 3. **Hotness:** is data-hot/process-stopped an acceptable first milestone while genuine read-only TrailBase support is established?
 4. **Database semantics:** are attached DBs independently recoverable, or do transactions/workflows require cross-DB invariants? Can failover invalidate sessions and require reauthentication?
-5. **Storage provider/region:** AWS S3 or Cloudflare R2, single-region or cross-region? This choice is separate from the VM provider. Coordination and backup availability are shared dependencies.
+5. **Storage capability/latency envelope:** define required S3-compatible operations, retention and latency assumptions without selecting an account or vendor now. Preserve the requested S3/R2 compatibility work; coordination and backup availability are shared dependencies.
 6. **Reads:** public eventually-consistent reads only, or auth-sensitive reads? Which maximum stale/revocation windows are acceptable?
 7. **Side effects:** any cron, email, webhook, payment, queue, object deletion, or custom runtime handlers that need idempotency or durable replay?
 8. **Project policy:** choose a license before distributing implementation; public visibility alone does not grant an open-source license.

@@ -41,7 +41,16 @@ Litestream's S3 leaser is a reuse candidate, not a turnkey solution. An integrat
 
 A successful lease update does not revoke an old process's SQLite connection, S3 credentials, cron timer, or outbound HTTP request. SIGTERM from a suspended supervisor cannot be trusted to arrive on time. A process resuming after its lease expired must not resume writes under the old authority.
 
-For automatic failover, qualify an **independent fence**, for example a cloud host power-off/termination operation confirmed through the platform, or an equivalently strong host/storage fence. A network-only fence must cover all mutation paths, not just incoming HTTP; a DB file local to the isolated host is still writable. Fence evidence must identify the exact old instance/boot incarnation and prevent its automatic restart.
+For automatic failover, require an **operator-supplied independent fence**. HAT defines the safety contract, not a hosting-provider API or adapter. Confirmed external power-off is one possible implementation; an alternative must provide equivalent protection for every mutation path. A network-only fence must cover more than incoming HTTP; a DB file local to the isolated host is still writable. Fence evidence must identify the exact old instance/boot incarnation and prevent its automatic restart.
+
+Proposed minimal integration: invoke a trusted operator-configured executable, kept outside this repo, with structured target/operation data—not an interpolated shell command. Freeze the invocation/result format during execution planning. The contract must:
+
+- Bind the request and completion evidence to the cluster, old node/boot/activation, and a unique operation identity; reject stale or mismatched evidence.
+- Report success only after the old writer, replicator, and jobs cannot mutate or resume under old authority. “Request accepted” or a process exit code without the required evidence is insufficient.
+- Bound waiting and handle retries/unknown outcomes idempotently; a timeout or missing integration keeps promotion blocked. Recheck current promotion authority before acting on completion.
+- Prevent delayed retries from fencing a new incarnation or a safely rejoined node; the operator integration owns target mapping and lifecycle interlocks.
+
+HAT trusts this privileged integration's completion evidence; it cannot infer physical isolation from a generic result alone. The repository will supply deterministic contract fixtures and failure tests, not provider-specific SDKs, cloud provisioning, or a vendor certification list. Operators validate the real mechanism privately before enabling automatic failover.
 
 Local defense-in-depth: deny readiness early, stop the entire managed process group/cgroup, enforce bounded shutdown, and watchdog the supervisor. These measures help, but an arbitrary whole-host pause defeats a same-host watchdog. If fencing cannot be proved, do not activate another writer. Manual promotion follows the same rule.
 
@@ -160,4 +169,4 @@ On demotion close existing long-lived streams/connections, not only readiness fo
 | Corrupt/truncated LTX, partial apply, pruned history, disk full | Withdraw affected replica, alert, restore cleanly or refuse promotion |
 | One required DB lags or is missing | Whole candidate is ineligible unless its declared recovery policy explicitly permits that state |
 | New primary fails before publishing | Recover/fence the incomplete activation; never infer readiness from existence of a lease |
-| Region/provider failure | No automatic cross-provider takeover without a separately designed authority/data protocol |
+| Failure domain or external dependency outage | Hosting-provider independence does not imply safe automatic takeover across independent coordination/storage authorities; such failover needs a separate protocol |

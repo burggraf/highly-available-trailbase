@@ -8,17 +8,17 @@ Prefer one small supervisor executable plus generated config and tests. Choose i
 
 | Component | Exact responsibility / output | Reuse / boundaries |
 | --- | --- | --- |
-| Qualification harness | Launch pinned binaries against disposable DBs/providers; collect integrity, positions, process traces and client operation ledger | First runnable work; no production credentials; real provider tests supplement local emulators |
+| Qualification harness | Launch pinned binaries against disposable DBs, storage endpoints and generic fencing fixtures; collect integrity, positions, process traces and client operation ledger | Local tests first; later private VPS deployment validation; sanitized evidence, no hosting-specific dependencies |
 | Inventory/config validator | Discover declared DB files; validate required/optional policies, no path alias/collision, roles, versions, secrets references, object store and fence availability | Fail closed on undeclared mutable DBs; no speculative config framework |
 | Node supervisor | Own subprocess groups; persist/reconcile state transitions; role readiness; no auto-primary restart | Existing OS service manager for lifetime; reuse Litestream subprocess functionality where proven |
 | Coordination/activation integration | One lease; renewal deadlines; uncertain-outcome reconciliation; fresh epoch allocation; safe discovery publication | Reuse Litestream S3 primitives only where the full contract holds; one backend first |
-| Fencing integration | Fence exact old VM/boot through the cloud control plane; confirm it cannot write or restart; preserve receipt | One cloud provider first; never reduce fencing to guest shutdown or load-balancer removal |
+| Fencing contract | Invoke a trusted operator-supplied executable for the exact old node/boot; validate completion evidence and fail closed | Generic contract/fixtures only; hosting-specific code and target mappings live outside the repo; no adapter framework |
 | Replication lifecycle | Generate per-epoch configs; run one primary replicator / per-DB followers; collect progress, handle gaps and clean reseeds | Litestream remains responsible for SQLite backup format and transport |
 | Promotion/recovery operations | Eligibility, fence, choose/validate recovery cut, stop followers, activate epoch, start writer, publish, reseed peers | Same safe path for manual and automatic operation; resumable, idempotent transitions |
 | Ingress integration | Stable primary endpoint; role/epoch-aware health; demotion/drain; optional allowlisted read endpoint | Existing managed LB or established proxy, not a new HTTP implementation |
 | Operator surface | Proposed actions: status, bootstrap, switchover, promote, quarantine, rejoin, restore, validate, diagnose | Names/API not frozen; authenticated audit trail; no unsafe force-promote escape hatch |
 | Metrics/events | Per-DB history/lag, conservative lease state, eligibility reasons, process/disk health, measured RPO/RTO | Reuse Litestream metrics/IPC; additional HAT state only |
-| Packaging/runbooks | Pinned artifacts, one reference platform setup, provider instructions, secret handling, upgrades and disaster recovery | No pretend-ready compose/k8s bundle before safety tests |
+| Packaging/runbooks | Pinned artifacts, generic Linux VM setup, capability checks, secret handling, upgrades and disaster recovery | No hosting-provider provisioning or integrations; no pretend-ready deployment bundle before safety tests |
 | Optional read-only TrailBase capability | Genuine read-only opens and initialization, no background mutations or WAL conversion, local writable logs, cache refresh strategy | Prefer upstream contribution; no fork assumed; do not substitute route filtering |
 
 ## 2. Safety and replication issues
@@ -28,7 +28,7 @@ Prefer one small supervisor executable plus generated config and tests. Choose i
 | HAT-001 | P0 M0 | Pin current upstream binaries and embedded SQLite versions | Record checksums/platform/help; test exact pair; upstream changes invalidate qualification |
 | HAT-002 | P0 M0 | Follow correctness under real SQLite access | Multi-page transactions, long-lived readers, DDL, cache invalidation, truncate/vacuum/page-size behavior, lock pressure all pass on target platform |
 | HAT-003 | P0 M0 | Read-only TrailBase is absent in baseline | Either supported upstream mode passes write tracing, or service-hot/read scaling is explicitly unavailable; stopped-app standby remains baseline |
-| HAT-004 | P0 M0 | Cloud-control-plane VM fence | Confirm exact old VM is powered off/terminated with restart prevented; delayed/unknown API outcomes block promotion; restarted nodes cannot mutate before safe rejoin |
+| HAT-004 | P0 M0 | Provider-neutral independent fencing contract | Fixtures cover confirmed isolation, no-op/failed/missing fence, timeout, stale evidence and delayed retries against a new incarnation; deployment validation required before automation; restarted nodes cannot mutate before safe rejoin |
 | HAT-005 | P0 M0–M1 | Integrate S3 lease lifecycle; released CLI does not do it | Acquire/renew/loss/expiry/release and child shutdown proven; no undocumented `lease:` config |
 | HAT-006 | P0 M0 | Time/lease safety model | Bound skew, renewal latency, scheduling and suspend behavior; unknown timing forces stop; late renew never revives an old activation |
 | HAT-007 | P0 M0–M1 | Safe activation publication and epoch ordering | Concurrent candidates/stale publishers cannot advertise an unauthorized writer; missing lock/generation reset/ABA and lost responses tested |
@@ -40,7 +40,7 @@ Prefer one small supervisor executable plus generated config and tests. Choose i
 | HAT-013 | P0 M1 | Strict bootstrap/missing-data distinction | Empty/missing backup, auth failure, timeout, wrong prefix and absent attached DB never create empty state in an existing cluster |
 | HAT-014 | P0 M1 | Safe old-primary rejoin | Returns fenced, forensic copy preserved, no auto-failback or WAL merge; clean seed rejoins current epoch |
 | HAT-015 | P0 M1–M2 | Resumable crash-safe transitions | Inject supervisor/process/host failure after every promotion/switchover step; reconciliation never creates a second mutator |
-| HAT-016 | P0 M0/M4 | Actual S3/R2 coordination semantics | Test simultaneous CAS create/replace/release, stale ETags, 409/412, permission changes and lost responses; unsupported provider stays excluded |
+| HAT-016 | P0 M0/M4 | Actual S3/R2 coordination semantics | Test simultaneous CAS create/replace/release, stale ETags, 409/412, permission changes and lost responses; endpoints lacking required semantics cannot enable automation |
 | HAT-017 | P1 M1 | Manual switchover and quiesced checkpoint | Drain all mutators; verify IPC sync and per-DB cut; successful restore with no acknowledged loss in the controlled drill |
 | HAT-018 | P1 M2 | Failure detection and candidate selection | HTTP failure alone never elects; all-required-DB eligibility, preference/backoff, lease contention, cooldown and flapping tested |
 | HAT-019 | P1 M1–M2 | Storage/control outage policy | Primary stops on authority uncertainty; no automatic second coordinator/provider fallback; degraded behavior documented |
@@ -75,7 +75,7 @@ Prefer one small supervisor executable plus generated config and tests. Choose i
 | HAT-038 | P1 M2–M4 | Observability and measured objectives | External acknowledged-operation ledger; publish loss/RTO and safety refusals; distinguish process alive from correct role/replication |
 | HAT-039 | P1 M1/M4 | Upgrade/migration/rollback process | Homogeneous qualified releases; incompatible skew disables promotion; controlled migrations and restore rollback documented |
 | HAT-040 | P1 M1/M4 | Total loss/PITR and object recovery | Full restoration to new nodes from remote data + secrets + artifacts + objects; no dependence on dead node disks |
-| HAT-041 | P1 M4 | Fault domains/region/provider support | Failure matrix includes ingress, fence, S3/R2, time, identity and network dependencies; cross-region/cross-provider not implied |
+| HAT-041 | P1 M4 | Fault domains and deployment capabilities | Failure matrix includes ingress, fence, S3/R2, time, identity and network dependencies; publish capability assumptions, not hosting-provider certification; independent-authority failover not implied |
 | HAT-042 | P1 M4 | Replication cost/performance | Measure polling/list/GET/PUT, compaction, snapshots, per-epoch reseeds and egress; cost budget plus sustainable lag limits |
 | HAT-043 | P2 Later | Asset-release assistance, not distribution | Optional manifest/hash verification and rollout preflight; developer retains deployment responsibility |
 | HAT-044 | P1 M1 | Configuration/operator trust boundary | Validate names/paths/URLs, protect control API, audit privileged actions, reject conflicting inventories and unsafe force flags |
@@ -90,15 +90,15 @@ Prefer one small supervisor executable plus generated config and tests. Choose i
 2. **Follower alone:** replicate and continuously restore each required DB with TrailBase stopped on the standby. Verify positions, checksums, fresh/idle behavior, restart, missing history, genuine kill mid-apply, corruption, shrink, and large DB recovery.
 3. **Read-only gate:** open only through genuine read-only handles; test long transactions and live schema changes. Trace stock TrailBase startup against followed/read-only files to establish the current failure. Never enable reads by making files writable to get past the test.
 4. **Storage gate:** run contention/failure tests against the intended AWS S3/R2 endpoint, not just an emulator. Verify conditional delete explicitly. No production bucket data.
-5. **Fence gate:** run two candidates with a deliberately paused old host/supervisor, blocked storage path, stale LB target, and delayed renewal. Resume the old host after takeover; no unauthorized mutation or replication into new history may succeed.
+5. **Fence gate:** first exercise the provider-neutral contract with deterministic fixtures: confirmed isolation, failed/no-op/missing fence, timeout, stale evidence, and delayed retries. Then privately validate the actual operator-supplied fence on disposable VPSs with a paused/partitioned old node, stale ingress, and delayed renewal. Resume/restart the old node after takeover; no unauthorized mutation or replication into new history may succeed. Mocks alone do not qualify a real fence.
 6. **Recovery cut:** construct a main/session/attached workflow with dependent updates; crash between operations and uploads. Demonstrate the declared recovery policy, including auth fail-closed checks and unsupported-skew rejection.
 7. **Integrated switchover/promotion:** quiesced flush, fence, final restore cut, new epoch, writable startup, baseline replication, route change, rejoin. Repeat with failure injected at each transition and with two simultaneous contenders.
 8. **Application drill:** auth flows, file upload/update/delete, SSE reconnect, custom jobs and ambiguous non-idempotent request. Validate external ledger vs recovered state.
 
-M0 results should be short reproducible reports: pinned versions, environment, exact commands, expected invariant, observed outcome, logs/artifacts, and go/no-go decision. Successful happy-path demos do not close failure-mode issues.
+M0 results should be short reproducible reports: pinned versions, generic environment/capability assumptions, commands with placeholders, expected invariant, observed outcome, sanitized logs/artifacts, and go/no-go decision. Keep actual hosting identities, addresses, credentials and integration code in private operator inventory. Successful happy-path demos do not close failure-mode issues.
 
 ## 6. Execution-plan readiness
 
-Cloud VMs are the selected first deployment target. Before writing a complete execution plan, record decisions for the first VM provider/fence, coordinator/storage provider, RPO/RTO and uncertainty policy, supported DB semantics, hotness/read scope, auth recovery, object-retention restrictions, implementation language, and licensing.
+Provider-independent cloud VMs/VPSs are the selected first deployment target. Before writing a complete execution plan, define the fencing contract, coordination/storage capabilities, RPO/RTO and uncertainty policy, supported DB semantics, hotness/read scope, auth recovery, object-retention restrictions, implementation language, and licensing. Hosting-provider selection or certification is not a prerequisite or repository responsibility; validation of a particular deployment is an operator responsibility before enabling automation.
 
 Then turn M1/M2 issues into small implementation tasks with concrete files, runnable tests, acceptance commands, and review checkpoints. M3 should remain blocked while HAT-002/HAT-003/HAT-020 are unresolved. Do not turn these tables into dozens of empty modules, config interfaces, or GitHub tickets before prioritizing the experiments.

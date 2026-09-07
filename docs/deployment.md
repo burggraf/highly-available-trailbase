@@ -1,18 +1,20 @@
 # Deployment and storage contract
 
-Status: proposed setup requirements, **not runnable installation instructions**. Exact flags, systemd/container units, IAM policies, and the HAT config schema will be delivered after qualification. Do not provision cloud infrastructure from these placeholders.
+Status: proposed setup requirements, **not runnable installation instructions**. Generic service setup, capability checks, and the HAT config schema will follow feasibility testing. Hosting-provider provisioning, SDKs, credentials, and integrations remain operator-owned and outside this repo. Do not provision infrastructure from these placeholders.
 
 ## 1. First supported environment
 
-**Selected target: cloud VMs first.** The cloud provider remains undecided; qualify one provider before adding another. Bare-metal and orchestrator-specific deployments are deferred.
+**Selected target: provider-independent cloud VMs/VPSs first.** No hosting provider is selected or required by this repo. Bare-metal and orchestrator-specific deployments are deferred.
 
-Recommend Linux VMs with node-exclusive persistent SSD-backed volumes, an existing HA ingress, and a cloud-control-plane fence independent of the guest OS. Choose the exact disk type, OS/service manager, and ingress after the provider. Windows, shared/network SQLite filesystems, serverless scale-to-zero/overlapping replicas, and multi-region active/active are outside the first support envelope.
+Recommend Linux VMs with node-exclusive persistent SSD-backed volumes, an existing HA ingress, and an operator-supplied independent fence. Define required OS, filesystem/locking, network, and supervision capabilities without tying them to VM product names. Windows, shared/network SQLite filesystems, serverless scale-to-zero/overlapping replicas, and multi-region active/active are outside the first support envelope.
 
-Minimum topology: one primary plus one standby on distinct failure domains. Three nodes improve maintenance flexibility and recovery capacity but do not alter asynchronous durability. Ingress, the fencing API, credentials, time service, DNS, and object storage are dependencies to include in the availability model.
+Minimum topology: one primary plus one standby on distinct failure domains. Three nodes improve maintenance flexibility and recovery capacity but do not alter asynchronous durability. Ingress, the fencing mechanism, credentials, time service, DNS, and object storage are dependencies to include in the availability model.
 
-For automatic promotion, require provider-confirmed power-off or termination of the exact previous VM incarnation and prevention of uncoordinated restart/replacement. An accepted API request, guest shutdown command, SSH failure, or load-balancer removal is not completion evidence. Preserve disks for forensic recovery where supported; qualify termination/disk-retention semantics before choosing that operation. Unknown fencing outcomes or an unavailable cloud control plane block promotion. Any later restarted/replacement VM must enter fenced and rejoin through the normal reseed protocol.
+For automatic promotion, the operator-supplied fence must confirm that the exact previous node incarnation cannot mutate or resume as the old writer. Confirmed external power-off is one implementation, not a required hosting API. An accepted request, SSH failure, or load-balancer removal is not completion evidence. Unknown fencing outcomes block promotion. Any restarted/replacement node must enter fenced and rejoin through the normal reseed protocol; preserve old disks for forensic recovery where possible.
 
-The first provider qualification must cover stop/force-stop behavior under a hung guest, completion evidence, delayed/duplicate requests, narrowly scoped fencing permissions, automatic recovery/restart settings, and fence latency as part of RTO. The VM provider does not select the object-storage provider: S3 versus R2 remains a separate decision.
+HAT will document and test the [provider-neutral fencing contract](architecture.md#application-fencing), not ship hosting SDKs or adapters. Operators supply any hosting-specific executable/configuration privately and validate hung-node behavior, completion evidence, delayed/duplicate requests, permissions, restart prevention, disk preservation, and latency before enabling automation. A VPS without a trustworthy fence can still support replication/testing, but automatic promotion stays disabled; manual promotion still requires confirmed isolation.
+
+Use generic local fixtures first. Later integration tests can use operator-provided VPSs with private inventory and credentials; publish only sanitized results and capability assumptions, not hosting names, account IDs, VM IDs, addresses, or private integration code. Successful fixture tests are not proof of a production fence. S3/R2 storage compatibility remains in scope independently of hosting choice.
 
 ## 2. Every node
 
@@ -87,9 +89,9 @@ Do not insert HAT metadata into Litestream's internal LTX file layout. A HAT act
 
 The activation/checkpoint record records the exact logical DB inventory, source epoch, per-DB positions/checksums, schema/config/release compatibility and recovery policy. It is not an atomic distributed DB snapshot. The `active.json` publication safety problem is detailed in [architecture](architecture.md).
 
-## 5. Provider setup checklist
+## 5. S3-compatible storage checklist
 
-For the selected provider:
+For each configured storage endpoint (no account or vendor selection is needed now):
 
 - Create private environment/cluster-scoped storage. Disable public access; enforce TLS; choose regions/jurisdiction and encryption policy.
 - Use the direct S3 API endpoint. R2 uses the account-specific endpoint and provider-appropriate signing/region configuration; AWS uses its region/bucket configuration. Generate exact config only after testing the pinned SDK/binary.
