@@ -32,6 +32,10 @@ def classify_precondition(status: int | None) -> str:
     return {200: "applied", 201: "applied", 204: "applied", 409: "conflict", 412: "refused"}.get(status, "unknown")
 
 
+def header_value(headers: dict[str, str], name: str) -> str:
+    return next((value for key, value in headers.items() if key.lower() == name.lower()), "")
+
+
 class Reconciliation(Enum):
     COMMITTED = "committed"
     DISCARDED = "discarded"
@@ -42,6 +46,26 @@ class Reconciliation(Enum):
 class SignedRequest:
     url: str
     headers: dict[str, str]
+
+
+@dataclass(frozen=True)
+class ReconciliationProbe:
+    method: str
+    status: int | None
+    etag: str
+    payload_sha256: str
+    request_id: str
+
+    @classmethod
+    def from_response(cls, method: str, response: tuple[int, dict[str, str], bytes]):
+        status, headers, body = response
+        return cls(method, status, header_value(headers, "etag"), hashlib.sha256(body).hexdigest(), header_value(headers, "x-amz-request-id") or header_value(headers, "x-request-id"))
+
+
+@dataclass(frozen=True)
+class ReconciliationResult:
+    outcome: Reconciliation
+    probes: tuple[ReconciliationProbe, ...]
 
 
 def _hmac(key: bytes, text: str) -> bytes:
@@ -120,24 +144,30 @@ class S3Client:
     def delete(self, key: str, *, etag: str | None = None):
         return self.request("DELETE", key, headers={"If-Match": quote_etag(etag)} if etag is not None else {})
 
-    def reconcile_put(self, key: str, body: bytes, etag: str) -> Reconciliation:
-        # ponytail: bounded probes avoid hanging on a degraded provider; caller can retry the scenario.
+    def reconcile_put_detailed(self, key: str, body: bytes, etag: str) -> ReconciliationResult:
+        probes: list[ReconciliationProbe] = []
+        # ponytail: three authoritative rounds bound degraded-provider runtime.
         for _ in range(3):
-            try:
-                status, headers, _ = self.head(key)
-                if status == 404: return Reconciliation.DISCARDED
-                if status in (200, 204) and headers.get("ETag", headers.get("etag", "")) == quote_etag(etag):
-                    return Reconciliation.COMMITTED
-            except (OSError, URLError):
-                pass
-            try:
-                status, headers, got = self.get(key)
-                if status == 404: return Reconciliation.DISCARDED
-                if status == 200 and got == body and headers.get("ETag", headers.get("etag", "")) == quote_etag(etag):
-                    return Reconciliation.COMMITTED
-            except (OSError, URLError):
-                pass
-        return Reconciliation.UNKNOWN
+            absent: set[str] = set()
+            for method, read in (("HEAD", self.head), ("GET", self.get)):
+                try:
+                    response = read(key)
+                except (OSError, URLError):
+                    probes.append(ReconciliationProbe(method, None, "", hashlib.sha256(b"").hexdigest(), ""))
+                    continue
+                probe = ReconciliationProbe.from_response(method, response)
+                probes.append(probe)
+                status, headers, got = response
+                if status == 404:
+                    absent.add(method)
+                if method == "GET" and status == 200 and got == body and probe.etag == quote_etag(etag):
+                    return ReconciliationResult(Reconciliation.COMMITTED, tuple(probes))
+            if absent == {"HEAD", "GET"}:
+                return ReconciliationResult(Reconciliation.DISCARDED, tuple(probes))
+        return ReconciliationResult(Reconciliation.UNKNOWN, tuple(probes))
+
+    def reconcile_put(self, key: str, body: bytes, etag: str) -> Reconciliation:
+        return self.reconcile_put_detailed(key, body, etag).outcome
 
 
 def _read_s3_values(path: Path, repository: Path | None = None) -> dict[str, str]:
@@ -145,7 +175,7 @@ def _read_s3_values(path: Path, repository: Path | None = None) -> dict[str, str
     require_private_file(path, repository)
     values: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
-        match = re.fullmatch(r"export ([A-Z][A-Z0-9_]*)=(?:'([^'\\n]*)'|\"([^\"\\n]*)\"|([^\\s]+))", line)
+        match = re.fullmatch(r"export ([A-Z][A-Z0-9_]*)=(?:'([^'\n]*)'|\"([^\"\n]*)\"|([^\s]+))", line)
         if not match: raise ValueError("invalid S3 env")
         aliases = {"AWS_ACCESS_KEY_ID": "IDRIVE_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY": "IDRIVE_SECRET_KEY", "AWS_REGION": "IDRIVE_REGION", "HAT_S3_ENDPOINT": "IDRIVE_ENDPOINT", "HAT_S3_BUCKET": "IDRIVE_BUCKET"}
         key = aliases.get(match.group(1), match.group(1))

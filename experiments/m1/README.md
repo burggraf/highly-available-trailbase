@@ -28,3 +28,13 @@ python3 experiments/m1/run.py init-remote \
 ```
 
 `init-remote` verifies the root-owned, non-symlink `/var/lib/hat-qualification` base, atomically creates a unique `0700` run directory, and removes a newly-created directory if verification fails. Failed local runs remain private for inspection.
+
+## Storage qualification
+
+```sh
+python3 experiments/m1/run.py storage \
+  --s3-env ~/.config/hat/m1-idrivee2.env \
+  --work-root ~/.config/hat/m1-storage-runs
+```
+
+The storage run uses a fresh unique prefix and records its complete conditional-operation matrix in a mode-`0600` evidence file below the private work root. It prints `storage PASS` and exits `0` when all capabilities hold; capability mismatches are fully collected, print `storage NO-GO`, and exit `2`.

@@ -1,7 +1,9 @@
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
-from s3 import S3Client, classify_status, quote_etag, Reconciliation
+from s3 import S3Client, classify_status, load_s3_env, quote_etag, Reconciliation
 
 
 class SigV4Tests(unittest.TestCase):
@@ -27,17 +29,34 @@ class SigV4Tests(unittest.TestCase):
         self.assertEqual(request.call_args_list[0].kwargs["headers"], {"If-Match": '""'})
         self.assertEqual(request.call_args_list[1].kwargs["headers"], {"If-Match": '""'})
 
-    def test_unknown_put_reconciles_by_head_then_get(self):
+    def test_unknown_put_reconciles_by_authoritative_get(self):
         c = S3Client("b", "r", "a", "s", "https://s3.example")
-        with mock.patch.object(c, "head", side_effect=OSError("lost")), mock.patch.object(c, "get", return_value=(200, {"ETag": '"x"'}, b"data")):
-            self.assertEqual(c.reconcile_put("k", b"data", '"x"'), Reconciliation.COMMITTED)
-        with mock.patch.object(c, "head", return_value=(404, {}, b"")):
-            self.assertEqual(c.reconcile_put("k", b"data", '"x"'), Reconciliation.DISCARDED)
+        with mock.patch.object(c, "head", return_value=(200, {"ETag": '"x"'}, b"")), mock.patch.object(c, "get", return_value=(200, {"ETag": '"x"'}, b"data")):
+            result = c.reconcile_put_detailed("k", b"data", '"x"')
+        self.assertEqual(result.outcome, Reconciliation.COMMITTED)
+        self.assertEqual([(probe.method, probe.status) for probe in result.probes], [("HEAD", 200), ("GET", 200)])
+        with mock.patch.object(c, "head", return_value=(404, {"X-Amz-Request-Id": "r"}, b"")), mock.patch.object(c, "get", return_value=(404, {"X-Amz-Request-Id": "g"}, b"")):
+            result = c.reconcile_put_detailed("k", b"data", '"x"')
+        self.assertEqual(result.outcome, Reconciliation.DISCARDED)
+        self.assertEqual([(probe.method, probe.status, probe.request_id) for probe in result.probes], [("HEAD", 404, "r"), ("GET", 404, "g")])
 
     def test_reconcile_requires_exact_etag_and_bytes(self):
         c = S3Client("b", "r", "a", "s", "https://s3.example")
         with mock.patch.object(c, "head", return_value=(200, {"ETag": '"wrong"'}, b"")), mock.patch.object(c, "get", return_value=(200, {"ETag": '"x"'}, b"wrong")):
             self.assertEqual(c.reconcile_put("k", b"data", '"x"'), Reconciliation.UNKNOWN)
+
+    def test_s3_env_accepts_standard_shell_value_forms(self):
+        lines = (
+            "export AWS_ACCESS_KEY_ID=identifier\n"
+            "export AWS_SECRET_ACCESS_KEY='secret/value'\n"
+            "export AWS_REGION=\"us-west-2\"\n"
+            "export HAT_S3_ENDPOINT=https://endpoint.example\n"
+            "export HAT_S3_BUCKET='bucket'\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "env"; path.write_text(lines)
+            with mock.patch("s3.require_private_file"):
+                self.assertEqual(load_s3_env(path), {"IDRIVE_REGION": "us-west-2", "IDRIVE_ENDPOINT": "https://endpoint.example", "IDRIVE_BUCKET": "bucket"})
 
     def test_discarded_put_closes_without_reading_response(self):
         c = S3Client("b", "r", "a", "s", "https://s3.example")

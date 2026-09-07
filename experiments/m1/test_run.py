@@ -1,5 +1,7 @@
+import hashlib
 import json
 import os
+import threading
 import stat
 import subprocess
 import tempfile
@@ -11,7 +13,8 @@ from run import (
     Node, RunContext, _FINGERPRINT, _require_facts, _known_host_fingerprint,
     append_evidence, build_pinned_known_hosts, ensure_remote_root, init_remote,
     load_inventory, load_linode_env, new_run_context, require_private_file,
-    redact, scp_to, ssh, validate_inventory, _absolute_no_symlinks, main,
+    redact, scp_to, ssh, storage, validate_inventory, _absolute_no_symlinks,
+    main, StorageStatus,
 )
 
 FP = "SHA256:" + "A" * 43
@@ -634,5 +637,94 @@ class PreflightEvidenceTests(unittest.TestCase):
             self.assertTrue((ctx.local_root / ".preflight-handoff.used").exists())
             self.assertEqual(mutate.call_count, 1)
             with self.assertRaises(ValueError): init_remote(nodes, ctx, ctx.local_root / "evidence.jsonl", inventory_path=inventory_path, linode_env=env)
+
+class _StorageClient:
+    def __init__(self, broken_stale_delete=False, discard_unknown=False):
+        self.objects = {}
+        self.broken_stale_delete = broken_stale_delete
+        self.discard_unknown = discard_unknown
+        self.lock = threading.Lock()
+
+    @staticmethod
+    def _etag(body): return '"' + hashlib.md5(body).hexdigest() + '"'
+    def _result(self, status, body=b"", etag=""):
+        headers = {"x-amz-request-id": "test-request"}
+        if etag: headers["ETag"] = etag
+        return status, headers, body
+    def put(self, key, body, *, etag=None, if_none_match=False, headers=None):
+        with self.lock:
+            current = self.objects.get(key)
+            if if_none_match and current is not None: return self._result(412)
+            if etag is not None and (current is None or current[1] != etag): return self._result(412)
+            value = (body, self._etag(body)); self.objects[key] = value
+            return self._result(200, etag=value[1])
+    def head(self, key):
+        value = self.objects.get(key)
+        return self._result(404) if value is None else self._result(200, etag=value[1])
+    def get(self, key):
+        value = self.objects.get(key)
+        return self._result(404) if value is None else self._result(200, value[0], value[1])
+    def delete(self, key, *, etag=None):
+        with self.lock:
+            current = self.objects.get(key)
+            if current is None: return self._result(404)
+            if etag is not None and current[1] != etag:
+                return self._result(204 if self.broken_stale_delete else 412)
+            del self.objects[key]
+            return self._result(204)
+    def list(self, prefix=""):
+        keys = sorted(key for key in self.objects if key.startswith(prefix))
+        body = ("<ListBucketResult>" + "".join(f"<Contents><Key>{key}</Key></Contents>" for key in keys) + "</ListBucketResult>").encode()
+        return self._result(200, body)
+    def put_discarded(self, key, body, *, etag=None, if_none_match=False):
+        from s3 import Reconciliation
+        if not self.discard_unknown: self.put(key, body, etag=etag, if_none_match=if_none_match)
+        return Reconciliation.UNKNOWN
+    def reconcile_put_detailed(self, key, body, etag):
+        from s3 import Reconciliation, ReconciliationProbe, ReconciliationResult
+        head = self.head(key); get = self.get(key)
+        probes = tuple(ReconciliationProbe.from_response(method, response) for method, response in (("HEAD", head), ("GET", get)))
+        outcome = Reconciliation.DISCARDED if head[0] == 404 else (Reconciliation.COMMITTED if get[0] == 200 and get[1]["ETag"] == etag and get[2] == body else Reconciliation.UNKNOWN)
+        return ReconciliationResult(outcome, probes)
+
+
+class StorageQualificationTests(unittest.TestCase):
+    def run_storage(self, client):
+        events = []
+        context = mock.Mock(run_id="20260907T000000Z-0123456789")
+        with mock.patch("s3.client_from_env", return_value=client), mock.patch("run.append_evidence", side_effect=lambda path, event, repository=None: events.append(event)):
+            status = storage(context=context, evidence=Path("/private/evidence"), s3_env=Path("/private/env"))
+        return status, events
+
+    def test_storage_pass_records_complete_matrix(self):
+        status, events = self.run_storage(_StorageClient())
+        self.assertIs(status, StorageStatus.PASS)
+        operations = {event.get("operation") for event in events}
+        self.assertTrue({"put-replace-missing", "delete-current", "race-create-final", "race-create-lineage", "race-replace-final", "race-replace-lineage", "list", "discarded-response-reconciliation", "storage-result"}.issubset(operations))
+        result = events[-1]
+        self.assertEqual(result["result"], "PASS")
+        self.assertEqual(result["failures"], [])
+
+    def test_storage_passes_when_discarded_request_reconciles_absent(self):
+        status, events = self.run_storage(_StorageClient(discard_unknown=True))
+        self.assertIs(status, StorageStatus.PASS)
+        reconciliation = next(event for event in events if event.get("operation") == "discarded-response-reconciliation")
+        self.assertEqual(reconciliation["result"], "discarded")
+
+    def test_storage_no_go_continues_after_stale_delete_capability_failure(self):
+        status, events = self.run_storage(_StorageClient(broken_stale_delete=True))
+        self.assertIs(status, StorageStatus.NO_GO)
+        operations = [event.get("operation") for event in events]
+        self.assertIn("delete-current", operations)
+        self.assertIn("discarded-response-reconciliation", operations)
+        self.assertIn("stale conditional DELETE was not refused", events[-1]["failures"])
+        self.assertEqual(events[-1]["result"], "NO-GO")
+
+    def test_storage_cli_has_distinct_pass_and_no_go_exit_status(self):
+        with tempfile.TemporaryDirectory() as directory:
+            for result, expected in ((StorageStatus.PASS, 0), (StorageStatus.NO_GO, 2)):
+                with mock.patch("run.storage", return_value=result):
+                    self.assertEqual(main(["storage", "--work-root", str(Path(directory) / result.name), "--s3-env", "/private/env"]), expected)
+
 
 if __name__ == "__main__": unittest.main()
