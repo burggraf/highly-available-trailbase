@@ -19,12 +19,33 @@ class SigV4Tests(unittest.TestCase):
         self.assertEqual(classify_status(412), "precondition")
         self.assertEqual(classify_status(599), "unknown")
 
+    def test_empty_etag_stays_conditional(self):
+        c = S3Client("b", "r", "a", "s", "https://s3.example")
+        with mock.patch.object(c, "request", return_value=(412, {}, b"")) as request:
+            c.put("k", b"x", etag="")
+            c.delete("k", etag="")
+        self.assertEqual(request.call_args_list[0].kwargs["headers"], {"If-Match": '""'})
+        self.assertEqual(request.call_args_list[1].kwargs["headers"], {"If-Match": '""'})
+
     def test_unknown_put_reconciles_by_head_then_get(self):
         c = S3Client("b", "r", "a", "s", "https://s3.example")
         with mock.patch.object(c, "head", side_effect=OSError("lost")), mock.patch.object(c, "get", return_value=(200, {"ETag": '"x"'}, b"data")):
             self.assertEqual(c.reconcile_put("k", b"data", '"x"'), Reconciliation.COMMITTED)
         with mock.patch.object(c, "head", return_value=(404, {}, b"")):
             self.assertEqual(c.reconcile_put("k", b"data", '"x"'), Reconciliation.DISCARDED)
+
+    def test_reconcile_requires_exact_etag_and_bytes(self):
+        c = S3Client("b", "r", "a", "s", "https://s3.example")
+        with mock.patch.object(c, "head", return_value=(200, {"ETag": '"wrong"'}, b"")), mock.patch.object(c, "get", return_value=(200, {"ETag": '"x"'}, b"wrong")):
+            self.assertEqual(c.reconcile_put("k", b"data", '"x"'), Reconciliation.UNKNOWN)
+
+    def test_discarded_put_closes_without_reading_response(self):
+        c = S3Client("b", "r", "a", "s", "https://s3.example")
+        with mock.patch("s3.HTTPSConnection") as connection:
+            conn = connection.return_value
+            self.assertEqual(c.put_discarded("k", b"data"), Reconciliation.UNKNOWN)
+            conn.request.assert_called_once()
+            conn.close.assert_called_once()
 
 
 if __name__ == "__main__":

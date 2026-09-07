@@ -10,6 +10,7 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
+from http.client import HTTPSConnection
 
 try:
     from run import require_private_file, register_secret
@@ -93,31 +94,49 @@ class S3Client:
             raise
 
     def put(self, key: str, body: bytes, *, etag: str | None = None, if_none_match: bool = False, headers: dict[str, str] | None = None) -> tuple[int, dict[str, str], bytes]:
-        if etag and if_none_match: raise ValueError("conflicting conditions")
-        conditional = {"If-Match": quote_etag(etag)} if etag else ({"If-None-Match": "*"} if if_none_match else {})
+        if etag is not None and if_none_match: raise ValueError("conflicting conditions")
+        conditional = {"If-Match": quote_etag(etag)} if etag is not None else ({"If-None-Match": "*"} if if_none_match else {})
         conditional.update(headers or {})
         return self.request("PUT", key, body=body, headers=conditional)
+
+    def put_discarded(self, key: str, body: bytes, *, etag: str | None = None, if_none_match: bool = False) -> Reconciliation:
+        """Send the complete TLS request, then close before reading its status."""
+        if etag is not None and if_none_match:
+            raise ValueError("conflicting conditions")
+        headers = {"If-Match": quote_etag(etag)} if etag is not None else ({"If-None-Match": "*"} if if_none_match else {})
+        path = "/" + quote(self.bucket, safe="-_.~") + "/" + quote(key, safe="/-_.~")
+        signed = self.signed_request("PUT", path, headers, body)
+        parts = urlsplit(signed.url)
+        connection = HTTPSConnection(parts.hostname, parts.port or 443, timeout=30)
+        try:
+            connection.request("PUT", parts.path, body=body, headers=signed.headers)
+        finally:
+            connection.close()
+        return Reconciliation.UNKNOWN
 
     def get(self, key: str): return self.request("GET", key)
     def head(self, key: str): return self.request("HEAD", key)
     def list(self, prefix: str = ""): return self.request("GET", query={"list-type": "2", "prefix": prefix})
     def delete(self, key: str, *, etag: str | None = None):
-        return self.request("DELETE", key, headers={"If-Match": quote_etag(etag)} if etag else {})
+        return self.request("DELETE", key, headers={"If-Match": quote_etag(etag)} if etag is not None else {})
 
     def reconcile_put(self, key: str, body: bytes, etag: str) -> Reconciliation:
-        try:
-            status, headers, _ = self.head(key)
-            if status == 404: return Reconciliation.DISCARDED
-            if status in (200, 204) and headers.get("ETag", headers.get("etag", "")) == quote_etag(etag):
-                return Reconciliation.COMMITTED
-        except (OSError, URLError):
-            pass
-        try:
-            status, headers, got = self.get(key)
-            if status == 404: return Reconciliation.DISCARDED
-            if status == 200 and got == body: return Reconciliation.COMMITTED
-        except (OSError, URLError):
-            pass
+        # ponytail: bounded probes avoid hanging on a degraded provider; caller can retry the scenario.
+        for _ in range(3):
+            try:
+                status, headers, _ = self.head(key)
+                if status == 404: return Reconciliation.DISCARDED
+                if status in (200, 204) and headers.get("ETag", headers.get("etag", "")) == quote_etag(etag):
+                    return Reconciliation.COMMITTED
+            except (OSError, URLError):
+                pass
+            try:
+                status, headers, got = self.get(key)
+                if status == 404: return Reconciliation.DISCARDED
+                if status == 200 and got == body and headers.get("ETag", headers.get("etag", "")) == quote_etag(etag):
+                    return Reconciliation.COMMITTED
+            except (OSError, URLError):
+                pass
         return Reconciliation.UNKNOWN
 
 
@@ -126,12 +145,14 @@ def _read_s3_values(path: Path, repository: Path | None = None) -> dict[str, str
     require_private_file(path, repository)
     values: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
-        match = re.fullmatch(r"export ([A-Z][A-Z0-9_]+)='([^'\n]+)'", line)
+        match = re.fullmatch(r"export ([A-Z][A-Z0-9_]*)=(?:'([^'\\n]*)'|\"([^\"\\n]*)\"|([^\\s]+))", line)
         if not match: raise ValueError("invalid S3 env")
         aliases = {"AWS_ACCESS_KEY_ID": "IDRIVE_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY": "IDRIVE_SECRET_KEY", "AWS_REGION": "IDRIVE_REGION", "HAT_S3_ENDPOINT": "IDRIVE_ENDPOINT", "HAT_S3_BUCKET": "IDRIVE_BUCKET"}
         key = aliases.get(match.group(1), match.group(1))
         if key not in {"IDRIVE_ENDPOINT", "IDRIVE_BUCKET", "IDRIVE_REGION", "IDRIVE_ACCESS_KEY", "IDRIVE_SECRET_KEY"} or key in values: raise ValueError("invalid S3 env")
-        values[key] = match.group(2)
+        value = next(group for group in match.groups()[1:] if group is not None)
+        if not value: raise ValueError("invalid S3 env")
+        values[key] = value
     required = {"IDRIVE_ENDPOINT", "IDRIVE_BUCKET", "IDRIVE_REGION", "IDRIVE_ACCESS_KEY", "IDRIVE_SECRET_KEY"}
     if set(values) != required: raise ValueError("invalid S3 env")
     register_secret(values["IDRIVE_ACCESS_KEY"]); register_secret(values["IDRIVE_SECRET_KEY"])

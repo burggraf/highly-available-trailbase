@@ -738,32 +738,39 @@ def storage(nodes=None, context=None, evidence=None, repository=None, *, s3_env=
     if s3_env is None: raise ValueError("private S3 env is required")
     client = client_from_env(s3_env, repository)
     prefix = f"qualification/{context.run_id}/"
-    def record(name, result, expected=None):
+    def record(name, result, expected=None, request_body=b""):
         status, headers, data = result
         etag = headers.get("ETag", headers.get("etag", ""))
         append_evidence(evidence, {"operation": name, "status": status,
             "request_id": headers.get("x-amz-request-id", headers.get("x-request-id", "")),
-            "etag": etag, "payload_sha256": hashlib.sha256(data).hexdigest()}, repository)
+            "etag": etag, "payload_sha256": hashlib.sha256(request_body if request_body else data).hexdigest()}, repository)
         if expected is not None and status not in expected: raise RuntimeError(f"{name} unexpected status")
         return status, headers, data
     key = prefix + "control/object"
-    status, headers, _ = record("put-create", client.put(key, b"one", if_none_match=True), {200, 201, 204})
+    status, headers, _ = record("put-create", client.put(key, b"one", if_none_match=True), {200, 201, 204}, b"one")
     etag = headers.get("ETag", headers.get("etag", ""))
-    record("head", client.head(key), {200}); record("get", client.get(key), {200})
-    record("put-create-refused", client.put(key, b"other", if_none_match=True), {409, 412})
-    status, headers, _ = record("put-replace", client.put(key, b"two", etag=etag), {200, 201, 204})
+    record("head", client.head(key), {200}); get_result = record("get", client.get(key), {200})
+    if get_result[2] != b"one": raise RuntimeError("GET bytes mismatch")
+    record("put-create-refused", client.put(key, b"other", if_none_match=True), {409, 412}, b"other")
+    status, headers, _ = record("put-replace", client.put(key, b"two", etag=etag), {200, 201, 204}, b"two")
     current = headers.get("ETag", headers.get("etag", ""))
     record("put-stale-refused", client.put(key, b"bad", etag=etag), {409, 412})
     record("delete-stale-refused", client.delete(key, etag=etag), {409, 412})
-    record("delete-missing-refused", client.delete(key, etag='"missing"'), {409, 412})
+    missing_key = prefix + "control/missing"
+    record("delete-missing", client.delete(missing_key, etag='"missing"'), {404, 409, 412})
+    record("head-missing", client.head(missing_key), {404})
     race_key = prefix + "race/create"
     with ThreadPoolExecutor(max_workers=2) as pool:
         creates = list(pool.map(lambda body: client.put(race_key, body, if_none_match=True), (b"a", b"b")))
+    for index, (result, body) in enumerate(zip(creates, (b"a", b"b")), 1):
+        record(f"race-create-{index}", result, {200, 201, 204, 409, 412}, body)
     if sum(status in (200, 201, 204) for status, _, _ in creates) != 1: raise RuntimeError("create race is not single-winner")
     winner = record("race-create-final", client.get(race_key), {200})
     replace_etag = winner[1].get("ETag", winner[1].get("etag", ""))
     with ThreadPoolExecutor(max_workers=2) as pool:
         replaces = list(pool.map(lambda body: client.put(race_key, body, etag=replace_etag), (b"c", b"d")))
+    for index, (result, body) in enumerate(zip(replaces, (b"c", b"d")), 1):
+        record(f"race-replace-{index}", result, {200, 201, 204, 409, 412}, body)
     if sum(status in (200, 201, 204) for status, _, _ in replaces) != 1: raise RuntimeError("replace race is not single-winner")
     final = record("race-replace-final", client.get(race_key), {200})
     winning = [body for (status, _, _), body in zip(replaces, (b"c", b"d")) if status in (200, 201, 204)]
@@ -772,11 +779,11 @@ def storage(nodes=None, context=None, evidence=None, repository=None, *, s3_env=
     record("delete-current", client.delete(key, etag=current), {200, 204})
     record("list", client.list(prefix), {200})
     uncertain_key, uncertain_body = prefix + "reconcile", b"uncertain-write"
-    discarded = client.put(uncertain_key, uncertain_body, if_none_match=True)
+    discarded = client.put_discarded(uncertain_key, uncertain_body, if_none_match=True)
     expected_etag = '"' + hashlib.md5(uncertain_body).hexdigest() + '"'
     reconciliation = client.reconcile_put(uncertain_key, uncertain_body, expected_etag)
-    append_evidence(evidence, {"operation": "discarded-response-reconciliation", "result": reconciliation.value}, repository)
-    if discarded[0] not in (200, 201, 204) or reconciliation is not Reconciliation.COMMITTED: raise RuntimeError("discarded response reconciliation failed")
+    append_evidence(evidence, {"operation": "discarded-response-reconciliation", "outcome": discarded.value, "result": reconciliation.value}, repository)
+    if discarded is not Reconciliation.UNKNOWN or reconciliation is not Reconciliation.COMMITTED: raise RuntimeError("discarded response reconciliation failed")
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
