@@ -491,6 +491,27 @@ def write_latest_storage_evidence_pointer(evidence: Path) -> Path:
     return pointer
 
 
+def write_latest_fence_evidence_pointer(evidence: Path) -> Path:
+    """Publish the latest fence evidence path in the private operator config."""
+    evidence = _absolute_no_symlinks(evidence)
+    pointer = _absolute_no_symlinks(Path.home() / ".config" / "hat" / "latest-fence-evidence")
+    pointer.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _require_private_directory(pointer.parent, "fence pointer parent")
+    temporary = pointer.parent / ("." + pointer.name + ".tmp-" + uuid.uuid4().hex)
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        os.write(fd, (str(evidence) + "\n").encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    try:
+        os.replace(temporary, pointer)
+        pointer.chmod(0o600)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return pointer
+
+
 def _require_facts(node: Node, facts: dict[str, str]) -> None:
     required = {"hostname", "release", "boot_id", "memory", "disk", "cpu", "time_sync", "outbound_tls"}
     if not required.issubset(facts):
@@ -1046,6 +1067,30 @@ def invoke_fence(command: Path, action: str, target: dict[str, Any], *, timeout:
         return {"valid": validate_fence_evidence(evidence, target, action), "evidence": evidence}
     except (OSError, subprocess.TimeoutExpired):
         return {"valid": False, "reason": "fence outcome unknown"}
+    except Exception:
+        return {"valid": False, "reason": "fence outcome unknown"}
+
+
+def _target_digest(target: dict[str, Any]) -> str:
+    return hashlib.sha256(json.dumps(target, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _fence_coordinator_event(action: str, target: dict[str, Any], result: dict[str, Any]) -> dict[str, Any]:
+    provider = result.get("evidence") if isinstance(result.get("evidence"), dict) else {}
+    event: dict[str, Any] = {
+        "operation": "fence-inspect",
+        "action": action,
+        "target_sha256": _target_digest(target),
+        "target_match": provider.get("target") == target if "target" in provider else False,
+        "valid": bool(result.get("valid")),
+        "request": provider.get("request"),
+        "completion": provider.get("completion"),
+        "state": provider.get("state"),
+        "observations": provider.get("observations"),
+        "failure_reason": result.get("reason"),
+        "result": "PASS" if result.get("valid") else "NO-GO",
+    }
+    return redact(event)
 
 
 def storage(nodes=None, context=None, evidence=None, repository=None, *, s3_env=None, cleanup=False) -> StorageStatus:
@@ -1076,17 +1121,34 @@ def main(argv: list[str] | None = None) -> int:
     if args.scenario == "fence-inspect":
         if args.inventory is None or args.fence_command is None:
             parser.error("--inventory and --fence-command are required")
-        nodes = load_inventory(args.inventory, repository)
-        for node in nodes:
-            target = {"node": node.name, "instance_id": node.instance_id,
-                      "provider_label": node.provider_label, "address": node.address,
-                      "host_key": node.host_key}
-            result = invoke_fence(args.fence_command, "inspect", target)
-            if not result.get("valid"):
-                print(f"fence inspect failed for {node.name}", file=sys.stderr)
-                return 2
-            print(f"fence inspect passed for {node.name}")
-        return 0
+        context = new_run_context(args.work_root, repository)
+        evidence = context.local_root / "evidence.jsonl"
+        overall = True
+        try:
+            nodes = load_inventory(args.inventory, repository)
+            for node in nodes:
+                target = {"node": node.name, "instance_id": node.instance_id,
+                          "provider_label": node.provider_label, "address": node.address,
+                          "host_key": node.host_key}
+                result = invoke_fence(args.fence_command, "inspect", target)
+                append_evidence(evidence, _fence_coordinator_event("inspect", target, result), repository)
+                if not result.get("valid"):
+                    overall = False
+                    print(f"fence inspect failed for {node.name}", file=sys.stderr)
+                else:
+                    print(f"fence inspect passed for {node.name}")
+            append_evidence(evidence, {"operation": "fence-inspect-result", "result": "PASS" if overall else "NO-GO"}, repository)
+        except Exception as exc:
+            overall = False
+            try:
+                append_evidence(evidence, {"operation": "fence-inspect-error", "result": "NO-GO",
+                                           "failure_reason": "coordinator failure", "exception_type": type(exc).__name__}, repository)
+                append_evidence(evidence, {"operation": "fence-inspect-result", "result": "NO-GO"}, repository)
+            except Exception:
+                pass
+        finally:
+            write_latest_fence_evidence_pointer(evidence)
+        return 0 if overall else 2
     if args.scenario == "storage":
         context = new_run_context(args.work_root, repository)
         evidence = context.local_root / "evidence.jsonl"

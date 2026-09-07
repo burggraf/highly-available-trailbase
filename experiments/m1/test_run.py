@@ -459,6 +459,57 @@ class NodeValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError): init_remote(nodes, ctx, inventory_path=Path("/tmp/i"))
 
 class CLITests(unittest.TestCase):
+    def _fence_inventory(self, directory):
+        path = directory / "inventory.json"
+        path.write_text(json.dumps(inventory(("fm1", "fm2", "fm3"))))
+        path.chmod(0o600)
+        return path
+
+    def _fence_command(self, directory, failing=False, raising=False):
+        path = directory / "private-fence"
+        body = """#!/usr/bin/env python3
+import datetime,json,sys
+if %s:
+    raise RuntimeError('private failure')
+target=json.load(open(sys.argv[2]))
+now=datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+stamp=lambda x:x.isoformat().replace('+00:00','Z')
+print(json.dumps({'action':sys.argv[1],'target':target,'request':{'id':'request-1','time':stamp(now-datetime.timedelta(seconds=1))},'completion':{'time':stamp(now)},'state':'running','observations':[{'time':stamp(now),'state':'running'}]}))
+sys.exit(1 if %s else 0)
+""" % (str(raising), str(failing))
+        path.write_text(body); path.chmod(0o700)
+        return path
+
+    def test_fence_cli_records_three_sanitized_successes_in_fresh_root_and_pointer(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"HOME": d}):
+            root = Path(d) / "work"; inventory_path = self._fence_inventory(Path(d))
+            command = self._fence_command(Path(d))
+            self.assertEqual(main(["fence-inspect", "--inventory", str(inventory_path), "--fence-command", str(command), "--work-root", str(root)]), 0)
+            runs = list(root.iterdir()); self.assertEqual(len(runs), 1)
+            evidence = runs[0] / "evidence.jsonl"
+            events = [json.loads(line) for line in evidence.read_text().splitlines()]
+            calls = [event for event in events if event.get("operation") == "fence-inspect"]
+            self.assertEqual(len(calls), 3)
+            self.assertTrue(all(event["valid"] and event["target_match"] and event["result"] == "PASS" for event in calls))
+            self.assertTrue(all(set(("action", "target_sha256", "valid", "request", "completion", "state", "observations", "result")) <= event.keys() for event in calls))
+            self.assertEqual(events[-1]["result"], "PASS")
+            pointer = Path(d) / ".config" / "hat" / "latest-fence-evidence"
+            self.assertEqual(pointer.read_text(), str(evidence.resolve()) + "\n")
+            self.assertEqual(stat.S_IMODE(pointer.stat().st_mode), 0o600)
+            self.assertNotIn("LINODE_TOKEN", evidence.read_text())
+
+    def test_fence_cli_preserves_partial_failure_and_exception_as_no_go(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"HOME": d}):
+            root = Path(d) / "work"; inventory_path = self._fence_inventory(Path(d))
+            command = self._fence_command(Path(d), failing=True)
+            self.assertEqual(main(["fence-inspect", "--inventory", str(inventory_path), "--fence-command", str(command), "--work-root", str(root)]), 2)
+            evidence = next(root.iterdir()) / "evidence.jsonl"
+            events = [json.loads(line) for line in evidence.read_text().splitlines()]
+            self.assertEqual(len([event for event in events if event.get("operation") == "fence-inspect"]), 3)
+            self.assertEqual(events[-1]["result"], "NO-GO")
+            self.assertTrue(all(event["result"] == "NO-GO" for event in events if event.get("operation") == "fence-inspect"))
+            self.assertTrue((Path(d) / ".config" / "hat" / "latest-fence-evidence").is_file())
+
     def test_init_cli_does_not_reuse_stale_marker(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d) / "runs"; root.mkdir(mode=0o700)
