@@ -11,7 +11,7 @@ from run import (
     Node, RunContext, _FINGERPRINT, _require_facts, _known_host_fingerprint,
     append_evidence, build_pinned_known_hosts, ensure_remote_root, init_remote,
     load_inventory, load_linode_env, new_run_context, require_private_file,
-    redact, scp_to, ssh, validate_inventory,
+    redact, scp_to, ssh, validate_inventory, _absolute_no_symlinks,
 )
 
 FP = "SHA256:" + "A" * 43
@@ -86,6 +86,29 @@ class InventoryTests(unittest.TestCase):
             with self.assertRaises(ValueError): require_private_file(link)
             with self.assertRaises(ValueError): require_private_file(repo / "x", repo)
 
+    def test_private_file_requires_private_parent_directory(self):
+        with tempfile.TemporaryDirectory() as d:
+            parent = Path(d) / "credentials"; parent.mkdir(mode=0o700)
+            secret = parent / "secret"; secret.write_text("x"); secret.chmod(0o600)
+            parent.chmod(0o755)
+            with self.assertRaises(ValueError): require_private_file(secret)
+            parent.chmod(0o700)
+            self.assertIsNone(require_private_file(secret))
+
+    def test_symlinked_tmp_and_var_named_ancestors_are_rejected(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); real = root / "real"; real.mkdir()
+            for name in ("tmp", "var"):
+                link = root / name; link.symlink_to(real, target_is_directory=True)
+                with self.assertRaises(ValueError): require_private_file(link / "secret")
+
+    def test_trusted_readable_ancestor_is_allowed_but_writable_is_not(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "ancestor"; root.mkdir(mode=0o755)
+            child = root / "child"; child.mkdir(mode=0o700)
+            self.assertEqual(_absolute_no_symlinks(child), Path(os.path.realpath(child)))
+            root.chmod(0o775)
+            with self.assertRaises(ValueError): _absolute_no_symlinks(child)
 class ContextTests(unittest.TestCase):
     def test_new_context_is_fresh_private(self):
         with tempfile.TemporaryDirectory() as d:
@@ -369,5 +392,16 @@ class PreflightEvidenceTests(unittest.TestCase):
             data = p.read_text()
             self.assertNotIn("secret", data); self.assertNotIn('"x"', data)
             self.assertEqual(json.loads(data)["password"], "[REDACTED]")
+
+    def test_evidence_requires_private_directory(self):
+        with tempfile.TemporaryDirectory() as d:
+            directory = Path(d) / "evidence"; directory.mkdir(mode=0o700)
+            path = directory / "events.jsonl"
+            directory.chmod(0o755)
+            with self.assertRaises(ValueError): append_evidence(path, {"ok": True})
+            directory.chmod(0o700)
+            append_evidence(path, {"ok": True})
+            path.chmod(0o644)
+            with self.assertRaises(ValueError): append_evidence(path, {"ok": True})
 
 if __name__ == "__main__": unittest.main()

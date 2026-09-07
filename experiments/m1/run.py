@@ -52,15 +52,28 @@ class RunContext:
 
 
 def _absolute_no_symlinks(path: Path) -> Path:
-    """Return an absolute path while rejecting every existing symlink component."""
+    """Canonicalize trusted OS aliases, then reject symlink or unsafe ancestors."""
     path = Path(path).expanduser()
     absolute = Path(os.path.abspath(path))
+    # macOS presents these aliases as symlinks; use their effective paths without
+    # weakening checks on any requested descendant or private boundary.
+    for alias, target in ((Path("/tmp"), Path("/private/tmp")), (Path("/var"), Path("/private/var"))):
+        try:
+            relative = absolute.relative_to(alias)
+        except ValueError:
+            continue
+        absolute = target / relative
+        break
     current = Path(absolute.anchor)
     for part in absolute.parts[1:]:
         current /= part
-        # macOS exposes /var and /tmp as stable system aliases.
-        if current.is_symlink() and current not in (Path("/var"), Path("/tmp")):
+        if current.is_symlink():
             raise ValueError(f"symlink path component: {current}")
+        if current.exists():
+            st = current.stat()
+            sticky_tmp = current == Path("/private/tmp") and (st.st_mode & 0o1000)
+            if st.st_uid not in (0, os.getuid()) or ((st.st_mode & 0o022) and not sticky_tmp):
+                raise ValueError(f"unsafe path ancestor: {current}")
     return absolute
 
 
