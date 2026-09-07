@@ -160,6 +160,20 @@ def validate_binary_versions(expected: dict[str, str], actual: dict[str, str]) -
         raise ValueError(f"binary versions do not match: expected {expected}, got {actual}")
 
 
+def validate_epoch_paths(old: dict[str, Path], new: dict[str, Path]) -> None:
+    if set(old) != set(new):
+        raise ValueError("epoch database mappings differ")
+    resolved = [path.resolve(strict=False) for path in (*old.values(), *new.values())]
+    if len(set(resolved)) != len(resolved):
+        raise ValueError("epoch paths must be unique and non-aliased")
+
+
+def promote_candidate(children: list[OwnedProcess], databases: list[Path], start):
+    require_stopped(children)
+    require_files(databases)
+    return start()
+
+
 def require_stopped(children: list[OwnedProcess]) -> None:
     live = [child.role for child in children if child.process.poll() is None]
     if live:
@@ -416,6 +430,14 @@ def backup_inventory(path: Path) -> dict[str, str]:
     }
 
 
+def copy_for_inspection(source: Path, evidence_dir: Path) -> Path:
+    require_files([source])
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    target = evidence_dir / source.name
+    shutil.copy2(source, target)
+    return target
+
+
 def sqlite_rows(path: Path, tables: tuple[str, ...]) -> dict[str, object]:
     require_files([path])
     connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
@@ -530,6 +552,7 @@ def run_follow(trail: Path, litestream: Path, root: Path) -> int:
             final[name] = normalize_txid(synced["replica_txid"])
             if final[name] <= initial[name]:
                 raise RuntimeError(f"{name} did not advance beyond initial restore")
+        quiesce_wall_ns = time.time_ns()
         if trail_child.process.poll() is not None:
             raise RuntimeError("TrailBase exited before intentional shutdown")
         stop_owned([trail_child])
@@ -573,10 +596,15 @@ def run_follow(trail: Path, litestream: Path, root: Path) -> int:
         for name in ("main", "session", "aux"):
             lines = (root / "logs" / f"follower-b-{name}.log").read_text(errors="replace").splitlines()
             promotion_error_gate([parse_follower_line(line) for line in lines])
+        inspection_dir = root / "evidence" / "b-stopped-inspection"
+        inspection_paths = {
+            name: copy_for_inspection(depots["b"] / "data" / f"{name}.db", inspection_dir)
+            for name in ("main", "session", "aux")
+        }
         follower_snapshots = {
-            "main": sqlite_rows(depots["b"] / "data" / "main.db", ("hat_ops", "_user")),
-            "session": sqlite_rows(depots["b"] / "data" / "session.db", ("_session",)),
-            "aux": sqlite_rows(depots["b"] / "data" / "aux.db", ("hat_ops",)),
+            "main": sqlite_rows(inspection_paths["main"], ("hat_ops", "_user")),
+            "session": sqlite_rows(inspection_paths["session"], ("_session",)),
+            "aux": sqlite_rows(inspection_paths["aux"], ("hat_ops",)),
         }
         oracle_snapshots = {
             "main": sqlite_rows(oracle / "main.db", ("hat_ops", "_user")),
@@ -604,9 +632,71 @@ def run_follow(trail: Path, litestream: Path, root: Path) -> int:
             "final_sync_txid": final, "selected_txid": selected,
             "logical_comparison": comparisons, "rows_per_business_db": 100,
             "payload_bytes": len(payload), "structural_check": "CHECK expressions not evaluated",
+            "quiesce_wall_ns": quiesce_wall_ns,
         }, indent=2) + "\n")
     finally:
         stop_owned([child for child in (trail_child, replicator, *followers) if child is not None])
+    return 0
+
+
+def run_graceful(trail: Path, litestream: Path, root: Path) -> int:
+    run_follow(trail, litestream, root)
+    follow_result = json.loads((root / "result.json").read_text())
+    depot = root / "b" / "traildepot"
+    databases = [depot / "data" / f"{name}.db" for name in ("main", "session", "aux")]
+    evidence = root / "evidence" / "b-follow-sidecars"
+    evidence.mkdir(parents=True)
+    for database in databases:
+        sidecar = database.with_name(database.name + "-txid")
+        require_files([sidecar])
+        shutil.move(sidecar, evidence / sidecar.name)
+    unexpected = [
+        str(path) for path in (depot / "data").iterdir()
+        if path.name.endswith(("-wal", "-shm", "-journal"))
+    ]
+    if unexpected:
+        raise CorrectnessFailure(f"unexpected journal sidecars block promotion: {unexpected}")
+    port = free_loopback_port()
+    base = f"http://127.0.0.1:{port}"
+    start_ns = time.monotonic_ns()
+    child = promote_candidate([], databases, lambda: owned_process(
+        [str(trail), "--depot", str(depot), "run", "--address", f"127.0.0.1:{port}", "--stderr-logging"],
+        "trail-b", root, root / "logs" / "trail-b.log",
+    ))
+    try:
+        wait_ready(base, child)
+        fixture_auth = json.loads((root / "fixture-private.json").read_text())
+        retained_status, _ = http_json("POST", f"{base}/api/auth/v1/refresh", {"refresh_token": fixture_auth["retained_refresh"]})
+        revoked_status, _ = http_json("POST", f"{base}/api/auth/v1/refresh", {"refresh_token": fixture_auth["revoked_refresh"]})
+        if retained_status != 200 or revoked_status == 200:
+            raise CorrectnessFailure("baseline auth outcome changed after promotion")
+        status, login = http_json("POST", f"{base}/api/auth/v1/login", {"username": FIXTURE_USERNAME, "password": "m0-local-only-password"})
+        if status != 200 or not isinstance(login, dict):
+            raise CorrectnessFailure("promoted writer login failed")
+        token = str(login["auth_token"])
+        payload = "x" * 8192
+        for api, name, offset in (("main_ops", "main", 0), ("aux_ops", "aux", 100000)):
+            for index in range(1, 101):
+                status, row = http_json("GET", f"{base}/api/records/v1/{api}/{offset + index}", token=token)
+                if status != 200 or not isinstance(row, dict) or row.get("op_key") != f"e1-{name}-{index:06d}" or row.get("payload") != payload:
+                    raise CorrectnessFailure(f"promoted API mismatch for {api}/{offset + index}")
+            new_id = offset + 200001
+            status, created = http_json("POST", f"{base}/api/records/v1/{api}", {
+                "id": new_id, "op_key": f"e2-{name}-000001", "payload": "promoted-write",
+            }, token)
+            if status not in (200, 201) or not isinstance(created, dict) or created.get("ids") != [str(new_id)]:
+                raise CorrectnessFailure(f"promoted write failed for {api}")
+        functional_ns = time.monotonic_ns()
+        require_files([depot / "data" / "logs.db"])
+        (root / "result.json").write_text(json.dumps({
+            "scenario": "graceful", "status": "PASS", "follow": follow_result,
+            "promotion_start_to_functional_ms": (functional_ns - start_ns) / 1_000_000,
+            "quiesce_to_functional_ms": (time.time_ns() - follow_result["quiesce_wall_ns"]) / 1_000_000,
+            "baseline_auth": {"retained": "accepted", "revoked": "rejected"},
+            "promoted_writes": 2, "logs_db": "node-local-created",
+        }, indent=2) + "\n")
+    finally:
+        stop_owned([child])
     return 0
 
 
@@ -667,6 +757,10 @@ def main(argv: list[str] | None = None) -> int:
         if not args.trail or not args.litestream:
             parser.error("follow requires --trail and --litestream")
         return run_follow(args.trail.absolute(), args.litestream.absolute(), root)
+    if args.scenario == "graceful":
+        if not args.trail or not args.litestream:
+            parser.error("graceful requires --trail and --litestream")
+        return run_graceful(args.trail.absolute(), args.litestream.absolute(), root)
     raise RuntimeError(f"scenario not implemented yet: {args.scenario}")
 
 

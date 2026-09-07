@@ -24,6 +24,9 @@ from run import (
     FIXTURE_USERNAME,
     parse_binary_versions,
     format_txid,
+    promote_candidate,
+    validate_epoch_paths,
+    copy_for_inspection,
 )
 
 
@@ -66,6 +69,40 @@ class ReadinessTests(unittest.TestCase):
         child = OwnedProcess(mock.Mock(poll=mock.Mock(return_value=None)), "trail")
         with mock.patch("run.http_request", side_effect=[(200, b"Ok"), (403, b"")]):
             wait_ready("http://127.0.0.1:1", child, timeout=0.1)
+
+
+class PromotionTests(unittest.TestCase):
+    def test_inspection_uses_a_copy_of_candidate(self):
+        with tempfile.TemporaryDirectory() as parent:
+            root = Path(parent)
+            source = root / "candidate.db"
+            source.write_bytes(b"candidate")
+            copied = copy_for_inspection(source, root / "evidence")
+            copied.write_bytes(b"inspected")
+            self.assertEqual(source.read_bytes(), b"candidate")
+
+    def test_missing_session_prevents_start(self):
+        with tempfile.TemporaryDirectory() as parent:
+            root = Path(parent)
+            for name in ("main", "aux"):
+                (root / f"{name}.db").write_bytes(b"db")
+            start = mock.Mock()
+            with self.assertRaises(FileNotFoundError):
+                promote_candidate([], [root / f"{name}.db" for name in ("main", "session", "aux")], start)
+            start.assert_not_called()
+
+    def test_live_follower_prevents_start(self):
+        live = OwnedProcess(mock.Mock(poll=mock.Mock(return_value=None)), "follower")
+        start = mock.Mock()
+        with self.assertRaises(RuntimeError):
+            promote_candidate([live], [], start)
+        start.assert_not_called()
+
+    def test_new_epoch_paths_must_not_reuse_e1(self):
+        with tempfile.TemporaryDirectory() as parent:
+            root = Path(parent)
+            with self.assertRaises(ValueError):
+                validate_epoch_paths({"main": root / "e1"}, {"main": root / "e1"})
 
 
 class ProcessOwnershipTests(unittest.TestCase):
