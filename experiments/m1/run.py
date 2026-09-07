@@ -1013,6 +1013,10 @@ def invoke_fence(command: Path, action: str, target: dict[str, Any], *, timeout:
     try:
         if command.is_symlink() or not command.is_file() or not os.access(command, os.X_OK):
             return {"valid": False, "reason": "fence command is not executable"}
+        try:
+            json.dumps(target, sort_keys=True, separators=(",", ":"))
+        except (TypeError, ValueError):
+            return {"valid": False, "reason": "invalid request"}
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", prefix="hat-fence-", suffix=".json", delete=False) as target_file:
             json.dump(target, target_file, sort_keys=True, separators=(",", ":"))
             target_path = Path(target_file.name)

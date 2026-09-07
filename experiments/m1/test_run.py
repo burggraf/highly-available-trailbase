@@ -51,6 +51,12 @@ class FenceContractTests(unittest.TestCase):
                     {**valid, "completion": None}, {**valid, "request": {"id": "req-1"}}):
             self.assertFalse(promotion_allowed(bad, target))
 
+    def test_invoke_rejects_non_json_target(self):
+        with tempfile.TemporaryDirectory() as parent:
+            path = self.fake(Path(parent), self.evidence(self.target()))
+            result = invoke_fence(path, "power-off", {"node": object()})
+            self.assertFalse(result["valid"])
+
     def test_invoke_rejects_malformed_failed_timeout_and_duplicate(self):
         with tempfile.TemporaryDirectory() as parent:
             directory, target = Path(parent), self.target()
