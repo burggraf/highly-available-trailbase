@@ -1015,8 +1015,10 @@ def invoke_fence(command: Path, action: str, target: dict[str, Any], *, timeout:
     if action not in {"inspect", "power-off", "power-on"} or not isinstance(target, dict) or not target:
         return {"valid": False, "reason": "invalid request"}
     try:
-        if command.is_symlink() or not command.is_file() or not os.access(command, os.X_OK):
-            return {"valid": False, "reason": "fence command is not executable"}
+        if (command.is_symlink() or not command.is_file() or not os.access(command, os.X_OK)
+                or command.stat().st_uid != os.getuid() or stat.S_IMODE(command.stat().st_mode) != 0o700
+                or command.resolve().is_relative_to(Path(__file__).resolve().parents[2])):
+            return {"valid": False, "reason": "fence command is not a private executable"}
         try:
             json.dumps(target, sort_keys=True, separators=(",", ":"))
         except (TypeError, ValueError):
@@ -1076,7 +1078,9 @@ def main(argv: list[str] | None = None) -> int:
             parser.error("--inventory and --fence-command are required")
         nodes = load_inventory(args.inventory, repository)
         for node in nodes:
-            target = {"node": node.name, "instance_id": node.instance_id}
+            target = {"node": node.name, "instance_id": node.instance_id,
+                      "provider_label": node.provider_label, "address": node.address,
+                      "host_key": node.host_key}
             result = invoke_fence(args.fence_command, "inspect", target)
             if not result.get("valid"):
                 print(f"fence inspect failed for {node.name}", file=sys.stderr)
