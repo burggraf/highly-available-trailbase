@@ -216,38 +216,62 @@ class TransportTests(unittest.TestCase):
     def test_scp_confines_destination_and_uses_options(self):
         with tempfile.TemporaryDirectory() as d:
             source = Path(d) / "x"; source.write_text("x"); source.chmod(0o600)
+            scp_result = subprocess.CompletedProcess([], 0, b"", b"")
+            finalize_result = subprocess.CompletedProcess([], 0, b"", b"")
             with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")), mock.patch("run._REMOTE_ROOT", "/var/lib/hat-qualification/r"):
-                def remote_call(n, argv, **kw):
-                    if argv[0] == "realpath": return subprocess.CompletedProcess([], 0, b"/var/lib/hat-qualification/r\n")
-                    if argv[0] == "stat": return subprocess.CompletedProcess([], 0, b"directory 0 0 700 /var/lib/hat-qualification/r\n")
-                    return subprocess.CompletedProcess([], 0, b"")
-                with mock.patch("run.ssh", side_effect=remote_call) as remote:
-                    scp_to(node(), source, "/var/lib/hat-qualification/r/x")
-            command = remote.call_args.args[1]
-            self.assertEqual(command[:2], ["python3", "-c"])
-            self.assertIn("O_NOFOLLOW", command[2])
-            self.assertIn("os.link", command[2])
+                with mock.patch("run.subprocess.run", return_value=scp_result) as local_scp:
+                    with mock.patch("run.ssh", return_value=finalize_result) as remote:
+                        scp_to(node(), source, "/var/lib/hat-qualification/r/x")
+            command = local_scp.call_args.args[0]
+            self.assertEqual(command[0], "scp")
+            self.assertIn("StrictHostKeyChecking=yes", command)
+            self.assertIn("UserKnownHostsFile=/tmp/k", command)
+            self.assertEqual(command[command.index("--") + 1], str(source.resolve()))
+            remote_target = command[-1]
+            self.assertRegex(remote_target, r"^root@a:/var/lib/hat-qualification/r/\.x\.hat-copy-[0-9a-f]{32}$")
+            finalize = remote.call_args.args[1]
+            self.assertEqual(finalize[:2], ["python3", "-c"])
+            self.assertIn("O_NOFOLLOW", finalize[2])
+            self.assertIn("os.link", finalize[2])
+            self.assertIn("follow_symlinks=False", finalize[2])
+            temporary = finalize[4]
+            destination = finalize[5]
+            self.assertTrue(temporary.startswith("/var/lib/hat-qualification/r/"))
+            self.assertEqual(destination, "/var/lib/hat-qualification/r/x")
             self.assertEqual(remote.call_count, 1)
 
-    def test_scp_rejects_unsafe_parent_and_existing_destination(self):
+    def test_scp_failure_cleans_partial_temporary(self):
         with tempfile.TemporaryDirectory() as d:
             source = Path(d) / "x"; source.write_text("x")
+            failed = subprocess.CompletedProcess([], 7, b"", b"scp failed")
+            cleanup = subprocess.CompletedProcess([], 0, b"", b"")
             with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")), mock.patch("run._REMOTE_ROOT", "/var/lib/hat-qualification/r"):
-                failed = subprocess.CompletedProcess([], 1, b"remote helper rejected replaced parent")
-                with mock.patch("run.ssh", return_value=failed):
-                    with self.assertRaises(subprocess.CalledProcessError): scp_to(node(), source, "/var/lib/hat-qualification/r/x")
+                with mock.patch("run.subprocess.run", return_value=failed) as local_scp:
+                    with mock.patch("run.ssh", return_value=cleanup) as remote:
+                        with self.assertRaises(subprocess.CalledProcessError):
+                            scp_to(node(), source, "/var/lib/hat-qualification/r/x")
+            self.assertEqual(local_scp.call_args.args[0][0], "scp")
+            self.assertEqual(remote.call_count, 1)
+            cleanup_command = remote.call_args.args[1]
+            self.assertEqual(cleanup_command[:3], ["rm", "-f", "--"])
+            self.assertTrue(cleanup_command[3].startswith("/var/lib/hat-qualification/r/"))
 
-    def test_scp_helper_rejects_parent_replacement_atomically(self):
+    def test_finalize_failure_cleans_temporary_and_refuses_overwrite(self):
         with tempfile.TemporaryDirectory() as d:
             source = Path(d) / "x"; source.write_text("x")
+            finalize_failed = subprocess.CompletedProcess([], 1, b"", b"destination exists or symlink")
+            cleanup = subprocess.CompletedProcess([], 0, b"", b"")
             with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")), mock.patch("run._REMOTE_ROOT", "/var/lib/hat-qualification/r"):
-                result = subprocess.CompletedProcess([], 1, b"symlink rejected")
-                with mock.patch("run.ssh", return_value=result) as remote:
-                    with self.assertRaises(subprocess.CalledProcessError): scp_to(node(), source, "/var/lib/hat-qualification/r/sub/x")
-                    helper = remote.call_args.args[1][2]
-                    self.assertIn("O_NOFOLLOW", helper)
-                    self.assertIn("os.link", helper)
-                    self.assertIn("follow_symlinks=False", helper)
+                with mock.patch("run.subprocess.run", return_value=subprocess.CompletedProcess([], 0, b"", b"")):
+                    with mock.patch("run.ssh", side_effect=[finalize_failed, cleanup]) as remote:
+                        with self.assertRaises(subprocess.CalledProcessError):
+                            scp_to(node(), source, "/var/lib/hat-qualification/r/x")
+            self.assertEqual(remote.call_count, 2)
+            finalize = remote.call_args_list[0].args[1]
+            cleanup_command = remote.call_args_list[1].args[1]
+            self.assertEqual(finalize[:2], ["python3", "-c"])
+            self.assertEqual(cleanup_command[:3], ["rm", "-f", "--"])
+            self.assertEqual(cleanup_command[3], finalize[4])
 
     def test_scp_rejects_traversal_symlink_and_outside_root(self):
         with tempfile.TemporaryDirectory() as d:
@@ -448,6 +472,18 @@ class PreflightEvidenceTests(unittest.TestCase):
             data = p.read_text()
             self.assertNotIn("secret", data); self.assertNotIn('"x"', data)
             self.assertEqual(json.loads(data)["password"], "[REDACTED]")
+
+    def test_loaded_secret_is_redacted_inside_ordinary_values(self):
+        secret = "m1-test-token-unique-8f2b"
+        env_text = f"export LINODE_TOKEN='{secret}'\nexport HAT_FM1_LINODE_ID=1\nexport HAT_FM2_LINODE_ID=2\nexport HAT_FM3_LINODE_ID=3\n"
+        with tempfile.TemporaryDirectory() as d:
+            env = Path(d) / "env"
+            env.write_text(env_text); env.chmod(0o600)
+            self.assertNotIn("LINODE_TOKEN", load_linode_env(env))
+            value = redact({"message": f"before-{secret}-after", "ordinary": secret})
+        self.assertEqual(value["message"], "before-[REDACTED]-after")
+        self.assertEqual(value["ordinary"], "[REDACTED]")
+        self.assertNotIn(secret, json.dumps(value))
 
     def test_evidence_requires_private_directory(self):
         with tempfile.TemporaryDirectory() as d:
