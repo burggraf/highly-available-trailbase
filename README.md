@@ -7,6 +7,7 @@ A **planning-stage** project for a single-writer [TrailBase](https://github.com/
 ## Start here
 
 - [Master plan](docs/plans/2026-09-07-master-plan.md): goals, decisions, alternatives, milestones, and questions.
+- [M0 local experiment execution plan](docs/plans/2026-09-07-m0-local-failover-execution-plan.md): concrete tasks and checks for manual follow-to-writer promotion; not yet executed.
 - [Upstream findings](docs/upstream-findings.md): version-pinned evidence and important limitations.
 - [Architecture and failover protocol](docs/architecture.md): roles, fencing, replication history, promotion, and recovery.
 - [TrailBase state and application behavior](docs/trailbase-state.md): databases, authentication, storage, realtime, and jobs.

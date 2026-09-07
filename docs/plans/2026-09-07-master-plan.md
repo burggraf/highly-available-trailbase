@@ -101,7 +101,9 @@ A small supervisor around existing binaries, not a TrailBase fork by default. It
 
 [Work register](../work-register.md) specifies components, dependencies, acceptance tests, and stable issue IDs. [Deployment contract](../deployment.md) specifies desired node and bucket setup; examples are illustrative, not installable configurations. [TrailBase state](../trailbase-state.md) enumerates state that database replication alone does not cover.
 
-Execution planning comes after M0: choose implementation language/backend, turn each accepted work item into concrete files, tests, commands, and reviewable tasks. Do not scaffold an unvalidated production controller now.
+The next bounded step is the [M0 local experiment execution plan](2026-09-07-m0-local-failover-execution-plan.md): prove manual follow-to-writer promotion with local-file backups before building a controller. It has not been executed and covers only part of M0.
+
+Production execution planning comes after M0: choose implementation language/backend, turn each accepted work item into concrete files, tests, commands, and reviewable tasks. Do not scaffold an unvalidated production controller now.
 
 ## 8. Questions for the next discussion
 

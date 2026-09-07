@@ -86,6 +86,8 @@ Prefer one small supervisor executable plus generated config and tests. Choose i
 
 ## 5. First experiments, in dependency order
 
+**Next planned slice:** [M0 local follow-to-writer execution plan](plans/2026-09-07-m0-local-failover-execution-plan.md). It specifies the local three-database fixture, manual promotion, abrupt-loss measurements and new-epoch reseeding. It is not yet executed and does not complete the broader M0, S3/R2 or fencing gates below.
+
 1. **Reproducible baseline:** retrieve binaries, checksums and `--help`; initialize an isolated TrailBase fixture with main/session/attached DBs, auth, file columns, migrations, jobs, and a custom mutating GET. Record actual files/SQLite versions and writes.
 2. **Follower alone:** replicate and continuously restore each required DB with TrailBase stopped on the standby. Verify positions, checksums, fresh/idle behavior, restart, missing history, genuine kill mid-apply, corruption, shrink, and large DB recovery.
 3. **Read-only gate:** open only through genuine read-only handles; test long transactions and live schema changes. Trace stock TrailBase startup against followed/read-only files to establish the current failure. Never enable reads by making files writable to get past the test.
