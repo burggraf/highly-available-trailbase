@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import posixpath
@@ -341,24 +342,60 @@ def _remote_destination(destination: str) -> tuple[str, str]:
     return normalized, parent
 
 
+_REMOTE_COPY_SCRIPT = r'''import os, sys
+root, destination = sys.argv[1], sys.argv[2]
+if not destination.startswith(root + "/"):
+    raise SystemExit("destination outside root")
+parts = destination[len(root) + 1:].split("/")
+if not parts or any(not p or p in (".", "..") for p in parts):
+    raise SystemExit("invalid destination")
+flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+def trusted_directory(fd, label):
+    st = os.fstat(fd)
+    if st.st_uid != 0 or st.st_gid != 0 or (st.st_mode & 0o777) != 0o700:
+        raise SystemExit("untrusted remote directory: " + label)
+fd = os.open(root, flags)
+try:
+    trusted_directory(fd, root)
+    for part in parts[:-1]:
+        child = os.open(part, flags, dir_fd=fd)
+        trusted_directory(child, part)
+        os.close(fd)
+        fd = child
+    name = parts[-1]
+    temp = "." + name + ".hat-copy-" + str(os.getpid())
+    out = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600, dir_fd=fd)
+    try:
+        while True:
+            chunk = os.read(0, 1024 * 1024)
+            if not chunk:
+                break
+            os.write(out, chunk)
+        os.fsync(out)
+    finally:
+        os.close(out)
+    try:
+        os.link(temp, name, src_dir_fd=fd, dst_dir_fd=fd, follow_symlinks=False)
+    except Exception:
+        os.unlink(temp, dir_fd=fd)
+        raise
+    os.unlink(temp, dir_fd=fd)
+    os.fsync(fd)
+finally:
+    os.close(fd)
+'''
+
+
 def scp_to(node: Node, source: Path, destination: str, *, check: bool = True, repository: Path | None = None) -> subprocess.CompletedProcess:
     source = _absolute_no_symlinks(source)
     _outside_repository(source, repository)
     if not source.is_file() or source.is_symlink():
         raise ValueError("source must be a regular file")
-    destination, parent = _remote_destination(destination)
-    real = ssh(node, ["realpath", "-e", "--", parent], check=False)
-    if real.returncode or _stdout(real).strip() != parent:
-        raise RuntimeError("SCP destination parent is not a real path under remote root")
-    kind, uid, gid, mode, name = _remote_stat(node, parent)
-    if kind != "directory" or uid != 0 or gid != 0 or mode != 0o700 or name != parent:
-        raise RuntimeError("SCP destination parent is not a private root-owned directory")
-    if ssh(node, ["test", "!", "-e", destination], check=False).returncode or ssh(node, ["test", "!", "-L", destination], check=False).returncode:
-        raise RuntimeError("SCP destination already exists or is a symlink")
-    return subprocess.run(
-        ["scp", *_transport_options(), "--", str(source), f"{node.ssh}:{destination}"],
-        capture_output=True, check=check, timeout=SSH_TIMEOUT,
-    )
+    destination, _ = _remote_destination(destination)
+    result = ssh(node, ["python3", "-c", _REMOTE_COPY_SCRIPT, _REMOTE_ROOT, destination], input=source.read_bytes(), check=False)
+    if check and result.returncode:
+        raise subprocess.CalledProcessError(result.returncode, ["ssh", node.ssh], result.stdout, result.stderr)
+    return result
 
 
 def redact(value: Any) -> Any:
@@ -558,6 +595,46 @@ def _require_preflight_marker(context: RunContext) -> None:
         raise ValueError("invalid successful preflight marker")
 
 
+def _credential_digest(path: Path) -> str:
+    return hashlib.sha256(_absolute_no_symlinks(path).read_bytes()).hexdigest()
+
+
+def _write_preflight_handoff(context: RunContext, inventory_path: Path, linode_env: Path) -> None:
+    handoff = context.local_root / ".preflight-handoff"
+    payload = {
+        "run_id": context.run_id,
+        "inventory_sha256": _credential_digest(inventory_path),
+        "linode_env_sha256": _credential_digest(linode_env),
+    }
+    fd = os.open(handoff, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        os.write(fd, (json.dumps(payload, sort_keys=True) + "\n").encode("ascii"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _consume_preflight_handoff(context: RunContext, inventory_path: Path, linode_env: Path) -> None:
+    handoff = context.local_root / ".preflight-handoff"
+    if handoff.is_symlink() or not handoff.is_file():
+        raise ValueError("one-time preflight handoff is required")
+    st = handoff.stat()
+    if st.st_uid != os.getuid() or (st.st_mode & 0o777) != 0o600:
+        raise ValueError("invalid preflight handoff")
+    try:
+        payload = json.loads(handoff.read_text(encoding="ascii"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid preflight handoff") from exc
+    if payload != {
+        "run_id": context.run_id,
+        "inventory_sha256": _credential_digest(inventory_path),
+        "linode_env_sha256": _credential_digest(linode_env),
+    }:
+        raise ValueError("preflight handoff does not match credentials")
+    consumed = context.local_root / ".preflight-handoff.used"
+    os.rename(handoff, consumed)
+
+
 def _preflight_impl(nodes: list[Node], context: RunContext, evidence: Path, repository: Path | None = None, inventory_path: Path | None = None, linode_env: Path | None = None) -> None:
     global _SSH_KNOWN_HOSTS
     _validate_prerequisites(nodes, inventory_path, linode_env, repository)
@@ -583,6 +660,7 @@ def _preflight_impl(nodes: list[Node], context: RunContext, evidence: Path, repo
             facts["host_key"] = node.host_key
             append_evidence(evidence, {"event": "preflight", "facts": facts}, repository)
         _write_preflight_marker(context)
+        _write_preflight_handoff(context, inventory_path, linode_env)
 
 
 def preflight(nodes: list[Node], context: RunContext, evidence: Path, repository: Path | None = None, *, inventory_path: Path | None = None, linode_env: Path | None = None) -> None:
@@ -628,11 +706,12 @@ def main(argv: list[str] | None = None) -> int:
         preflight(nodes, context, context.local_root / "evidence.jsonl", repository, inventory_path=args.inventory, linode_env=args.linode_env)
     else:
         work_root = _absolute_no_symlinks(args.work_root)
-        candidates = sorted((p for p in work_root.iterdir() if p.is_dir() and _RUN_ID.fullmatch(p.name) and (p / ".preflight-ok").is_file()), reverse=True)
+        candidates = sorted((p for p in work_root.iterdir() if p.is_dir() and _RUN_ID.fullmatch(p.name) and (p / ".preflight-ok").is_file() and (p / ".preflight-handoff").is_file()), reverse=True)
         if not candidates:
             raise ValueError("init-remote requires a successful preflight run")
         local_root = candidates[0]
         context = RunContext(local_root.name, local_root, f"/var/lib/hat-qualification/{local_root.name}")
+        _consume_preflight_handoff(context, args.inventory, args.linode_env)
         _FRESH_LOCAL_ROOTS.add(str(local_root))
         init_remote(nodes, context, local_root / "evidence.jsonl", repository, inventory_path=args.inventory, linode_env=args.linode_env)
     print(f"{args.scenario} passed: {len(nodes)} nodes")

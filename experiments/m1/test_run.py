@@ -11,7 +11,7 @@ from run import (
     Node, RunContext, _FINGERPRINT, _require_facts, _known_host_fingerprint,
     append_evidence, build_pinned_known_hosts, ensure_remote_root, init_remote,
     load_inventory, load_linode_env, new_run_context, require_private_file,
-    redact, scp_to, ssh, validate_inventory, _absolute_no_symlinks,
+    redact, scp_to, ssh, validate_inventory, _absolute_no_symlinks, main,
 )
 
 FP = "SHA256:" + "A" * 43
@@ -190,23 +190,33 @@ class TransportTests(unittest.TestCase):
                     if argv[0] == "realpath": return subprocess.CompletedProcess([], 0, b"/var/lib/hat-qualification/r\n")
                     if argv[0] == "stat": return subprocess.CompletedProcess([], 0, b"directory 0 0 700 /var/lib/hat-qualification/r\n")
                     return subprocess.CompletedProcess([], 0, b"")
-                with mock.patch("run.ssh", side_effect=remote_call) as remote, mock.patch("run.subprocess.run") as call:
+                with mock.patch("run.ssh", side_effect=remote_call) as remote:
                     scp_to(node(), source, "/var/lib/hat-qualification/r/x")
-            self.assertEqual(call.call_args.args[0][0], "scp")
-            self.assertIn("StrictHostKeyChecking=yes", call.call_args.args[0])
-            self.assertEqual(call.call_args.kwargs["timeout"], 60)
-            self.assertEqual(remote.call_count, 4)
+            command = remote.call_args.args[1]
+            self.assertEqual(command[:2], ["python3", "-c"])
+            self.assertIn("O_NOFOLLOW", command[2])
+            self.assertIn("os.link", command[2])
+            self.assertEqual(remote.call_count, 1)
 
     def test_scp_rejects_unsafe_parent_and_existing_destination(self):
         with tempfile.TemporaryDirectory() as d:
             source = Path(d) / "x"; source.write_text("x")
             with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")), mock.patch("run._REMOTE_ROOT", "/var/lib/hat-qualification/r"):
-                unsafe = subprocess.CompletedProcess([], 0, b"directory 99 0 700 /var/lib/hat-qualification/r\n")
-                with mock.patch("run.ssh", side_effect=[subprocess.CompletedProcess([], 0, b"/var/lib/hat-qualification/r\n"), unsafe]):
-                    with self.assertRaises(RuntimeError): scp_to(node(), source, "/var/lib/hat-qualification/r/x")
-                existing = subprocess.CompletedProcess([], 1, b"")
-                with mock.patch("run.ssh", side_effect=[subprocess.CompletedProcess([], 0, b"/var/lib/hat-qualification/r\n"), subprocess.CompletedProcess([], 0, b"directory 0 0 700 /var/lib/hat-qualification/r\n"), existing]):
-                    with self.assertRaises(RuntimeError): scp_to(node(), source, "/var/lib/hat-qualification/r/x")
+                failed = subprocess.CompletedProcess([], 1, b"remote helper rejected replaced parent")
+                with mock.patch("run.ssh", return_value=failed):
+                    with self.assertRaises(subprocess.CalledProcessError): scp_to(node(), source, "/var/lib/hat-qualification/r/x")
+
+    def test_scp_helper_rejects_parent_replacement_atomically(self):
+        with tempfile.TemporaryDirectory() as d:
+            source = Path(d) / "x"; source.write_text("x")
+            with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")), mock.patch("run._REMOTE_ROOT", "/var/lib/hat-qualification/r"):
+                result = subprocess.CompletedProcess([], 1, b"symlink rejected")
+                with mock.patch("run.ssh", return_value=result) as remote:
+                    with self.assertRaises(subprocess.CalledProcessError): scp_to(node(), source, "/var/lib/hat-qualification/r/sub/x")
+                    helper = remote.call_args.args[1][2]
+                    self.assertIn("O_NOFOLLOW", helper)
+                    self.assertIn("os.link", helper)
+                    self.assertIn("follow_symlinks=False", helper)
 
     def test_scp_rejects_traversal_symlink_and_outside_root(self):
         with tempfile.TemporaryDirectory() as d:
@@ -298,6 +308,21 @@ class NodeValidationTests(unittest.TestCase):
         ctx = RunContext("20260907T010203Z-0123456789", Path("/tmp/x"), "/var/lib/hat-qualification/20260907T010203Z-0123456789")
         with self.assertRaises(ValueError): _preflight_impl(nodes, ctx, Path("/tmp/e"), inventory_path=Path("/tmp/i"))
         with self.assertRaises(ValueError): init_remote(nodes, ctx, inventory_path=Path("/tmp/i"))
+
+class CLITests(unittest.TestCase):
+    def test_init_cli_does_not_reuse_stale_marker(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "runs"; root.mkdir(mode=0o700)
+            run_id = "20260907T010203Z-0123456789"
+            stale = root / run_id; stale.mkdir(mode=0o700)
+            marker = stale / ".preflight-ok"; marker.write_text(run_id + "\n"); marker.chmod(0o600)
+            inventory_path = Path(d) / "inventory.json"; inventory_path.write_text(json.dumps(inventory(("fm1", "fm2", "fm3")))); inventory_path.chmod(0o600)
+            env_path = Path(d) / "env"; env_path.write_text("export LINODE_TOKEN=x\nexport HAT_FM1_LINODE_ID=1\nexport HAT_FM2_LINODE_ID=2\nexport HAT_FM3_LINODE_ID=3\n"); env_path.chmod(0o600)
+            with self.assertRaises(ValueError):
+                main(["init-remote", "--inventory", str(inventory_path), "--linode-env", str(env_path), "--work-root", str(root)])
+
+    def test_cli_requires_explicit_credentials(self):
+        with self.assertRaises(SystemExit): main(["init-remote", "--work-root", "/tmp/hat-m1"])
 
 class FactsTests(unittest.TestCase):
     def test_accepts_exact_boundary_facts(self):
