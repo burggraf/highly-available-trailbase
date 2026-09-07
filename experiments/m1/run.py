@@ -74,8 +74,8 @@ def _absolute_no_symlinks(path: Path) -> Path:
             raise ValueError(f"symlink path component: {current}")
         if current.exists():
             st = current.stat()
-            sticky_tmp = current == Path("/private/tmp") and (st.st_mode & 0o1000)
-            if st.st_uid not in (0, os.getuid()) or ((st.st_mode & 0o022) and not sticky_tmp):
+            trusted_sticky = stat.S_ISDIR(st.st_mode) and bool(st.st_mode & stat.S_ISVTX)
+            if st.st_uid not in (0, os.getuid()) or ((st.st_mode & 0o022) and not trusted_sticky):
                 raise ValueError(f"unsafe path ancestor: {current}")
     return absolute
 
@@ -615,7 +615,7 @@ def _require_preflight_marker(context: RunContext) -> None:
     if marker.is_symlink() or not marker.is_file():
         raise ValueError("successful preflight marker is required")
     st = marker.stat()
-    if st.st_uid != os.getuid() or (st.st_mode & 0o777) != 0o600 or marker.read_text(encoding="ascii") != context.run_id + "\n":
+    if st.st_uid != os.getuid() or stat.S_IMODE(st.st_mode) != 0o600 or marker.read_text(encoding="ascii") != context.run_id + "\n":
         raise ValueError("invalid successful preflight marker")
 
 
@@ -645,7 +645,7 @@ def _consume_preflight_handoff(context: RunContext, inventory_path: Path, linode
     if handoff.is_symlink() or not handoff.is_file():
         raise ValueError("one-time preflight handoff is required")
     st = handoff.stat()
-    if st.st_uid != os.getuid() or (st.st_mode & 0o777) != 0o600:
+    if st.st_uid != os.getuid() or stat.S_IMODE(st.st_mode) != 0o600:
         raise ValueError("invalid preflight handoff")
     try:
         payload = json.loads(handoff.read_text(encoding="ascii"))

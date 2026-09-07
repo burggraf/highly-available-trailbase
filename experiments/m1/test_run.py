@@ -128,6 +128,14 @@ class InventoryTests(unittest.TestCase):
             self.assertEqual(_absolute_no_symlinks(child), Path(os.path.realpath(child)))
             root.chmod(0o775)
             with self.assertRaises(ValueError): _absolute_no_symlinks(child)
+
+    def test_linux_style_sticky_ancestor_is_allowed(self):
+        with tempfile.TemporaryDirectory() as d:
+            sticky = Path(d) / "tmp"; sticky.mkdir(mode=0o700); sticky.chmod(0o1777)
+            work = sticky / "hat"; work.mkdir(mode=0o700)
+            self.assertEqual(_absolute_no_symlinks(work), Path(os.path.realpath(work)))
+            context = new_run_context(sticky / "runs")
+            self.assertTrue(context.local_root.is_dir())
 class ContextTests(unittest.TestCase):
     def test_new_context_is_fresh_private(self):
         with tempfile.TemporaryDirectory() as d:
@@ -436,6 +444,87 @@ class EnvTests(unittest.TestCase):
             with self.assertRaises(ValueError): load_linode_env(self.write_env(d, good), wrong)
 
 class PreflightEvidenceTests(unittest.TestCase):
+    def _preflight_inputs(self, root):
+        nodes = validate_inventory(inventory(("fm1", "fm2", "fm3")))
+        inventory_path = root / "inventory.json"
+        inventory_path.write_text(json.dumps(inventory(("fm1", "fm2", "fm3"))))
+        inventory_path.chmod(0o600)
+        env = root / "linode.env"
+        env.write_text("export LINODE_TOKEN='orchestration-test-token'\nexport HAT_FM1_LINODE_ID=1\nexport HAT_FM2_LINODE_ID=2\nexport HAT_FM3_LINODE_ID=3\n")
+        env.chmod(0o600)
+        return nodes, inventory_path, env
+
+    def _run_preflight_transport(self, nodes, outputs_by_node, failure=None):
+        labels = ["hostname", "boot_id", "release", "cpu", "memory", "disk", "time_sync", "outbound_tls"]
+        expected = ["hostname", "cat /proc/sys/kernel/random/boot_id", "cat /etc/os-release", "nproc", "cat /proc/meminfo", "df -P /", "timedatectl show -p NTPSynchronized", "curl --fail --silent --show-error -o /dev/null -w HAT_M1_TLS_OK https://example.com/"]
+        calls = []
+        def transport(argv, **kwargs):
+            calls.append(argv)
+            target = argv[-2]
+            index = len(calls) - 1
+            node_index, command_index = divmod(index, len(labels))
+            if failure == (node_index, command_index):
+                return subprocess.CompletedProcess(argv, 1, b"", b"failed")
+            command = argv[-1]
+            self.assertEqual(command, expected[command_index])
+            self.assertIn("StrictHostKeyChecking=yes", argv)
+            self.assertIn("UserKnownHostsFile=", " ".join(argv))
+            return subprocess.CompletedProcess(argv, 0, outputs_by_node[target][labels[command_index]], b"")
+        return calls, transport
+
+    def test_preflight_checks_all_nodes_read_only_and_handoffs(self):
+        from run import preflight
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); nodes, inventory_path, env = self._preflight_inputs(root)
+            context = new_run_context(root / "runs")
+            outputs = {node.ssh: facts(node.hostname) for node in nodes}
+            calls, transport = self._run_preflight_transport(nodes, outputs)
+            with mock.patch("run.build_pinned_known_hosts", return_value=root / "known_hosts"), mock.patch("run.subprocess.run", side_effect=transport):
+                preflight(nodes, context, context.local_root / "evidence.jsonl", inventory_path=inventory_path, linode_env=env)
+            self.assertEqual(len(calls), 24)
+            self.assertEqual([call[-2] for call in calls], [node.ssh for node in nodes for _ in range(8)])
+            self.assertFalse(any(call[-1].startswith(prefix) for call in calls for prefix in ("mkdir", "rm", "mv", "touch", "chmod", "systemctl")))
+            self.assertTrue((context.local_root / ".preflight-ok").is_file())
+            self.assertTrue((context.local_root / ".preflight-handoff").is_file())
+            self.assertEqual(len((context.local_root / "evidence.jsonl").read_text().splitlines()), 3)
+            import run
+            self.assertIsNone(run._SSH_KNOWN_HOSTS)
+            self.assertIsNone(run._REMOTE_ROOT)
+
+    def test_preflight_failure_aborts_later_nodes_and_creates_no_handoff(self):
+        from run import preflight
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); nodes, inventory_path, env = self._preflight_inputs(root)
+            context = new_run_context(root / "runs")
+            outputs = {node.ssh: facts(node.hostname) for node in nodes}
+            calls, transport = self._run_preflight_transport(nodes, outputs, failure=(1, 0))
+            with mock.patch("run.build_pinned_known_hosts", return_value=root / "known_hosts"), mock.patch("run.subprocess.run", side_effect=transport):
+                with self.assertRaises(RuntimeError):
+                    preflight(nodes, context, context.local_root / "evidence.jsonl", inventory_path=inventory_path, linode_env=env)
+            self.assertEqual(len(calls), 9)
+            self.assertEqual({call[-2] for call in calls}, {nodes[0].ssh, nodes[1].ssh})
+            self.assertFalse((context.local_root / ".preflight-ok").exists())
+            self.assertFalse((context.local_root / ".preflight-handoff").exists())
+            import run
+            self.assertIsNone(run._SSH_KNOWN_HOSTS)
+            self.assertIsNone(run._REMOTE_ROOT)
+
+    def test_bad_fact_aborts_before_later_node_activity(self):
+        from run import preflight
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); nodes, inventory_path, env = self._preflight_inputs(root)
+            context = new_run_context(root / "runs")
+            outputs = {node.ssh: facts(node.hostname) for node in nodes}
+            outputs[nodes[0].ssh] = facts("wrong-host")
+            calls, transport = self._run_preflight_transport(nodes, outputs)
+            with mock.patch("run.build_pinned_known_hosts", return_value=root / "known_hosts"), mock.patch("run.subprocess.run", side_effect=transport):
+                with self.assertRaises(RuntimeError):
+                    preflight(nodes, context, context.local_root / "evidence.jsonl", inventory_path=inventory_path, linode_env=env)
+            self.assertEqual(len(calls), 8)
+            self.assertTrue(all(call[-2] == nodes[0].ssh for call in calls))
+            self.assertFalse((context.local_root / ".preflight-ok").exists())
+            self.assertFalse((context.local_root / ".preflight-handoff").exists())
+
     def test_preflight_rejects_manually_supplied_local_context(self):
         from run import _preflight_impl
         with tempfile.TemporaryDirectory() as d:
@@ -464,6 +553,21 @@ class PreflightEvidenceTests(unittest.TestCase):
             target = root / "real"; target.mkdir(mode=0o700)
             link = root / "link"; link.symlink_to(target)
             with self.assertRaises(ValueError): append_evidence(link / "evidence", {"x": 1})
+
+    def test_marker_and_handoff_reject_special_permission_bits(self):
+        from run import _consume_preflight_handoff, _require_preflight_marker, _write_preflight_handoff
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); inventory_path = root / "inventory"; env = root / "env"
+            inventory_path.write_text("inventory"); inventory_path.chmod(0o600)
+            env.write_text("env"); env.chmod(0o600)
+            context = new_run_context(root / "runs")
+            marker = context.local_root / ".preflight-ok"
+            marker.write_text(context.run_id + "\n"); marker.chmod(0o1600)
+            with self.assertRaises(ValueError): _require_preflight_marker(context)
+            marker.chmod(0o600)
+            _write_preflight_handoff(context, inventory_path, env)
+            handoff = context.local_root / ".preflight-handoff"; handoff.chmod(0o1600)
+            with self.assertRaises(ValueError): _consume_preflight_handoff(context, inventory_path, env)
 
     def test_redacts_sensitive_values_and_fsyncs_jsonl(self):
         with tempfile.TemporaryDirectory() as d:
