@@ -8,6 +8,7 @@ import os
 import posixpath
 import re
 import shlex
+import stat
 import subprocess
 import tempfile
 import time
@@ -90,6 +91,12 @@ def _outside_repository(path: Path, repository: Path | None) -> None:
     raise ValueError("path must be outside repository")
 
 
+def _require_private_directory(path: Path, label: str) -> None:
+    st = path.stat()
+    if not path.is_dir() or path.is_symlink() or st.st_uid != os.getuid() or stat.S_IMODE(st.st_mode) != 0o700:
+        raise ValueError(f"{label} must be an owned directory with exact mode 0700")
+
+
 def require_private_file(path: Path, repository: Path | None = None) -> None:
     path = _absolute_no_symlinks(path)
     _outside_repository(path, repository)
@@ -98,11 +105,9 @@ def require_private_file(path: Path, repository: Path | None = None) -> None:
     st = path.stat()
     if st.st_uid != os.getuid():
         raise ValueError("private file is not owned by current user")
-    if (st.st_mode & 0o777) != 0o600:
+    if stat.S_IMODE(st.st_mode) != 0o600:
         raise ValueError("private file must have mode 0600")
-    pst = path.parent.stat()
-    if pst.st_uid != os.getuid() or (pst.st_mode & 0o077):
-        raise ValueError("private file parent is not private")
+    _require_private_directory(path.parent, "private file parent")
 
 
 def _valid_text(value: Any, field: str) -> str:
@@ -158,10 +163,10 @@ def new_run_context(work_root: Path, repository: Path | None = None) -> RunConte
     _outside_repository(work_root, repository)
     if work_root.exists():
         existing = work_root.stat()
-        if not work_root.is_dir() or existing.st_uid != os.getuid() or (existing.st_mode & 0o077):
+        if not work_root.is_dir() or existing.st_uid != os.getuid() or stat.S_IMODE(existing.st_mode) != 0o700:
             raise ValueError("work root must be an owned private directory")
     work_root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if work_root.is_symlink() or work_root.stat().st_uid != os.getuid() or (work_root.stat().st_mode & 0o077):
+    if work_root.is_symlink() or work_root.stat().st_uid != os.getuid() or stat.S_IMODE(work_root.stat().st_mode) != 0o700:
         raise ValueError("work root must be private and non-symlink")
     work_root.chmod(0o700)
     while True:
@@ -228,8 +233,7 @@ def build_pinned_known_hosts(nodes: list[Node], directory: Path) -> Path:
     """Create a fresh, mode-0600 known_hosts containing only inventory keys."""
     directory = _absolute_no_symlinks(directory)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    if directory.is_symlink() or directory.stat().st_uid != os.getuid() or (directory.stat().st_mode & 0o077):
-        raise ValueError("known-host directory is not private")
+    _require_private_directory(directory, "known-host directory")
     path = directory / "known_hosts"
     try:
         with path.open("x", encoding="ascii") as stream:
@@ -412,9 +416,7 @@ def append_evidence(path: Path, event: dict[str, Any], repository: Path | None =
     path = _absolute_no_symlinks(path)
     _outside_repository(path, repository)
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    parent_st = path.parent.stat()
-    if parent_st.st_uid != os.getuid() or (parent_st.st_mode & 0o077):
-        raise ValueError("evidence parent is not private")
+    _require_private_directory(path.parent, "evidence parent")
     if path.exists():
         file_st = path.stat()
         if not path.is_file() or file_st.st_uid != os.getuid() or (file_st.st_mode & 0o777) != 0o600:
@@ -552,11 +554,11 @@ def _validate_local_context(context: RunContext, repository: Path | None = None)
     if str(local_root) not in _FRESH_LOCAL_ROOTS or local_root.name != context.run_id:
         raise ValueError("local root was not freshly created by new_run_context")
     st = local_root.stat()
-    if not local_root.is_dir() or local_root.is_symlink() or st.st_uid != os.getuid() or (st.st_mode & 0o777) != 0o700:
+    if not local_root.is_dir() or local_root.is_symlink() or st.st_uid != os.getuid() or stat.S_IMODE(st.st_mode) != 0o700:
         raise ValueError("local root must be a private non-symlink directory")
     parent = local_root.parent
     pst = parent.stat()
-    if parent.is_symlink() or pst.st_uid != os.getuid() or (pst.st_mode & 0o077):
+    if parent.is_symlink() or pst.st_uid != os.getuid() or stat.S_IMODE(pst.st_mode) != 0o700:
         raise ValueError("local root parent must be private")
     return local_root
 
@@ -603,7 +605,9 @@ def _write_preflight_handoff(context: RunContext, inventory_path: Path, linode_e
     handoff = context.local_root / ".preflight-handoff"
     payload = {
         "run_id": context.run_id,
+        "inventory_identity": str(_absolute_no_symlinks(inventory_path)),
         "inventory_sha256": _credential_digest(inventory_path),
+        "linode_env_identity": str(_absolute_no_symlinks(linode_env)),
         "linode_env_sha256": _credential_digest(linode_env),
     }
     fd = os.open(handoff, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -625,14 +629,27 @@ def _consume_preflight_handoff(context: RunContext, inventory_path: Path, linode
         payload = json.loads(handoff.read_text(encoding="ascii"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError("invalid preflight handoff") from exc
-    if payload != {
+    expected = {
         "run_id": context.run_id,
+        "inventory_identity": str(_absolute_no_symlinks(inventory_path)),
         "inventory_sha256": _credential_digest(inventory_path),
+        "linode_env_identity": str(_absolute_no_symlinks(linode_env)),
         "linode_env_sha256": _credential_digest(linode_env),
-    }:
+    }
+    if payload != expected:
         raise ValueError("preflight handoff does not match credentials")
     consumed = context.local_root / ".preflight-handoff.used"
-    os.rename(handoff, consumed)
+    if consumed.exists() or consumed.is_symlink():
+        raise ValueError("preflight handoff was already consumed")
+    try:
+        os.link(handoff, consumed, follow_symlinks=False)
+        os.unlink(handoff)
+    except Exception as exc:
+        try:
+            consumed.unlink()
+        except FileNotFoundError:
+            pass
+        raise ValueError("could not atomically consume preflight handoff") from exc
 
 
 def _preflight_impl(nodes: list[Node], context: RunContext, evidence: Path, repository: Path | None = None, inventory_path: Path | None = None, linode_env: Path | None = None) -> None:
@@ -682,6 +699,7 @@ def init_remote(nodes: list[Node], context: RunContext, evidence: Path | None = 
     try:
         with tempfile.TemporaryDirectory(prefix="hat-known-hosts-") as directory:
             _SSH_KNOWN_HOSTS = build_pinned_known_hosts(nodes, Path(directory) / "pins")
+            _consume_preflight_handoff(context, inventory_path, linode_env)
             for node in nodes:
                 ensure_remote_root(node, context)
                 if evidence is not None:
@@ -711,7 +729,6 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("init-remote requires a successful preflight run")
         local_root = candidates[0]
         context = RunContext(local_root.name, local_root, f"/var/lib/hat-qualification/{local_root.name}")
-        _consume_preflight_handoff(context, args.inventory, args.linode_env)
         _FRESH_LOCAL_ROOTS.add(str(local_root))
         init_remote(nodes, context, local_root / "evidence.jsonl", repository, inventory_path=args.inventory, linode_env=args.linode_env)
     print(f"{args.scenario} passed: {len(nodes)} nodes")

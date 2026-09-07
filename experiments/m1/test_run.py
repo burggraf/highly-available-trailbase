@@ -77,6 +77,16 @@ class InventoryTests(unittest.TestCase):
             p.chmod(0o644)
             with self.assertRaises(ValueError): require_private_file(p)
 
+    def test_private_directory_requires_exact_0700(self):
+        with tempfile.TemporaryDirectory() as d:
+            parent = Path(d) / "credentials"; parent.mkdir(mode=0o700)
+            secret = parent / "secret"; secret.write_text("x"); secret.chmod(0o600)
+            for mode in (0o1700, 0o2700, 0o4700, 0o755):
+                parent.chmod(mode)
+                with self.assertRaises(ValueError): require_private_file(secret)
+            parent.chmod(0o700)
+            require_private_file(secret)
+
     def test_private_file_rejects_symlink_and_repository_descendant(self):
         with tempfile.TemporaryDirectory() as d:
             root, repo = Path(d), Path(d) / "repo"
@@ -154,6 +164,13 @@ class HostKeyTests(unittest.TestCase):
     def test_scan_failure_rejected(self):
         with mock.patch("run.subprocess.run", return_value=self._scan("", 1)):
             with self.assertRaises(RuntimeError): _known_host_fingerprint("a")
+
+    def test_pinned_directory_rejects_special_mode_bits(self):
+        with tempfile.TemporaryDirectory() as d:
+            directory = Path(d) / "pins"; directory.mkdir(mode=0o700)
+            for mode in (0o1700, 0o2700, 0o4700):
+                directory.chmod(mode)
+                with self.assertRaises(ValueError): build_pinned_known_hosts([node()], directory)
 
     def test_pinned_key_mismatch_and_success(self):
         scan = self._scan("a ssh-ed25519 AAAA\n")
@@ -422,11 +439,44 @@ class PreflightEvidenceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             directory = Path(d) / "evidence"; directory.mkdir(mode=0o700)
             path = directory / "events.jsonl"
-            directory.chmod(0o755)
-            with self.assertRaises(ValueError): append_evidence(path, {"ok": True})
+            for mode in (0o1700, 0o2700, 0o4700, 0o755):
+                directory.chmod(mode)
+                with self.assertRaises(ValueError): append_evidence(path, {"ok": True})
             directory.chmod(0o700)
             append_evidence(path, {"ok": True})
             path.chmod(0o644)
             with self.assertRaises(ValueError): append_evidence(path, {"ok": True})
+
+    def test_init_rejects_replaced_credentials_without_mutation(self):
+        from run import _write_preflight_handoff
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); inventory_path = root / "inventory"; env = root / "env"
+            inventory_path.write_text("inventory"); inventory_path.chmod(0o600)
+            env.write_text("env"); env.chmod(0o600)
+            ctx = new_run_context(root)
+            (ctx.local_root / ".preflight-ok").write_text(ctx.run_id + "\n"); (ctx.local_root / ".preflight-ok").chmod(0o600)
+            _write_preflight_handoff(ctx, inventory_path, env)
+            inventory_path.write_text("replacement")
+            nodes = [Node("fm1", "root@a", 1, "a", "a", "SHA256:" + "A" * 43, "a"), Node("fm2", "root@b", 2, "b", "SHA256:" + "B" * 43, "b"), Node("fm3", "root@c", 3, "c", "SHA256:" + "C" * 43, "c")]
+            with mock.patch("run._validate_prerequisites"), mock.patch("run.build_pinned_known_hosts") as pins, mock.patch("run.ensure_remote_root") as mutate:
+                with self.assertRaises(ValueError): init_remote(nodes, ctx, ctx.local_root / "evidence.jsonl", inventory_path=inventory_path, linode_env=env)
+            mutate.assert_not_called()
+
+    def test_init_consumes_handoff_before_remote_mutation(self):
+        from run import _write_preflight_handoff
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); inventory_path = root / "inventory"; env = root / "env"
+            inventory_path.write_text("inventory"); inventory_path.chmod(0o600)
+            env.write_text("env"); env.chmod(0o600)
+            ctx = new_run_context(root)
+            (ctx.local_root / ".preflight-ok").write_text(ctx.run_id + "\n"); (ctx.local_root / ".preflight-ok").chmod(0o600)
+            _write_preflight_handoff(ctx, inventory_path, env)
+            nodes = [Node("fm1", "root@a", 1, "a", "a", "SHA256:" + "A" * 43, "a"), Node("fm2", "root@b", 2, "b", "b", "SHA256:" + "B" * 43, "b"), Node("fm3", "root@c", 3, "c", "c", "SHA256:" + "C" * 43, "c")]
+            with mock.patch("run._validate_prerequisites"), mock.patch("run.build_pinned_known_hosts", return_value=root / "known"), mock.patch("run.ensure_remote_root", side_effect=RuntimeError("mutation")) as mutate:
+                with self.assertRaises(RuntimeError): init_remote(nodes, ctx, ctx.local_root / "evidence.jsonl", inventory_path=inventory_path, linode_env=env)
+            self.assertFalse((ctx.local_root / ".preflight-handoff").exists())
+            self.assertTrue((ctx.local_root / ".preflight-handoff.used").exists())
+            self.assertEqual(mutate.call_count, 1)
+            with self.assertRaises(ValueError): init_remote(nodes, ctx, ctx.local_root / "evidence.jsonl", inventory_path=inventory_path, linode_env=env)
 
 if __name__ == "__main__": unittest.main()
