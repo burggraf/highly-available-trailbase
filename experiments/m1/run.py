@@ -149,6 +149,25 @@ def validate_binary_version(product: str, output: str) -> str:
     return "0.33.11" if product == "trailbase" else "0.5.17"
 
 
+def _binary_version_evidence(trail_output: str, litestream_output: str) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    versions = {
+        "trailbase": validate_binary_version("trailbase", trail_output),
+        "litestream": validate_binary_version("litestream", litestream_output),
+    }
+    build = re.search(r"^trail (v\S+)", trail_output)
+    sqlite = re.search(r"(?m)^sqlite: (\d+\.\d+\.\d+)$", trail_output)
+    if build is None or sqlite is None:
+        raise RuntimeError("unexpected binary version")
+    return versions, {
+        "trailbase": {
+            "reported": trail_output.rstrip("\n"),
+            "build": build.group(1),
+            "embedded_sqlite_version": sqlite.group(1),
+        },
+        "litestream": {"reported": litestream_output.rstrip("\n")},
+    }
+
+
 def validate_release_metadata(spec: Artifact, metadata: Any) -> None:
     expected_tag = "v" + spec.version
     if (not isinstance(metadata, dict) or metadata.get("tag_name") != expected_tag
@@ -478,10 +497,10 @@ def build_pinned_known_hosts(nodes: list[Node], directory: Path) -> Path:
 
 def _remote_stat(node: Node, path: str) -> tuple[str, int, int, int, str]:
     _validate_node_fields(node)
-    result = ssh(node, ["stat", "-c", "%F %u %g %a %n", "--", path], check=False)
+    result = ssh(node, ["stat", "-c", "%F\t%u\t%g\t%a\t%n", "--", path], check=False)
     if result.returncode:
         raise RuntimeError(f"remote path does not exist: {path}")
-    fields = _stdout(result).strip().split(" ", 4)
+    fields = _stdout(result).strip().split("\t")
     if len(fields) != 5:
         raise RuntimeError(f"invalid remote path metadata: {path}")
     try:
@@ -1127,13 +1146,10 @@ def remote_provision(remote_root: Path) -> dict[str, Any]:
     litestream_output = subprocess.run(
         [str(binaries / "litestream"), "version"], capture_output=True, text=True, check=True, timeout=30,
     ).stdout
-    versions = {
-        "trailbase": validate_binary_version("trailbase", trail_output),
-        "litestream": validate_binary_version("litestream", litestream_output),
-    }
+    versions, binary_versions = _binary_version_evidence(trail_output, litestream_output)
     return {
         "status": "PASS", "architecture": machine, "installed_packages": installed,
-        "versions": versions,
+        "versions": versions, "binary_versions": binary_versions,
         "archives": {spec.product: spec.archive_sha256 for spec in specs},
         "executables": {spec.product: spec.executable_sha256 for spec in specs},
         "services": {unit: "masked" for unit in _WRITER_UNITS},
@@ -1180,23 +1196,96 @@ def _copy_m0_source(node: Node, context: RunContext, repository: Path) -> str:
     return remote_dir
 
 
-_M0_COLLECT_SCRIPT = r'''import json, pathlib, tarfile, sys
+_M0_COLLECT_SCRIPT = r'''import hashlib, json, pathlib, tarfile, sys
 root, output = map(pathlib.Path, sys.argv[1:])
 runs = [path for path in root.iterdir() if path.is_dir() and path.name.startswith("run-")]
-if len(runs) != 1:
-    raise SystemExit("expected one M0 run")
-run = runs[0]
-result = json.loads((run / "result.json").read_text())
-if result.get("status") != "PASS" or result.get("repeat") != 3 or len(result.get("results", [])) != 13:
-    raise SystemExit("M0 aggregate is incomplete")
-(output / "m0-result.json").write_bytes((run / "result.json").read_bytes())
-with tarfile.open(output / "m0-logs.tar.gz", "x:gz") as archive:
+evidence = {"run_count": len(runs), "result_present": False, "log_count": 0}
+logs = []
+if len(runs) == 1:
+    run = runs[0]
+    result_path = run / "result.json"
+    if result_path.is_file():
+        result_bytes = result_path.read_bytes()
+        (output / "m0-result.json").write_bytes(result_bytes)
+        evidence.update({"result_present": True, "result_sha256": hashlib.sha256(result_bytes).hexdigest()})
+        try:
+            result = json.loads(result_bytes)
+            if not isinstance(result, dict) or not isinstance(result.get("results", []), list):
+                raise TypeError
+            evidence.update({"result_status": result.get("status"), "repeat": result.get("repeat"),
+                             "result_count": len(result.get("results", []))})
+        except (UnicodeError, json.JSONDecodeError, TypeError):
+            evidence["result_valid_json"] = False
     logs = sorted(path for path in run.rglob("*") if path.is_file() and path.parent.name == "logs")
-    if not logs:
-        raise SystemExit("M0 logs are missing")
+    evidence["log_count"] = len(logs)
+with tarfile.open(output / "m0-logs.tar.gz", "x:gz") as archive:
     for path in logs:
-        archive.add(path, arcname=path.relative_to(run), recursive=False)
+        archive.add(path, arcname=path.relative_to(runs[0]), recursive=False)
+(output / "m0-evidence.json").write_text(json.dumps(evidence, sort_keys=True) + "\n")
 '''
+
+
+def _run_m0_linux_parity(node: Node, context: RunContext, evidence: Path, local_root: Path,
+                         repository: Path) -> StorageStatus:
+    m0 = _copy_m0_source(node, context, repository)
+    work = _create_runtime_root(node, context)
+    command = ["python3", m0 + "/run.py", "--trail", context.remote_root + "/bin/trail",
+               "--litestream", context.remote_root + "/bin/litestream", "--work-root", work,
+               "--scenario", "all", "--repeat", "3"]
+    termination = "completed"
+    exit_code = None
+    diagnostic: bytes | str = b""
+    try:
+        result = ssh(node, command, check=False, timeout=1200)
+        exit_code = result.returncode
+        diagnostic = result.stderr or b""
+    except subprocess.TimeoutExpired as exc:
+        termination = "timeout"
+        diagnostic = exc.stderr or b""
+    except (OSError, subprocess.SubprocessError) as exc:
+        termination = type(exc).__name__
+        diagnostic = getattr(exc, "stderr", b"") or b""
+
+    failures = []
+    if termination != "completed" or exit_code != 0:
+        diagnostic_bytes = diagnostic.encode("utf-8", errors="replace") if isinstance(diagnostic, str) else diagnostic
+        failures.append("resource capability: no space left on device"
+                        if b"No space left on device" in diagnostic_bytes else "workload did not complete")
+    local_manifest = local_root / "fm1-m0-evidence.json"
+    local_logs = local_root / "fm1-m0-logs.tar.gz"
+    local_result = local_root / "fm1-m0-result.json"
+    manifest: dict[str, Any] = {}
+    try:
+        collected = ssh(node, ["python3", "-c", _M0_COLLECT_SCRIPT, work, context.remote_root], check=False)
+        if collected.returncode:
+            raise RuntimeError("remote evidence collection failed")
+        _copy_from_node(node, context.remote_root + "/m0-evidence.json", local_manifest, max_bytes=1024 * 1024)
+        _copy_from_node(node, context.remote_root + "/m0-logs.tar.gz", local_logs, max_bytes=128 * 1024 * 1024)
+        manifest = json.loads(local_manifest.read_text(encoding="utf-8"))
+        if manifest.get("result_present"):
+            _copy_from_node(node, context.remote_root + "/m0-result.json", local_result, max_bytes=8 * 1024 * 1024)
+    except (OSError, RuntimeError, ValueError, UnicodeError, json.JSONDecodeError, subprocess.SubprocessError) as exc:
+        failures.append("evidence collection failed: " + type(exc).__name__)
+
+    aggregate: dict[str, Any] = {}
+    if local_result.is_file():
+        try:
+            aggregate = json.loads(local_result.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            failures.append("copied aggregate is invalid")
+    complete = (not failures and aggregate.get("status") == "PASS" and aggregate.get("repeat") == 3
+                and len(aggregate.get("results", [])) == 13 and manifest.get("log_count", 0) > 0)
+    if not complete and not failures:
+        failures.append("copied aggregate or logs are incomplete")
+    status = StorageStatus.PASS if complete else StorageStatus.NO_GO
+    event = {"event": "m0-linux-parity", "node": "fm1", "status": status.value, "repeat": 3,
+             "termination": termination, "exit_code": exit_code, "failures": failures}
+    for name, path in (("partial_evidence_sha256", local_manifest), ("logs_sha256", local_logs),
+                       ("result_sha256", local_result)):
+        if path.is_file():
+            event[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    append_evidence(evidence, event, repository)
+    return status
 
 
 def _create_runtime_root(node: Node, context: RunContext) -> str:
@@ -1269,7 +1358,7 @@ def _verify_reboot(node: Node, old_boot: str, *, timeout: float = 240.0) -> None
             raise RuntimeError("writer service mask did not survive reboot")
 
 
-def provision(nodes: list[Node], context: RunContext, evidence: Path, repository: Path, *, inventory_path: Path, linode_env: Path, fence_command: Path) -> None:
+def provision(nodes: list[Node], context: RunContext, evidence: Path, repository: Path, *, inventory_path: Path, linode_env: Path, fence_command: Path) -> StorageStatus:
     global _SSH_KNOWN_HOSTS, _REMOTE_ROOT
     _validate_prerequisites(nodes, inventory_path, linode_env, repository)
     local_root = _validate_local_context(context, repository)
@@ -1309,27 +1398,7 @@ def provision(nodes: list[Node], context: RunContext, evidence: Path, repository
                                            "status": "PASS", "services": "masked-and-inactive"}, repository)
 
             fm1 = next(node for node in nodes if node.name == "fm1")
-            m0 = _copy_m0_source(fm1, context, repository)
-            work = _create_runtime_root(fm1, context)
-            result = ssh(fm1, ["python3", m0 + "/run.py", "--trail", context.remote_root + "/bin/trail",
-                               "--litestream", context.remote_root + "/bin/litestream", "--work-root", work,
-                               "--scenario", "all", "--repeat", "3"], check=False, timeout=1200)
-            if result.returncode:
-                raise RuntimeError("M0 Linux parity failed")
-            if ssh(fm1, ["python3", "-c", _M0_COLLECT_SCRIPT, work, context.remote_root], check=False).returncode:
-                raise RuntimeError("could not collect M0 private evidence")
-            local_result = local_root / "fm1-m0-result.json"
-            local_logs = local_root / "fm1-m0-logs.tar.gz"
-            _copy_from_node(fm1, context.remote_root + "/m0-result.json", local_result, max_bytes=8 * 1024 * 1024)
-            _copy_from_node(fm1, context.remote_root + "/m0-logs.tar.gz", local_logs, max_bytes=128 * 1024 * 1024)
-            aggregate = json.loads(local_result.read_text(encoding="utf-8"))
-            if aggregate.get("status") != "PASS" or aggregate.get("repeat") != 3 or len(aggregate.get("results", [])) != 13:
-                raise RuntimeError("copied M0 aggregate is incomplete")
-            append_evidence(evidence, {
-                "event": "m0-linux-parity", "node": "fm1", "status": "PASS", "repeat": 3,
-                "result_sha256": hashlib.sha256(local_result.read_bytes()).hexdigest(),
-                "logs_sha256": hashlib.sha256(local_logs.read_bytes()).hexdigest(),
-            }, repository)
+            return _run_m0_linux_parity(fm1, context, evidence, local_root, repository)
     finally:
         _SSH_KNOWN_HOSTS = None
         _REMOTE_ROOT = None
@@ -1736,8 +1805,11 @@ def main(argv: list[str] | None = None) -> int:
         preflight(nodes, context, evidence, repository, inventory_path=args.inventory, linode_env=args.linode_env)
         if args.scenario == "provision":
             init_remote(nodes, context, evidence, repository, inventory_path=args.inventory, linode_env=args.linode_env)
-            provision(nodes, context, evidence, repository, inventory_path=args.inventory,
-                      linode_env=args.linode_env, fence_command=args.fence_command)
+            result = provision(nodes, context, evidence, repository, inventory_path=args.inventory,
+                               linode_env=args.linode_env, fence_command=args.fence_command)
+            if result is StorageStatus.NO_GO:
+                print("provision NO-GO")
+                return 2
     else:
         work_root = _absolute_no_symlinks(args.work_root)
         candidates = sorted((p for p in work_root.iterdir() if p.is_dir() and _RUN_ID.fullmatch(p.name) and (p / ".preflight-ok").is_file() and (p / ".preflight-handoff").is_file()), reverse=True)

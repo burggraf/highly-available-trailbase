@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 from run import (
-    Node, RunContext, _FINGERPRINT, _require_facts, _known_host_fingerprint, _verify_remote_directory,
+    Node, RunContext, _FINGERPRINT, _require_facts, _known_host_fingerprint, _remote_stat, _verify_remote_directory,
     invoke_fence, validate_fence_evidence, promotion_allowed,
     append_evidence, build_pinned_known_hosts, ensure_remote_root, init_remote,
     load_inventory, load_linode_env, new_run_context, require_private_file,
@@ -23,6 +23,7 @@ from run import (
     Artifact, artifact_for, confined_remote_path, extract_verified_artifact,
     mask_writer_services, missing_packages, published_checksum,
     validate_binary_version, validate_release_metadata, _install_required_packages,
+    _binary_version_evidence, _run_m0_linux_parity,
 )
 
 FP = "SHA256:" + "A" * 43
@@ -387,6 +388,11 @@ class TransportTests(unittest.TestCase):
                 with self.assertRaises(ValueError): scp_to(node(), source, "/var/lib/hat-qualification/r/x")
 
 class RemoteRootTests(unittest.TestCase):
+    def test_remote_stat_parses_multiword_regular_file_kind(self):
+        result = subprocess.CompletedProcess([], 0, b"regular file\t0\t0\t600\t/safe/file\n", b"")
+        with mock.patch("run.ssh", return_value=result):
+            self.assertEqual(_remote_stat(node(), "/safe/file"), ("regular file", 0, 0, 0o600, "/safe/file"))
+
     def test_remote_realpath_retries_transient_transport_failure(self):
         failed = subprocess.CompletedProcess([], 255, b"", b"transient")
         passed = subprocess.CompletedProcess([], 0, b"/safe\n", b"")
@@ -397,17 +403,17 @@ class RemoteRootTests(unittest.TestCase):
 
     def setUp(self):
         self.ctx = RunContext("20260907T010203Z-0123456789", Path("/tmp/local"), "/var/lib/hat-qualification/20260907T010203Z-0123456789")
-        self.base = subprocess.CompletedProcess([], 0, b"directory 0 0 755 /var/lib/hat-qualification\n")
+        self.base = subprocess.CompletedProcess([], 0, b"directory\t0\t0\t755\t/var/lib/hat-qualification\n")
         self.empty = subprocess.CompletedProcess([], 0, b"")
 
     def test_creates_and_verifies_root(self):
-        root = b"directory 0 0 700 " + self.ctx.remote_root.encode() + b"\n"
+        root = b"directory\t0\t0\t700\t" + self.ctx.remote_root.encode() + b"\n"
         def calls(n, argv, **kw):
             if argv[0] == "stat":
                 path = argv[-1]
                 if path == self.ctx.remote_root: return subprocess.CompletedProcess([], 0, root)
-                if path == "/var/lib/hat-qualification": return subprocess.CompletedProcess([], 0, b"directory 0 0 700 /var/lib/hat-qualification\n")
-                return subprocess.CompletedProcess([], 0, ("directory 0 0 755 " + path + "\n").encode())
+                if path == "/var/lib/hat-qualification": return subprocess.CompletedProcess([], 0, b"directory\t0\t0\t700\t/var/lib/hat-qualification\n")
+                return subprocess.CompletedProcess([], 0, ("directory\t0\t0\t755\t" + path + "\n").encode())
             if argv[0] == "realpath": return subprocess.CompletedProcess([], 0, (argv[-1] + "\n").encode())
             return self.empty
         with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")), mock.patch("run.ssh", side_effect=calls) as call:
@@ -415,7 +421,7 @@ class RemoteRootTests(unittest.TestCase):
         self.assertTrue(any(c.args[1][0] == "mkdir" for c in call.call_args_list))
 
     def test_rejects_untrusted_base(self):
-        bad = subprocess.CompletedProcess([], 0, b"symbolic link 0 0 755 /var/lib/hat-qualification\n")
+        bad = subprocess.CompletedProcess([], 0, b"symbolic link\t0\t0\t755\t/var/lib/hat-qualification\n")
         with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")), mock.patch("run.ssh", return_value=bad):
             with self.assertRaises(RuntimeError): ensure_remote_root(node(), self.ctx)
 
@@ -426,7 +432,7 @@ class RemoteRootTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError): _verify_remote_directory(node(), "/var/lib/hat-qualification", mode=0o700)
 
     def test_absent_base_is_bootstrapped_before_root(self):
-        root = b"directory 0 0 700 " + self.ctx.remote_root.encode() + b"\n"
+        root = b"directory\t0\t0\t700\t" + self.ctx.remote_root.encode() + b"\n"
         missing = subprocess.CompletedProcess([], 1, b"")
         def calls(n, argv, **kw):
             if argv[0] == "stat" and argv[-1] == "/var/lib/hat-qualification": return missing
@@ -446,7 +452,7 @@ class RemoteRootTests(unittest.TestCase):
         self.assertFalse(any(c.args[1][0] == "mkdir" for c in call.call_args_list))
 
     def test_failed_verification_removes_new_root(self):
-        wrong = b"directory 0 0 755 " + self.ctx.remote_root.encode() + b"\n"
+        wrong = b"directory\t0\t0\t755\t" + self.ctx.remote_root.encode() + b"\n"
         def calls(n, argv, **kw):
             if argv[0] == "stat": return subprocess.CompletedProcess([], 0, wrong)
             return self.empty
@@ -1074,6 +1080,59 @@ class ProvisionTests(unittest.TestCase):
                                ("litestream", "prefix 0.5.17 suffix\n")):
             with self.assertRaises(RuntimeError):
                 validate_binary_version(product, value)
+
+    def test_binary_version_evidence_retains_exact_build_and_embedded_sqlite(self):
+        trail = "trail v0.33.11-0-gf24291b8 (2026-09-04)\nsqlite: 3.53.2\n"
+        versions, reports = _binary_version_evidence(trail, "0.5.17\n")
+        self.assertEqual(versions, {"trailbase": "0.33.11", "litestream": "0.5.17"})
+        self.assertEqual(reports["trailbase"], {
+            "reported": trail.rstrip(), "build": "v0.33.11-0-gf24291b8",
+            "embedded_sqlite_version": "3.53.2",
+        })
+        self.assertEqual(reports["litestream"], {"reported": "0.5.17"})
+
+    def test_m0_failure_and_timeout_collect_partial_evidence_and_return_no_go(self):
+        for termination in (subprocess.CompletedProcess([], 2, b"", b"private: No space left on device"),
+                            subprocess.TimeoutExpired([], 1200, output=b"", stderr=b"private timeout")):
+            with self.subTest(termination=type(termination).__name__), tempfile.TemporaryDirectory() as d:
+                local = Path(d)
+                context = RunContext("20260907T010203Z-0123456789", local,
+                                     "/var/lib/hat-qualification/20260907T010203Z-0123456789")
+                partial = json.dumps({"run_count": 1, "result_present": False, "log_count": 4}).encode()
+
+                def copy(_node, source, destination, **_kwargs):
+                    destination.write_bytes(partial if source.endswith("m0-evidence.json") else b"partial logs")
+                    destination.chmod(0o600)
+
+                command = mock.Mock(side_effect=[termination, subprocess.CompletedProcess([], 0, b"", b"")])
+                with mock.patch("run._copy_m0_source", return_value=context.remote_root + "/source/experiments/m0"), \
+                     mock.patch("run._create_runtime_root", return_value="/run/hat/work"), \
+                     mock.patch("run.ssh", command), mock.patch("run._copy_from_node", side_effect=copy), \
+                     mock.patch("run._LOADED_SECRET_VALUES", set()):
+                    status = _run_m0_linux_parity(node("fm1"), context, local / "evidence.jsonl", local, Path.cwd())
+
+                self.assertIs(status, StorageStatus.NO_GO)
+                self.assertEqual(command.call_args_list[0].args[1][-4:], ["--scenario", "all", "--repeat", "3"])
+                self.assertIn("m0-evidence.json", command.call_args_list[1].args[1][2])
+                event = json.loads((local / "evidence.jsonl").read_text().splitlines()[-1])
+                self.assertEqual((event["event"], event["status"], event["repeat"]),
+                                 ("m0-linux-parity", "NO-GO", 3))
+                self.assertNotIn("private", json.dumps(event))
+                if isinstance(termination, subprocess.CompletedProcess):
+                    self.assertEqual(event["failures"], ["resource capability: no space left on device"])
+                self.assertTrue((local / "fm1-m0-evidence.json").is_file())
+                self.assertTrue((local / "fm1-m0-logs.tar.gz").is_file())
+
+    def test_provision_cli_returns_two_for_bounded_m0_no_go(self):
+        nodes = [node("fm1"), node("fm2"), node("fm3")]
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch("run.load_inventory", return_value=nodes), mock.patch("run.load_linode_env"), \
+             mock.patch("run.preflight"), mock.patch("run.init_remote"), \
+             mock.patch("run.provision", return_value=StorageStatus.NO_GO):
+            root = Path(d) / "runs"
+            self.assertEqual(main(["provision", "--inventory", str(Path(d) / "inventory"),
+                                   "--linode-env", str(Path(d) / "env"), "--fence-command", str(Path(d) / "fence"),
+                                   "--work-root", str(root)]), 2)
 
     def test_remote_paths_are_confined_and_normalized(self):
         root = "/var/lib/hat-qualification/20260907T010203Z-0123456789"
