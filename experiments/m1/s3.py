@@ -92,10 +92,11 @@ class S3Client:
         except (URLError, TimeoutError):
             raise
 
-    def put(self, key: str, body: bytes, *, etag: str | None = None, if_none_match: bool = False) -> tuple[int, dict[str, str], bytes]:
+    def put(self, key: str, body: bytes, *, etag: str | None = None, if_none_match: bool = False, headers: dict[str, str] | None = None) -> tuple[int, dict[str, str], bytes]:
         if etag and if_none_match: raise ValueError("conflicting conditions")
-        headers = {"If-Match": quote_etag(etag)} if etag else ({"If-None-Match": "*"} if if_none_match else {})
-        return self.request("PUT", key, body=body, headers=headers)
+        conditional = {"If-Match": quote_etag(etag)} if etag else ({"If-None-Match": "*"} if if_none_match else {})
+        conditional.update(headers or {})
+        return self.request("PUT", key, body=body, headers=conditional)
 
     def get(self, key: str): return self.request("GET", key)
     def head(self, key: str): return self.request("HEAD", key)
@@ -120,29 +121,25 @@ class S3Client:
         return Reconciliation.UNKNOWN
 
 
-def load_s3_env(path: Path, repository: Path | None = None) -> dict[str, str]:
+def _read_s3_values(path: Path, repository: Path | None = None) -> dict[str, str]:
     if require_private_file is None: raise RuntimeError("secure env loader unavailable")
     require_private_file(path, repository)
     values: dict[str, str] = {}
     for line in path.read_text(encoding="utf-8").splitlines():
-        match = re.fullmatch(r"export (IDRIVE_(?:ENDPOINT|BUCKET|REGION|ACCESS_KEY|SECRET_KEY))='([^'\n]+)'", line)
-        if not match or match.group(1) in values: raise ValueError("invalid S3 env")
-        values[match.group(1)] = match.group(2)
+        match = re.fullmatch(r"export ([A-Z][A-Z0-9_]+)='([^'\n]+)'", line)
+        if not match: raise ValueError("invalid S3 env")
+        aliases = {"AWS_ACCESS_KEY_ID": "IDRIVE_ACCESS_KEY", "AWS_SECRET_ACCESS_KEY": "IDRIVE_SECRET_KEY", "AWS_REGION": "IDRIVE_REGION", "HAT_S3_ENDPOINT": "IDRIVE_ENDPOINT", "HAT_S3_BUCKET": "IDRIVE_BUCKET"}
+        key = aliases.get(match.group(1), match.group(1))
+        if key not in {"IDRIVE_ENDPOINT", "IDRIVE_BUCKET", "IDRIVE_REGION", "IDRIVE_ACCESS_KEY", "IDRIVE_SECRET_KEY"} or key in values: raise ValueError("invalid S3 env")
+        values[key] = match.group(2)
     required = {"IDRIVE_ENDPOINT", "IDRIVE_BUCKET", "IDRIVE_REGION", "IDRIVE_ACCESS_KEY", "IDRIVE_SECRET_KEY"}
     if set(values) != required: raise ValueError("invalid S3 env")
     register_secret(values["IDRIVE_ACCESS_KEY"]); register_secret(values["IDRIVE_SECRET_KEY"])
-    return {k: v for k, v in values.items() if k not in {"IDRIVE_ACCESS_KEY", "IDRIVE_SECRET_KEY"}}
+    return values
 
+def load_s3_env(path: Path, repository: Path | None = None) -> dict[str, str]:
+    return {k: v for k, v in _read_s3_values(path, repository).items() if k not in {"IDRIVE_ACCESS_KEY", "IDRIVE_SECRET_KEY"}}
 
 def client_from_env(path: Path, repository: Path | None = None) -> S3Client:
-    if require_private_file is None: raise RuntimeError("secure env loader unavailable")
-    require_private_file(path, repository)
-    values: dict[str, str] = {}
-    for line in path.read_text(encoding="utf-8").splitlines():
-        match = re.fullmatch(r"export (IDRIVE_(?:ENDPOINT|BUCKET|REGION|ACCESS_KEY|SECRET_KEY))='([^'\\n]+)'", line)
-        if not match or match.group(1) in values: raise ValueError("invalid S3 env")
-        values[match.group(1)] = match.group(2)
-    if set(values) != {"IDRIVE_ENDPOINT", "IDRIVE_BUCKET", "IDRIVE_REGION", "IDRIVE_ACCESS_KEY", "IDRIVE_SECRET_KEY"}:
-        raise ValueError("invalid S3 env")
-    register_secret(values["IDRIVE_ACCESS_KEY"]); register_secret(values["IDRIVE_SECRET_KEY"])
+    values = _read_s3_values(path, repository)
     return S3Client(values["IDRIVE_BUCKET"], values["IDRIVE_REGION"], values["IDRIVE_ACCESS_KEY"], values["IDRIVE_SECRET_KEY"], values["IDRIVE_ENDPOINT"])

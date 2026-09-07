@@ -731,14 +731,55 @@ def init_remote(nodes: list[Node], context: RunContext, evidence: Path | None = 
         _REMOTE_ROOT = None
 
 
+def storage(nodes=None, context=None, evidence=None, repository=None, *, s3_env=None) -> None:
+    """Run the bounded fresh-prefix S3 conditional-operation qualification."""
+    from concurrent.futures import ThreadPoolExecutor
+    from s3 import client_from_env, Reconciliation
+    if s3_env is None: raise ValueError("private S3 env is required")
+    client = client_from_env(s3_env, repository)
+    prefix = f"qualification/{context.run_id}/"
+    ledger = evidence
+    def op(name, method, key, body=b"", result=None):
+        status, headers, data = result if result is not None else method(key, body)
+        event = {"operation": name, "status": status, "request_id": headers.get("x-amz-request-id", headers.get("x-request-id", "")),
+                 "etag": headers.get("ETag", headers.get("etag", "")), "payload_sha256": hashlib.sha256(data or body).hexdigest()}
+        append_evidence(ledger, event, repository)
+        return status, headers, data
+    key = prefix + "control/object"
+    first = op("put-create", client.put, key, b"one", client.put(key, b"one", if_none_match=True))
+    etag = first[1].get("ETag", first[1].get("etag", ""))
+    op("head", client.head, key, result=client.head(key)); op("get", client.get, key, result=client.get(key))
+    op("put-create-refused", client.put, key, b"other", client.put(key, b"other", if_none_match=True))
+    replaced = op("put-replace", client.put, key, b"two", client.put(key, b"two", etag=etag))
+    current = replaced[1].get("ETag", replaced[1].get("etag", ""))
+    op("put-stale-refused", client.put, key, b"bad", client.put(key, b"bad", etag=etag))
+    race_key = prefix + "race/create"
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        races = list(pool.map(lambda payload: client.put(race_key, payload, if_none_match=True), (b"a", b"b")))
+    winners = sum(status in (200, 201, 204) for status, _, _ in races)
+    if winners != 1: raise RuntimeError("conditional create race did not produce exactly one winner")
+    delete = op("delete-current", client.delete, key, result=client.delete(key, etag=current))
+    if delete[0] not in (200, 204): raise RuntimeError("conditional delete failed")
+    op("list", lambda k, b: client.list(prefix), prefix, result=client.list(prefix))
+    reconciliation = client.reconcile_put(prefix + "reconcile", b"reconcile", '"' + hashlib.md5(b"reconcile").hexdigest() + '"')
+    append_evidence(ledger, {"operation": "discarded-response-reconciliation", "result": reconciliation.value}, repository)
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("scenario", choices=["preflight", "init-remote"])
-    parser.add_argument("--inventory", type=Path, required=True)
+    parser.add_argument("scenario", choices=["preflight", "init-remote", "storage"])
+    parser.add_argument("--inventory", type=Path)
     parser.add_argument("--work-root", type=Path, required=True)
-    parser.add_argument("--linode-env", type=Path, required=True)
+    parser.add_argument("--linode-env", type=Path)
+    parser.add_argument("--s3-env", type=Path)
     args = parser.parse_args(argv)
     repository = Path(__file__).resolve().parents[2]
+    if args.scenario == "storage":
+        context = new_run_context(args.work_root, repository)
+        storage(context=context, evidence=context.local_root / "evidence.jsonl", repository=repository, s3_env=args.s3_env)
+        print("storage passed")
+        return 0
+    if args.inventory is None or args.linode_env is None:
+        parser.error("--inventory and --linode-env are required")
     nodes = load_inventory(args.inventory, repository)
     load_linode_env(args.linode_env, nodes, repository)
     if args.scenario == "preflight":
