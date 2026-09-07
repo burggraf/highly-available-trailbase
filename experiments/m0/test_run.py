@@ -27,6 +27,7 @@ from run import (
     promote_candidate,
     validate_epoch_paths,
     copy_for_inspection,
+    sqlite_rows,
     outcomes,
     outcome_passes,
 )
@@ -107,6 +108,13 @@ class PromotionTests(unittest.TestCase):
             copied = copy_for_inspection(source, root / "evidence")
             copied.write_bytes(b"inspected")
             self.assertEqual(source.read_bytes(), b"candidate")
+
+    def test_truncated_candidate_fails_validation(self):
+        with tempfile.TemporaryDirectory() as parent:
+            candidate = Path(parent) / "main.db"
+            candidate.write_bytes(b"not sqlite")
+            with self.assertRaises(Exception):
+                sqlite_rows(candidate, ("hat_ops",))
 
     def test_missing_session_prevents_start(self):
         with tempfile.TemporaryDirectory() as parent:

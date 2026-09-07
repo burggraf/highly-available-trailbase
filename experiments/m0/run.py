@@ -1119,6 +1119,105 @@ def run_crash(trail: Path, litestream: Path, root: Path) -> int:
     return 0
 
 
+def run_guards(trail: Path, litestream: Path, root: Path) -> int:
+    run_follow(trail, litestream, root)
+    source = root / "b" / "traildepot" / "data"
+    guard_root = root / "evidence" / "guard-copies"
+    shutil.copytree(source, guard_root)
+    results: dict[str, str] = {}
+    starts: list[str] = []
+    def forbidden_start():
+        starts.append("started")
+        raise AssertionError("writable process must not start")
+
+    live = owned_process(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        "guard-live-follower", root, root / "logs" / "guard-live.log",
+    )
+    try:
+        try:
+            promote_candidate([live], [guard_root / f"{name}.db" for name in ("main", "session", "aux")], forbidden_start)
+        except RuntimeError:
+            results["live_process"] = "refused"
+        else:
+            raise CorrectnessFailure("live-process promotion was not refused")
+    finally:
+        stop_owned([live])
+    missing_dir = root / "evidence" / "guard-missing"
+    shutil.copytree(source, missing_dir)
+    (missing_dir / "session.db").unlink()
+    try:
+        promote_candidate([], [missing_dir / f"{name}.db" for name in ("main", "session", "aux")], forbidden_start)
+    except FileNotFoundError:
+        if (missing_dir / "session.db").exists():
+            raise CorrectnessFailure("missing-file guard created the database")
+        results["missing_database"] = "refused-preserved"
+    else:
+        raise CorrectnessFailure("missing database promotion was not refused")
+    malformed_dir = root / "evidence" / "guard-malformed-txid"
+    shutil.copytree(source, malformed_dir)
+    (malformed_dir / "main.db-txid").write_text("malformed")
+    try:
+        read_txid_sidecar(malformed_dir / "main.db-txid")
+    except ValueError:
+        results["malformed_txid"] = "refused"
+    else:
+        raise CorrectnessFailure("malformed TXID was accepted")
+    corrupt_dir = root / "evidence" / "guard-corrupt"
+    shutil.copytree(source, corrupt_dir)
+    corrupt = corrupt_dir / "main.db"
+    corrupt.write_bytes(corrupt.read_bytes()[:100])
+    try:
+        sqlite_rows(corrupt, ("hat_ops",))
+    except (CorrectnessFailure, sqlite3.DatabaseError):
+        results["truncated_database"] = "refused"
+    else:
+        raise CorrectnessFailure("truncated database passed validation")
+    try:
+        validate_epoch_paths(
+            {name: root / "backup" / "e1" / name for name in ("main", "session", "aux")},
+            {name: root / "backup" / "e1" / name for name in ("main", "session", "aux")},
+        )
+    except ValueError:
+        results["reused_epoch"] = "refused"
+    else:
+        raise CorrectnessFailure("reused epoch paths were accepted")
+    exited = owned_process(
+        [sys.executable, "-c", "pass"], "guard-exited-follower", root, root / "logs" / "guard-exited.log",
+    )
+    exited.process.wait(timeout=5)
+    try:
+        wait_for_txid(root / "never-created-txid", 1, exited, timeout=0.1)
+    except RuntimeError:
+        results["unexpected_exit"] = "refused"
+    else:
+        raise CorrectnessFailure("unexpected follower exit was accepted")
+    stalled = owned_process(
+        [sys.executable, "-c", "import time; time.sleep(30)"], "guard-stalled-follower", root, root / "logs" / "guard-stalled.log",
+    )
+    try:
+        try:
+            wait_for_txid(root / "never-created-txid", 1, stalled, timeout=0.1)
+        except RuntimeError:
+            results["catchup_timeout"] = "refused"
+        else:
+            raise CorrectnessFailure("catch-up timeout was accepted")
+    finally:
+        stop_owned([stalled])
+    apply_error = parse_follower_line('time=2026-01-01T00:00:00Z level=ERROR msg="follow: error applying updates"')
+    later_progress = parse_follower_line('time=2026-01-01T00:00:01Z level=INFO msg="follow: applied updates"')
+    try:
+        promotion_error_gate([apply_error, later_progress])
+    except CorrectnessFailure:
+        results["apply_error_then_progress"] = "refused"
+    else:
+        raise CorrectnessFailure("later progress cleared follower error")
+    if starts:
+        raise CorrectnessFailure("a refusal control invoked writable startup")
+    (root / "result.json").write_text(json.dumps({"scenario": "guards", "status": "PASS", "controls": results}, indent=2) + "\n")
+    return 0
+
+
 def run_preflight(trail: Path, litestream: Path, root: Path) -> int:
     if not trail.is_file() or not os.access(trail, os.X_OK):
         raise RuntimeError(f"TrailBase executable is not runnable: {trail}")
@@ -1188,6 +1287,10 @@ def main(argv: list[str] | None = None) -> int:
         if not args.trail or not args.litestream:
             parser.error("crash requires --trail and --litestream")
         return run_crash(args.trail.absolute(), args.litestream.absolute(), root)
+    if args.scenario == "guards":
+        if not args.trail or not args.litestream:
+            parser.error("guards requires --trail and --litestream")
+        return run_guards(args.trail.absolute(), args.litestream.absolute(), root)
     raise RuntimeError(f"scenario not implemented yet: {args.scenario}")
 
 
