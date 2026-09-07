@@ -1,3 +1,4 @@
+import datetime
 import hashlib
 import json
 import os
@@ -35,17 +36,25 @@ class FenceContractTests(unittest.TestCase):
         return path
 
     def evidence(self, target, *, action="power-off", state="offline"):
-        return {"action": action, "target": target, "request": {"id": "req-1", "time": "2026-01-01T00:00:00Z"},
-                "completion": {"time": "2026-01-01T00:00:01Z"}, "state": state,
-                "observations": [{"time": "2026-01-01T00:00:01Z", "state": state}]}
+        completed = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+        requested = completed - datetime.timedelta(seconds=1)
+        stamp = lambda value: value.isoformat().replace("+00:00", "Z")
+        return {"action": action, "target": target, "request": {"id": "req-1", "time": stamp(requested)},
+                "completion": {"time": stamp(completed)}, "state": state,
+                "observations": [{"time": stamp(completed), "state": state}]}
 
     def test_only_fresh_exact_completed_isolation_promotes(self):
         target = self.target()
         valid = self.evidence(target)
         self.assertTrue(validate_fence_evidence(valid, target, "power-off"))
         self.assertTrue(promotion_allowed(valid, target))
+        stale = self.evidence(target)
+        stale["completion"]["time"] = "2000-01-01T00:00:01Z"
+        stale["observations"][0]["time"] = "2000-01-01T00:00:01Z"
+        self.assertFalse(promotion_allowed(stale, target))
         before_completion = self.evidence(target)
-        before_completion["observations"][0]["time"] = "2026-01-01T00:00:00.500Z"
+        before_completion["observations"][0]["time"] = "2000-01-01T00:00:00Z"
+        before_completion["completion"]["time"] = "2000-01-01T00:00:01Z"
         self.assertFalse(validate_fence_evidence(before_completion, target, "power-off"))
         for bad in (self.evidence(target, state="running"), self.evidence({**target, "boot": "new"}),
                     {**valid, "completion": None}, {**valid, "request": {"id": "req-1"}}):
@@ -63,7 +72,7 @@ class FenceContractTests(unittest.TestCase):
             cases = [("malformed", "not-json", 0, 0), ("failed", self.evidence(target), 1, 0),
                      ("timeout", self.evidence(target), 0, 1), ("no-op", self.evidence(target, state="running"), 0, 0),
                      ("mismatch", self.evidence({**target, "node": "other"}), 0, 0),
-                     ("delayed", self.evidence(target), 0, 0)]
+                     ("delayed", self.evidence(target), 0, 0.1)]
             for _, payload, exit_code, delay in cases:
                 path = directory / "fake"
                 if isinstance(payload, str):

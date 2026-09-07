@@ -29,6 +29,7 @@ _SECRET = re.compile(
     r"(password|passwd|secret|token|authorization|private.?key|credential|access.?key|session|cookie)", re.I
 )
 SSH_TIMEOUT = 60
+FENCE_MAX_AGE = 300
 _SSH_KNOWN_HOSTS: Path | None = None
 _REMOTE_ROOT: str | None = None
 _FRESH_LOCAL_ROOTS: set[str] = set()
@@ -980,7 +981,8 @@ def validate_fence_evidence(evidence: Any, target: dict[str, Any], action: str) 
         completion_time = _fence_time(completion["time"])
     except ValueError:
         return False
-    if completion_time < request_time:
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if completion_time < request_time or now - completion_time > datetime.timedelta(seconds=FENCE_MAX_AGE) or completion_time - now > datetime.timedelta(seconds=30):
         return False
     seen: set[tuple[str, str]] = set()
     previous = None
