@@ -353,6 +353,94 @@ class TransportTests(unittest.TestCase):
             self.assertEqual(destination, "/var/lib/hat-qualification/r/x")
             self.assertEqual(remote.call_count, 1)
 
+    def test_scp_retries_allowlisted_transient_then_succeeds(self):
+        with tempfile.TemporaryDirectory() as d:
+            source = Path(d) / "x"; source.write_text("x"); source.chmod(0o600)
+            transient = subprocess.CompletedProcess([], 255, b"", b"Connection reset by peer")
+            uploaded = subprocess.CompletedProcess([], 0, b"", b"")
+            finalized = subprocess.CompletedProcess([], 0, b"", b"")
+            absent = subprocess.CompletedProcess([], 0, b"absent", b"")
+            with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")), mock.patch("run._REMOTE_ROOT", "/var/lib/hat-qualification/r"):
+                with mock.patch("run.subprocess.run", side_effect=[transient, uploaded]) as local_scp:
+                    with mock.patch("run.ssh", side_effect=[absent, absent, finalized]) as remote:
+                        result = scp_to(node(), source, "/var/lib/hat-qualification/r/x")
+            self.assertIs(result, finalized)
+            self.assertEqual(local_scp.call_count, 2)
+            self.assertEqual(remote.call_count, 3)
+
+    def test_scp_reconciles_fully_written_temporary_without_retry(self):
+        with tempfile.TemporaryDirectory() as d:
+            source = Path(d) / "x"; source.write_text("x"); source.chmod(0o600)
+            transient = subprocess.CompletedProcess([], 255, b"", b"Connection closed")
+            complete = subprocess.CompletedProcess([], 0, b"complete", b"")
+            finalized = subprocess.CompletedProcess([], 0, b"", b"")
+            with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")), mock.patch("run._REMOTE_ROOT", "/var/lib/hat-qualification/r"):
+                with mock.patch("run.subprocess.run", return_value=transient) as local_scp:
+                    with mock.patch("run.ssh", side_effect=[complete, finalized]) as remote:
+                        result = scp_to(node(), source, "/var/lib/hat-qualification/r/x")
+            self.assertIs(result, finalized)
+            self.assertEqual(local_scp.call_count, 1)
+            self.assertEqual(remote.call_count, 2)
+
+    def test_scp_discards_partial_temporary_before_retry(self):
+        with tempfile.TemporaryDirectory() as d:
+            source = Path(d) / "x"; source.write_text("x")
+            transient = subprocess.CompletedProcess([], 255, b"", b"Connection timed out")
+            uploaded = subprocess.CompletedProcess([], 0, b"", b"")
+            incomplete = subprocess.CompletedProcess([], 0, b"incomplete", b"")
+            absent = subprocess.CompletedProcess([], 0, b"absent", b"")
+            finalized = subprocess.CompletedProcess([], 0, b"", b"")
+            with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")), mock.patch("run._REMOTE_ROOT", "/var/lib/hat-qualification/r"):
+                with mock.patch("run.subprocess.run", side_effect=[transient, uploaded]) as local_scp:
+                    with mock.patch("run.ssh", side_effect=[incomplete, absent, finalized]) as remote:
+                        result = scp_to(node(), source, "/var/lib/hat-qualification/r/x")
+            self.assertIs(result, finalized)
+            self.assertEqual(local_scp.call_count, 2)
+            self.assertEqual(remote.call_count, 3)
+
+    def test_scp_does_not_retry_authentication_failure(self):
+        with tempfile.TemporaryDirectory() as d:
+            source = Path(d) / "x"; source.write_text("x")
+            failed = subprocess.CompletedProcess([], 255, b"", b"Permission denied (publickey)")
+            cleanup = subprocess.CompletedProcess([], 0, b"", b"")
+            with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")), mock.patch("run._REMOTE_ROOT", "/var/lib/hat-qualification/r"):
+                with mock.patch("run.subprocess.run", return_value=failed) as local_scp:
+                    with mock.patch("run.ssh", return_value=cleanup) as remote:
+                        with self.assertRaises(subprocess.CalledProcessError) as raised:
+                            scp_to(node(), source, "/var/lib/hat-qualification/r/x")
+            self.assertEqual(local_scp.call_count, 1)
+            self.assertEqual(remote.call_count, 1)
+            self.assertEqual(raised.exception.failure_category, "non_transient")
+
+    def test_scp_does_not_retry_host_key_failure(self):
+        with tempfile.TemporaryDirectory() as d:
+            source = Path(d) / "x"; source.write_text("x")
+            failed = subprocess.CompletedProcess([], 255, b"", b"Host key verification failed")
+            cleanup = subprocess.CompletedProcess([], 0, b"", b"")
+            with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")), mock.patch("run._REMOTE_ROOT", "/var/lib/hat-qualification/r"):
+                with mock.patch("run.subprocess.run", return_value=failed) as local_scp:
+                    with mock.patch("run.ssh", return_value=cleanup) as remote:
+                        with self.assertRaises(subprocess.CalledProcessError) as raised:
+                            scp_to(node(), source, "/var/lib/hat-qualification/r/x")
+            self.assertEqual(local_scp.call_count, 1)
+            self.assertEqual(remote.call_count, 1)
+            self.assertEqual(raised.exception.failure_category, "non_transient")
+
+    def test_scp_failed_verified_cleanup_fails_closed_without_retry(self):
+        with tempfile.TemporaryDirectory() as d:
+            source = Path(d) / "x"; source.write_text("x")
+            transient = subprocess.CompletedProcess([], 255, b"", b"Broken pipe")
+            incomplete = subprocess.CompletedProcess([], 0, b"incomplete", b"")
+            cleanup_failed = subprocess.CompletedProcess([], 1, b"", b"cleanup failed")
+            with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")), mock.patch("run._REMOTE_ROOT", "/var/lib/hat-qualification/r"):
+                with mock.patch("run.subprocess.run", return_value=transient) as local_scp:
+                    with mock.patch("run.ssh", side_effect=[incomplete, cleanup_failed]) as remote:
+                        with self.assertRaises(subprocess.CalledProcessError) as raised:
+                            scp_to(node(), source, "/var/lib/hat-qualification/r/x")
+            self.assertEqual(local_scp.call_count, 1)
+            self.assertEqual(remote.call_count, 2)
+            self.assertEqual(raised.exception.failure_category, "cleanup")
+
     def test_scp_failure_cleans_partial_temporary(self):
         with tempfile.TemporaryDirectory() as d:
             source = Path(d) / "x"; source.write_text("x")

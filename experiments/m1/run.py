@@ -1289,6 +1289,140 @@ finally:
 '''
 
 
+_REMOTE_RECONCILE_SCRIPT = r'''import hashlib, os, stat, sys
+root, temporary, expected_size, expected_sha256, expected_mode = sys.argv[1:]
+if not temporary.startswith(root + "/"):
+    raise SystemExit("path outside root")
+def parts(path):
+    value = path[len(root) + 1:].split("/")
+    if not value or any(not p or p in (".", "..") for p in value):
+        raise SystemExit("invalid path")
+    return value
+flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+def trusted(fd):
+    st = os.fstat(fd)
+    if st.st_uid != 0 or st.st_gid != 0 or stat.S_IMODE(st.st_mode) != 0o700:
+        raise SystemExit("untrusted directory")
+def open_parent(path):
+    fd = os.open(root, flags); trusted(fd)
+    for part in parts(path)[:-1]:
+        child = os.open(part, flags, dir_fd=fd); trusted(child); os.close(fd); fd = child
+    return fd
+parent = open_parent(temporary)
+try:
+    name = parts(temporary)[-1]
+    try:
+        temporary_fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent)
+    except FileNotFoundError:
+        print("absent")
+    else:
+        try:
+            before = os.fstat(temporary_fd)
+            if (not stat.S_ISREG(before.st_mode) or before.st_uid != 0 or before.st_gid != 0 or
+                    before.st_size != int(expected_size) or stat.S_IMODE(before.st_mode) != int(expected_mode, 8)):
+                print("incomplete")
+            else:
+                digest = hashlib.sha256()
+                while chunk := os.read(temporary_fd, 1024 * 1024):
+                    digest.update(chunk)
+                after = os.fstat(temporary_fd)
+                print("complete" if (before.st_size == after.st_size and digest.hexdigest() == expected_sha256 and
+                                      stat.S_IMODE(after.st_mode) == int(expected_mode, 8)) else "incomplete")
+        finally:
+            os.close(temporary_fd)
+finally:
+    os.close(parent)
+'''
+
+_REMOTE_REMOVE_SCRIPT = r'''import os, stat, sys
+root, temporary = sys.argv[1:]
+if not temporary.startswith(root + "/"):
+    raise SystemExit("path outside root")
+def parts(path):
+    value = path[len(root) + 1:].split("/")
+    if not value or any(not p or p in (".", "..") for p in value):
+        raise SystemExit("invalid path")
+    return value
+flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+def trusted(fd):
+    st = os.fstat(fd)
+    if st.st_uid != 0 or st.st_gid != 0 or stat.S_IMODE(st.st_mode) != 0o700:
+        raise SystemExit("untrusted directory")
+def open_parent(path):
+    fd = os.open(root, flags); trusted(fd)
+    for part in parts(path)[:-1]:
+        child = os.open(part, flags, dir_fd=fd); trusted(child); os.close(fd); fd = child
+    return fd
+parent = open_parent(temporary)
+try:
+    name = parts(temporary)[-1]
+    try:
+        st = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    except FileNotFoundError:
+        print("absent")
+    else:
+        if not stat.S_ISREG(st.st_mode) or st.st_uid != 0 or st.st_gid != 0:
+            raise SystemExit("temporary is not a trusted regular file")
+        os.unlink(name, dir_fd=parent)
+        os.fsync(parent)
+        try:
+            os.stat(name, dir_fd=parent, follow_symlinks=False)
+        except FileNotFoundError:
+            print("absent")
+        else:
+            raise SystemExit("temporary still exists")
+finally:
+    os.close(parent)
+'''
+
+def _result_text(value: Any) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    return value if isinstance(value, str) else ""
+
+def _scp_failure_category(result: subprocess.CompletedProcess) -> str:
+    text = (_result_text(result.stderr) + "\\n" + _result_text(result.stdout)).lower()
+    if re.search(r"host key|remote host identification|permission denied|access denied|authentication|publickey|no such file|not a directory|is a directory|cannot open", text):
+        return "non_transient"
+    if re.search(r"connection (?:reset|closed|refused)|(?:connection|operation|connect) timed out|timed out|broken pipe", text):
+        return "transient_transport"
+    return "non_transient"
+
+def _safe_process_output(value: Any) -> bytes:
+    return redact(_result_text(value)).encode("utf-8", "replace")
+
+def _raise_scp_failure(result: subprocess.CompletedProcess, node: Node, check: bool, category: str) -> subprocess.CompletedProcess:
+    safe = subprocess.CompletedProcess(result.args, result.returncode, _safe_process_output(result.stdout), _safe_process_output(result.stderr))
+    safe.failure_category = category
+    safe.failure_evidence = {"category": category, "returncode": result.returncode,
+                             "stderr": safe.stderr.decode("utf-8", "replace")}
+    if check:
+        error = subprocess.CalledProcessError(safe.returncode, ["scp", node.ssh], safe.stdout, safe.stderr)
+        error.failure_category = category
+        error.failure_evidence = safe.failure_evidence
+        raise error
+    return safe
+
+def _source_facts(source: Path) -> tuple[int, str, int]:
+    source_stat = source.stat()
+    digest = hashlib.sha256()
+    with source.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return source_stat.st_size, digest.hexdigest(), stat.S_IMODE(source_stat.st_mode)
+
+def _reconcile_temporary(node: Node, temporary: str, source_facts: tuple[int, str, int]) -> str | None:
+    size, digest, mode = source_facts
+    result = ssh(node, ["python3", "-c", _REMOTE_RECONCILE_SCRIPT, _REMOTE_ROOT, temporary,
+                        str(size), digest, format(mode, "04o")], check=False)
+    if not isinstance(result.returncode, int) or result.returncode:
+        return None
+    state = _result_text(result.stdout).strip()
+    return state if state in {"absent", "incomplete", "complete"} else None
+
+def _remove_temporary_verified(node: Node, temporary: str) -> subprocess.CompletedProcess:
+    return ssh(node, ["python3", "-c", _REMOTE_REMOVE_SCRIPT, _REMOTE_ROOT, temporary], check=False)
+
 def scp_to(node: Node, source: Path, destination: str, *, check: bool = True, repository: Path | None = None) -> subprocess.CompletedProcess:
     _validate_node_fields(node)
     source = _absolute_no_symlinks(source)
@@ -1296,18 +1430,40 @@ def scp_to(node: Node, source: Path, destination: str, *, check: bool = True, re
     if not source.is_file() or source.is_symlink():
         raise ValueError("source must be a regular file")
     destination, parent = _remote_destination(destination)
+    source_facts = _source_facts(source)
     temporary = parent + "/." + posixpath.basename(destination) + ".hat-copy-" + uuid.uuid4().hex
-    result = subprocess.run(
-        ["scp", *_transport_options(), "--", str(source), f"{node.ssh}:{temporary}"],
-        capture_output=True, check=False, timeout=SSH_TIMEOUT,
-    )
-    if not isinstance(result.returncode, int) or result.returncode == 0:
-        result = ssh(node, ["python3", "-c", _REMOTE_FINALIZE_SCRIPT, _REMOTE_ROOT, temporary, destination], check=False)
-    if isinstance(result.returncode, int) and result.returncode:
+    for attempt in range(2):
+        result = subprocess.run(
+            ["scp", *_transport_options(), "--", str(source), f"{node.ssh}:{temporary}"],
+            capture_output=True, check=False, timeout=SSH_TIMEOUT,
+        )
+        if not isinstance(result.returncode, int):
+            ssh(node, ["rm", "-f", "--", temporary], check=False)
+            return _raise_scp_failure(result, node, check, "transport")
+        if result.returncode == 0:
+            finalized = ssh(node, ["python3", "-c", _REMOTE_FINALIZE_SCRIPT, _REMOTE_ROOT, temporary, destination], check=False)
+            if isinstance(finalized.returncode, int) and finalized.returncode == 0:
+                return finalized
+            ssh(node, ["rm", "-f", "--", temporary], check=False)
+            return _raise_scp_failure(finalized, node, check, "finalizer")
+        if attempt == 0 and _scp_failure_category(result) == "transient_transport":
+            state = _reconcile_temporary(node, temporary, source_facts)
+            if state == "complete":
+                result = ssh(node, ["python3", "-c", _REMOTE_FINALIZE_SCRIPT, _REMOTE_ROOT, temporary, destination], check=False)
+                if isinstance(result.returncode, int) and result.returncode == 0:
+                    return result
+                ssh(node, ["rm", "-f", "--", temporary], check=False)
+                return _raise_scp_failure(result, node, check, "finalizer")
+            if state in {"absent", "incomplete"}:
+                cleanup_result = _remove_temporary_verified(node, temporary)
+                if (isinstance(cleanup_result.returncode, int) and cleanup_result.returncode == 0 and
+                        _result_text(cleanup_result.stdout).strip() == "absent"):
+                    continue
+                return _raise_scp_failure(cleanup_result, node, check, "cleanup")
+            return _raise_scp_failure(result, node, check, "cleanup")
         ssh(node, ["rm", "-f", "--", temporary], check=False)
-        if check:
-            raise subprocess.CalledProcessError(result.returncode, ["scp", node.ssh], result.stdout, result.stderr)
-    return result
+        return _raise_scp_failure(result, node, check, _scp_failure_category(result))
+    raise AssertionError("bounded SCP retry exhausted")
 
 
 def register_secret(value: str) -> None:
