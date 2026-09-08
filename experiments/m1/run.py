@@ -1381,11 +1381,21 @@ def _result_text(value: Any) -> str:
     return value if isinstance(value, str) else ""
 
 def _scp_failure_category(result: subprocess.CompletedProcess) -> str:
-    text = (_result_text(result.stderr) + "\\n" + _result_text(result.stdout)).lower()
-    if re.search(r"host key|remote host identification|permission denied|access denied|authentication|publickey|no such file|not a directory|is a directory|cannot open", text):
-        return "non_transient"
-    if re.search(r"connection (?:reset|closed|refused)|(?:connection|operation|connect) timed out|timed out|broken pipe", text):
+    # Only classify complete OpenSSH diagnostic lines; stdout and embedded application text are untrusted.
+    lines = [_result_text(result.stderr).strip().lower()]
+    transient = (
+        r"(?:ssh: connect to host \S+ port \d+: )?connection (?:reset by peer|closed|refused)$",
+        r"(?:ssh: connect to host \S+ port \d+: )?(?:connection|operation) timed out$",
+        r"broken pipe$",
+    )
+    non_transient = (
+        r"host key verification failed$", r"remote host identification has changed$",
+        r"permission denied(?: \(publickey\))?$", r"no such file or directory$",
+    )
+    if any(re.fullmatch(pattern, line) for line in lines for pattern in transient):
         return "transient_transport"
+    if any(re.fullmatch(pattern, line) for line in lines for pattern in non_transient):
+        return "non_transient"
     return "non_transient"
 
 def _safe_process_output(value: Any) -> bytes:
@@ -1438,13 +1448,19 @@ def scp_to(node: Node, source: Path, destination: str, *, check: bool = True, re
             capture_output=True, check=False, timeout=SSH_TIMEOUT,
         )
         if not isinstance(result.returncode, int):
-            ssh(node, ["rm", "-f", "--", temporary], check=False)
+            cleanup_result = _remove_temporary_verified(node, temporary)
+            if not (isinstance(cleanup_result.returncode, int) and cleanup_result.returncode == 0 and
+                    _result_text(cleanup_result.stdout).strip() == "absent"):
+                return _raise_scp_failure(cleanup_result, node, check, "cleanup")
             return _raise_scp_failure(result, node, check, "transport")
         if result.returncode == 0:
             finalized = ssh(node, ["python3", "-c", _REMOTE_FINALIZE_SCRIPT, _REMOTE_ROOT, temporary, destination], check=False)
             if isinstance(finalized.returncode, int) and finalized.returncode == 0:
                 return finalized
-            ssh(node, ["rm", "-f", "--", temporary], check=False)
+            cleanup_result = _remove_temporary_verified(node, temporary)
+            if not (isinstance(cleanup_result.returncode, int) and cleanup_result.returncode == 0 and
+                    _result_text(cleanup_result.stdout).strip() == "absent"):
+                return _raise_scp_failure(cleanup_result, node, check, "cleanup")
             return _raise_scp_failure(finalized, node, check, "finalizer")
         if attempt == 0 and _scp_failure_category(result) == "transient_transport":
             state = _reconcile_temporary(node, temporary, source_facts)
@@ -1452,7 +1468,10 @@ def scp_to(node: Node, source: Path, destination: str, *, check: bool = True, re
                 result = ssh(node, ["python3", "-c", _REMOTE_FINALIZE_SCRIPT, _REMOTE_ROOT, temporary, destination], check=False)
                 if isinstance(result.returncode, int) and result.returncode == 0:
                     return result
-                ssh(node, ["rm", "-f", "--", temporary], check=False)
+                cleanup_result = _remove_temporary_verified(node, temporary)
+                if not (isinstance(cleanup_result.returncode, int) and cleanup_result.returncode == 0 and
+                        _result_text(cleanup_result.stdout).strip() == "absent"):
+                    return _raise_scp_failure(cleanup_result, node, check, "cleanup")
                 return _raise_scp_failure(result, node, check, "finalizer")
             if state in {"absent", "incomplete"}:
                 cleanup_result = _remove_temporary_verified(node, temporary)
@@ -1461,7 +1480,10 @@ def scp_to(node: Node, source: Path, destination: str, *, check: bool = True, re
                     continue
                 return _raise_scp_failure(cleanup_result, node, check, "cleanup")
             return _raise_scp_failure(result, node, check, "cleanup")
-        ssh(node, ["rm", "-f", "--", temporary], check=False)
+        cleanup_result = _remove_temporary_verified(node, temporary)
+        if not (isinstance(cleanup_result.returncode, int) and cleanup_result.returncode == 0 and
+                _result_text(cleanup_result.stdout).strip() == "absent"):
+            return _raise_scp_failure(cleanup_result, node, check, "cleanup")
         return _raise_scp_failure(result, node, check, _scp_failure_category(result))
     raise AssertionError("bounded SCP retry exhausted")
 

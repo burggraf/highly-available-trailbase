@@ -19,7 +19,7 @@ from run import (
     invoke_fence, validate_fence_evidence, promotion_allowed,
     append_evidence, build_pinned_known_hosts, ensure_remote_root, init_remote,
     load_inventory, load_linode_env, new_run_context, require_private_file,
-    redact, scp_to, ssh, storage, validate_inventory, _absolute_no_symlinks,
+    redact, scp_to, ssh, storage, validate_inventory, _absolute_no_symlinks, _scp_failure_category,
     main, StorageStatus, write_latest_storage_evidence_pointer,
     Artifact, artifact_for, confined_remote_path, extract_verified_artifact,
     mask_writer_services, missing_packages, published_checksum,
@@ -28,7 +28,7 @@ from run import (
     _binary_version_evidence, _copy_from_node, _create_runtime_root, _preflight_m0_socket_paths, _run_m0_linux_parity,
     _validate_m0_aggregate, _validate_m0_log_archive, _validate_provision_summary,
     _validate_post_reboot_summary, _provision_workflow, provision, REMOTE_PROVISION_TIMEOUT,
-    _M0_COLLECT_SCRIPT, _download_public, _safe_archive_member, _cross_host_flow, _task5_remote_cleanup,
+    _M0_COLLECT_SCRIPT, _REMOTE_REMOVE_SCRIPT, _download_public, _safe_archive_member, _cross_host_flow, _task5_remote_cleanup,
     write_litestream_s3_config, validate_litestream_s3_config, inventory_digest,
     assert_inventory_unchanged, scrub_private_path, scrub_private_tree, compare_database_summaries,
     task5_unit_argv, task5_replica_uri, read_strict_txid_sidecar, require_strict_position_advancement,
@@ -302,6 +302,26 @@ class HostKeyTests(unittest.TestCase):
             with self.assertRaises(RuntimeError): build_pinned_known_hosts([node()], Path(d))
 
 class TransportTests(unittest.TestCase):
+    def test_scp_failure_category_matches_real_openssh_host_port_diagnostics(self):
+        for message in (
+            "ssh: connect to host fm1.example port 22: Connection reset by peer",
+            "ssh: connect to host fm1.example port 22: Connection timed out",
+        ):
+            self.assertEqual(
+                _scp_failure_category(subprocess.CompletedProcess([], 255, b"", message.encode())),
+                "transient_transport",
+            )
+
+    def test_scp_failure_category_rejects_deceptive_diagnostic_suffixes(self):
+        for message in (
+            "scp: application payload: connection timed out",
+            "ssh: connect to host fm1.example port 22: Connection timed out; retry later",
+        ):
+            self.assertEqual(
+                _scp_failure_category(subprocess.CompletedProcess([], 255, b"", message.encode())),
+                "non_transient",
+            )
+
     def test_low_level_transport_rejects_unvalidated_node(self):
         bad = Node("fm1", "root@a", 1, "a", "bad/address", FP, "a")
         with self.assertRaises(ValueError): ssh(bad, ["true"])
@@ -402,7 +422,7 @@ class TransportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             source = Path(d) / "x"; source.write_text("x")
             failed = subprocess.CompletedProcess([], 255, b"", b"Permission denied (publickey)")
-            cleanup = subprocess.CompletedProcess([], 0, b"", b"")
+            cleanup = subprocess.CompletedProcess([], 0, b"absent", b"")
             with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")), mock.patch("run._REMOTE_ROOT", "/var/lib/hat-qualification/r"):
                 with mock.patch("run.subprocess.run", return_value=failed) as local_scp:
                     with mock.patch("run.ssh", return_value=cleanup) as remote:
@@ -410,13 +430,14 @@ class TransportTests(unittest.TestCase):
                             scp_to(node(), source, "/var/lib/hat-qualification/r/x")
             self.assertEqual(local_scp.call_count, 1)
             self.assertEqual(remote.call_count, 1)
+            self.assertEqual(cleanup.stdout, b"absent")
             self.assertEqual(raised.exception.failure_category, "non_transient")
 
     def test_scp_does_not_retry_host_key_failure(self):
         with tempfile.TemporaryDirectory() as d:
             source = Path(d) / "x"; source.write_text("x")
             failed = subprocess.CompletedProcess([], 255, b"", b"Host key verification failed")
-            cleanup = subprocess.CompletedProcess([], 0, b"", b"")
+            cleanup = subprocess.CompletedProcess([], 0, b"absent", b"")
             with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")), mock.patch("run._REMOTE_ROOT", "/var/lib/hat-qualification/r"):
                 with mock.patch("run.subprocess.run", return_value=failed) as local_scp:
                     with mock.patch("run.ssh", return_value=cleanup) as remote:
@@ -424,6 +445,7 @@ class TransportTests(unittest.TestCase):
                             scp_to(node(), source, "/var/lib/hat-qualification/r/x")
             self.assertEqual(local_scp.call_count, 1)
             self.assertEqual(remote.call_count, 1)
+            self.assertEqual(cleanup.stdout, b"absent")
             self.assertEqual(raised.exception.failure_category, "non_transient")
 
     def test_scp_failed_verified_cleanup_fails_closed_without_retry(self):
@@ -445,7 +467,7 @@ class TransportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             source = Path(d) / "x"; source.write_text("x")
             failed = subprocess.CompletedProcess([], 7, b"", b"scp failed")
-            cleanup = subprocess.CompletedProcess([], 0, b"", b"")
+            cleanup = subprocess.CompletedProcess([], 0, b"absent", b"")
             with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")), mock.patch("run._REMOTE_ROOT", "/var/lib/hat-qualification/r"):
                 with mock.patch("run.subprocess.run", return_value=failed) as local_scp:
                     with mock.patch("run.ssh", return_value=cleanup) as remote:
@@ -454,14 +476,15 @@ class TransportTests(unittest.TestCase):
             self.assertEqual(local_scp.call_args.args[0][0], "scp")
             self.assertEqual(remote.call_count, 1)
             cleanup_command = remote.call_args.args[1]
-            self.assertEqual(cleanup_command[:3], ["rm", "-f", "--"])
-            self.assertTrue(cleanup_command[3].startswith("/var/lib/hat-qualification/r/"))
+            self.assertEqual(cleanup_command[:3], ["python3", "-c", _REMOTE_REMOVE_SCRIPT])
+            self.assertTrue(cleanup_command[4].startswith("/var/lib/hat-qualification/r/"))
+            self.assertEqual(cleanup.stdout, b"absent")
 
     def test_finalize_failure_cleans_temporary_and_refuses_overwrite(self):
         with tempfile.TemporaryDirectory() as d:
             source = Path(d) / "x"; source.write_text("x")
             finalize_failed = subprocess.CompletedProcess([], 1, b"", b"destination exists or symlink")
-            cleanup = subprocess.CompletedProcess([], 0, b"", b"")
+            cleanup = subprocess.CompletedProcess([], 0, b"absent", b"")
             with mock.patch("run._SSH_KNOWN_HOSTS", Path("/tmp/k")), mock.patch("run._REMOTE_ROOT", "/var/lib/hat-qualification/r"):
                 with mock.patch("run.subprocess.run", return_value=subprocess.CompletedProcess([], 0, b"", b"")):
                     with mock.patch("run.ssh", side_effect=[finalize_failed, cleanup]) as remote:
@@ -471,8 +494,9 @@ class TransportTests(unittest.TestCase):
             finalize = remote.call_args_list[0].args[1]
             cleanup_command = remote.call_args_list[1].args[1]
             self.assertEqual(finalize[:2], ["python3", "-c"])
-            self.assertEqual(cleanup_command[:3], ["rm", "-f", "--"])
-            self.assertEqual(cleanup_command[3], finalize[4])
+            self.assertEqual(cleanup_command[:3], ["python3", "-c", _REMOTE_REMOVE_SCRIPT])
+            self.assertEqual(cleanup_command[4], finalize[4])
+            self.assertEqual(cleanup.stdout, b"absent")
 
     def test_scp_rejects_traversal_symlink_and_outside_root(self):
         with tempfile.TemporaryDirectory() as d:
