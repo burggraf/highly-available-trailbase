@@ -30,7 +30,8 @@ from run import (
     _M0_COLLECT_SCRIPT, _download_public, _safe_archive_member,
     write_litestream_s3_config, validate_litestream_s3_config, inventory_digest,
     assert_inventory_unchanged, scrub_private_path, scrub_private_tree, compare_database_summaries,
-    task5_unit_argv, _TASK5_REMOTE_SCRIPT,
+    task5_unit_argv, task5_replica_uri, read_strict_txid_sidecar, require_strict_position_advancement,
+    reconcile_epoch_ledger, validate_litestream_task5_help, _parse_task5_list_keys, _validate_support_archive_members, _TASK5_REMOTE_SCRIPT,
 )
 
 FP = "SHA256:" + "A" * 43
@@ -1686,6 +1687,21 @@ class LitestreamTask5Tests(unittest.TestCase):
         self.assertFalse(assert_inventory_unchanged(before, inventory_digest(e2)))
         with self.assertRaises(ValueError): inventory_digest([e1[0], e1[0]])
 
+    def test_s3_inventory_requires_one_explicit_false_and_strict_contents(self):
+        xml = b'<ListBucketResult><Name>b</Name><Prefix>p/</Prefix><KeyCount>1</KeyCount><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated><Contents><Key>p/a</Key></Contents></ListBucketResult>'
+        self.assertEqual(_parse_task5_list_keys(xml), ["p/a"])
+        for bad in (xml.replace(b'<IsTruncated>false</IsTruncated>', b''), xml.replace(b'<IsTruncated>false</IsTruncated>', b'<IsTruncated>false</IsTruncated><IsTruncated>false</IsTruncated>'), xml.replace(b'<Contents>', b'<Unknown>')):
+            with self.assertRaises(RuntimeError): _parse_task5_list_keys(bad)
+
+    def test_pinned_litestream_help_contract_is_explicit(self):
+        validate_litestream_task5_help("-config -follow-interval -txid", "-config", "-config -wait -json")
+        with self.assertRaises(RuntimeError): validate_litestream_task5_help("-config", "-config", "-config -wait -json")
+
+    def test_task5_replica_uri_is_database_specific(self):
+        self.assertEqual(task5_replica_uri("bucket", "20260907T120000Z-0123456789", "e1", "main"),
+                         "s3://bucket/qualification/20260907T120000Z-0123456789/e1/main")
+        with self.assertRaises(ValueError): task5_replica_uri("bucket", "run", "e1", "logs")
+
     def test_remote_config_paths_and_replica_prefixes_are_exact_and_distinct(self):
         with tempfile.TemporaryDirectory() as directory:
             config = write_litestream_s3_config(Path(directory), "20260907T120000Z-0123456789", "e1",
@@ -1720,6 +1736,44 @@ class LitestreamTask5Tests(unittest.TestCase):
         with self.assertRaises(ValueError): compare_database_summaries(value, {"main": value["main"]})
         unknown = json.loads(json.dumps(value)); unknown["main"]["extra"] = True
         with self.assertRaises(ValueError): compare_database_summaries(value, unknown)
+
+    def test_strict_positions_reject_pos_and_require_advancement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            sidecar = root / "main.db-txid"
+            sidecar.write_text("000000000000000f\n")
+            self.assertEqual(read_strict_txid_sidecar(sidecar, "main"), 15)
+            sidecar.with_name("main.db-pos").write_text("000000000000000f")
+            with self.assertRaises(ValueError): read_strict_txid_sidecar(sidecar.with_name("main.db-pos"), "main")
+        initial = {name: 1 for name in ("main", "session", "aux")}
+        selected = {name: 2 for name in initial}
+        require_strict_position_advancement(initial, selected, selected)
+        with self.assertRaises(ValueError): require_strict_position_advancement(initial, initial, initial)
+
+    def test_support_archive_accepts_real_secrets_directory_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); archive = root / "support.tar.gz"
+            with tarfile.open(archive, "w:gz") as output:
+                info = tarfile.TarInfo("config.textproto"); data = b"server {}"; info.size = len(data); output.addfile(info, io.BytesIO(data))
+                info = tarfile.TarInfo("secrets"); info.type = tarfile.DIRTYPE; output.addfile(info)
+                info = tarfile.TarInfo("secrets/key"); data = b"private"; info.size = len(data); output.addfile(info, io.BytesIO(data))
+            self.assertEqual(set(_validate_support_archive_members(archive)), {"config.textproto", "secrets", "secrets/key"})
+            with tarfile.open(archive, "w:gz") as output:
+                info = tarfile.TarInfo("secrets"); info.type = tarfile.SYMTYPE; info.linkname = "/tmp"; output.addfile(info)
+            with self.assertRaises(ValueError): _validate_support_archive_members(archive)
+
+    def test_epoch_reconciliation_preserves_ambiguous_and_rejects_mutations(self):
+        digest = hashlib.sha256(b"payload").hexdigest()
+        ledger = [{"database": "main", "op_key": "ack", "payload_sha256": digest, "outcome": "acknowledged"},
+                  {"database": "main", "op_key": "amb", "payload_sha256": digest, "outcome": "ambiguous"},
+                  {"database": "main", "op_key": "no", "outcome": "rejected"}]
+        restored = {name: {"operations": []} for name in ("main", "session", "aux")}
+        restored["main"]["operations"] = [{"key": "ack", "payload_sha256": digest}, {"key": "amb", "payload_sha256": digest}]
+        result = reconcile_epoch_ledger(ledger, restored)
+        self.assertEqual(result["recovered_ambiguous"], ["amb"])
+        self.assertEqual(result["lost_acknowledged"], [])
+        mutated = json.loads(json.dumps(restored)); mutated["main"]["operations"].append({"key": "unexpected", "payload_sha256": digest})
+        with self.assertRaises(Exception): reconcile_epoch_ledger(ledger, mutated)
 
     def test_remote_runner_contains_executable_required_stages(self):
         for stage in ('action == "bootstrap"', 'action == "write"', 'action == "sync"',

@@ -26,6 +26,7 @@ from pathlib import Path
 FIXTURE_USERNAME = "m0user"
 
 OPS_SQL = """CREATE TABLE hat_ops (\n  id INTEGER PRIMARY KEY,\n  op_key TEXT NOT NULL UNIQUE,\n  payload TEXT NOT NULL\n) STRICT;\n"""
+_STRICT_TXID = re.compile(r"^[0-9a-f]{16}$")
 
 CONFIG_TEXTPROTO = """server { application_name: \"HAT M0\" site_url: \"http://localhost\" }\nauth { user_identifier: ONLY_USERNAME }\ndatabases: [{ name: \"aux\" }]\nrecord_apis: [{\n  name: \"main_ops\"\n  table_name: \"hat_ops\"\n  acl_authenticated: [CREATE, READ, UPDATE, DELETE, SCHEMA]\n}, {\n  name: \"aux_ops\"\n  table_name: \"aux.hat_ops\"\n  attached_databases: [\"aux\"]\n  acl_authenticated: [CREATE, READ, UPDATE, DELETE, SCHEMA]\n}]\njobs {\n  system_jobs: [\n    { id: BACKUP schedule: \"@daily\" disabled: true },\n    { id: HEARTBEAT schedule: \"17 * * * * * *\" disabled: true },\n    { id: LOG_CLEANER schedule: \"@hourly\" disabled: true },\n    { id: AUTH_CLEANER schedule: \"@hourly\" disabled: true },\n    { id: QUERY_OPTIMIZER schedule: \"@daily\" disabled: true },\n    { id: FILE_DELETIONS schedule: \"@hourly\" disabled: true },\n    { id: ANONYMOUS_CLEANER schedule: \"@daily\" disabled: true }\n  ]\n}\n"""
 
@@ -79,11 +80,27 @@ def format_txid(value: int) -> str:
     return f"{value:016x}"
 
 
+def require_strict_position_advancement(initial: dict[str, int], selected: dict[str, int], reached: dict[str, int]) -> None:
+    expected = {"main", "session", "aux"}
+    if set(initial) != expected or set(selected) != expected or set(reached) != expected:
+        raise ValueError("position inventories must contain exactly the required databases")
+    for name in expected:
+        if not all(isinstance(values[name], int) and values[name] >= 0 for values in (initial, selected, reached)):
+            raise ValueError("positions must be non-negative integers")
+        if selected[name] <= initial[name] or reached[name] < selected[name]:
+            raise ValueError(f"{name} did not strictly advance to selected cut")
+
+
 def read_txid_sidecar(path: Path) -> int:
+    if path.name.endswith("-pos") or not path.name.endswith("-txid"):
+        raise ValueError(f"invalid txid sidecar: {path}")
     try:
-        return normalize_txid(path.read_text(encoding="utf-8"))
+        value = path.read_text(encoding="ascii").strip()
     except (OSError, UnicodeError) as exc:
         raise ValueError(f"cannot read txid sidecar: {path}") from exc
+    if not _STRICT_TXID.fullmatch(value):
+        raise ValueError(f"invalid txid sidecar: {path}")
+    return int(value, 16)
 
 
 def require_files(paths: list[Path]) -> None:

@@ -120,6 +120,7 @@ _ARTIFACTS = {
 _LITESTREAM_CHECKSUMS_SHA256 = "f5c30b11a19ef14fc64581be19aa50ee81dcc7f53eb429737c151630f5129d6f"
 _WRITER_UNITS = ("hat-trailbase.service", "hat-litestream.service")
 _LITESTREAM_DATABASES = ("main", "session", "aux")
+_STRICT_TXID = re.compile(r"^[0-9a-f]{16}$")
 
 
 def _safe_config_component(value: str, label: str) -> str:
@@ -231,7 +232,7 @@ def scrub_private_path(path: Path, root: Path) -> None:
 
 
 _TASK5_REMOTE_SCRIPT = r'''#!/usr/bin/env python3
-import hashlib, json, os, shutil, sqlite3, subprocess, sys, time
+import hashlib, json, os, shutil, sqlite3, subprocess, sys, time, stat
 from pathlib import Path
 
 m0_dir, action, *args = sys.argv[1:]
@@ -250,6 +251,48 @@ def normalized(value):
     if isinstance(value, bytes):
         return {"bytes_sha256": hashlib.sha256(value).hexdigest(), "length": len(value)}
     return str(value)
+
+def strict_txid(output, name):
+    path = Path(str(output / f"{name}.db") + "-txid")
+    if path.name.endswith("-pos") or not path.name.endswith("-txid"):
+        raise RuntimeError("invalid follower sidecar name")
+    value = path.read_text(encoding="ascii").strip()
+    if not __import__("re").fullmatch(r"[0-9a-f]{16}", value):
+        raise RuntimeError("invalid follower TXID sidecar")
+    return int(value, 16)
+
+def remove_confined(root, candidate):
+    root, candidate = Path(root), Path(candidate)
+    root_stat = os.lstat(root)
+    if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
+        raise RuntimeError("invalid cleanup root")
+    if not candidate.is_absolute() or candidate == root:
+        raise RuntimeError("invalid cleanup path")
+    try: candidate.relative_to(root)
+    except ValueError as exc: raise RuntimeError("cleanup path escapes root") from exc
+    def remove(path):
+        try: st = os.lstat(path)
+        except FileNotFoundError: return
+        if stat.S_ISLNK(st.st_mode): raise RuntimeError("cleanup refuses symlink")
+        if stat.S_ISDIR(st.st_mode):
+            for child in list(path.iterdir()): remove(child)
+            # lstat immediately before rmdir: never follow a replaced directory.
+            current = os.lstat(path)
+            if stat.S_ISLNK(current.st_mode) or not stat.S_ISDIR(current.st_mode): raise RuntimeError("cleanup race changed directory")
+            path.rmdir()
+        elif stat.S_ISREG(st.st_mode):
+            current = os.lstat(path)
+            if stat.S_ISLNK(current.st_mode) or not stat.S_ISREG(current.st_mode): raise RuntimeError("cleanup race changed file")
+            path.unlink()
+        else: raise RuntimeError("cleanup refuses special file")
+    # Revalidate every ancestor and the target immediately before removal.
+    current = root
+    for component in candidate.relative_to(root).parts:
+        current /= component
+        try: current_stat = os.lstat(current)
+        except FileNotFoundError: continue
+        if stat.S_ISLNK(current_stat.st_mode): raise RuntimeError("cleanup refuses symlink component")
+    remove(candidate)
 
 def summary(database, name):
     connection = sqlite3.connect(f"file:{database}?mode=ro", uri=True)
@@ -274,6 +317,11 @@ def summary(database, name):
     finally:
         connection.close()
 
+if action == "cleanup":
+    root = Path(args[0])
+    for candidate in args[1:]: remove_confined(root, candidate)
+    emit({"status": "PASS"})
+    raise SystemExit(0)
 if action == "bootstrap":
     trail, litestream, root = map(Path, args)
     root.mkdir(mode=0o700, parents=True, exist_ok=False)
@@ -324,27 +372,36 @@ elif action == "sync":
         positions[name] = m0.normalize_txid(output["replica_txid"])
     emit({"status": "PASS", "positions": positions})
 elif action == "wait":
-    output, positions_path, units = Path(args[0]), Path(args[1]), args[2:]
-    positions = json.loads(positions_path.read_text())
-    if set(positions) != set(DBS) or len(units) != 3: raise RuntimeError("invalid selected positions or follower units")
+    output, positions_path, initial_path = Path(args[0]), Path(args[1]), Path(args[2])
+    units, log_paths = args[3:6], args[6:]
+    positions = json.loads(positions_path.read_text()); initial = json.loads(initial_path.read_text())
+    if set(positions) != set(DBS) or set(initial) != set(DBS) or len(units) != 3 or len(log_paths) != 6: raise RuntimeError("invalid selected positions or follower units")
     deadline = time.monotonic() + 180
     while time.monotonic() < deadline:
         if any(subprocess.run(["systemctl", "is-active", "--quiet", unit]).returncode for unit in units): raise RuntimeError("follower exited before cut")
-        reached = {name: m0.read_txid_sidecar(Path(str(output / f"{name}.db") + "-pos")) for name in DBS
-                   if Path(str(output / f"{name}.db") + "-pos").is_file()}
-        if len(reached) == 3 and all(reached[name] >= positions[name] for name in DBS):
+        for path in log_paths:
+            if Path(path).exists() and Path(path).read_text(errors="replace").strip():
+                for line in Path(path).read_text(errors="replace").splitlines():
+                    event = m0.parse_follower_line(line)
+                    if event.get("unrecognized") or event.get("error") or str(event.get("level", "")).upper() in {"ERROR", "FATAL"}:
+                        raise RuntimeError("follower log error before cut")
+        reached = {name: strict_txid(output, name) for name in DBS
+                   if Path(str(output / f"{name}.db") + "-txid").is_file()}
+        if len(reached) == 3:
+            m0.require_strict_position_advancement(initial, positions, reached)
             emit({"status": "PASS", "positions": reached}); break
         time.sleep(1)
     else: raise RuntimeError("follower wait timed out")
 elif action == "finite":
-    litestream, config, output, positions_path, source = map(Path, args)
+    litestream, config, output, positions_path = map(Path, args[:4])
+    source = args[4]
     output.mkdir(mode=0o700, parents=True, exist_ok=False)
     positions = json.loads(positions_path.read_text())
     if set(positions) != set(DBS): raise RuntimeError("invalid selected positions")
     for name in DBS:
         target = output / f"{name}.db"
         result = subprocess.run([str(litestream), "restore", "-config", str(config), "-txid", m0.format_txid(positions[name]),
-                                 "-o", str(target), str(source / f"{name}.db")], capture_output=True, text=True, timeout=180)
+                                 "-o", str(target), str(source).rstrip("/") + f"/{name}"], capture_output=True, text=True, timeout=180)
         if result.returncode: raise RuntimeError(f"finite restore failed for {name}: {result.stderr[-300:]}")
     emit({"status": "PASS", "databases": list(DBS), "positions": positions})
 elif action == "summaries":
@@ -353,6 +410,86 @@ elif action == "summaries":
 else:
     raise RuntimeError("unknown task5 remote action")
 '''
+
+
+def read_strict_txid_sidecar(path: str | Path, database: str | None = None) -> int:
+    """Read only Litestream's fixed-width hexadecimal ``<db>.db-txid`` sidecar."""
+    path = Path(path)
+    if path.name.endswith("-pos") or not path.name.endswith("-txid"):
+        raise ValueError("invalid Litestream TXID sidecar name")
+    if database is not None and path.name != f"{database}.db-txid":
+        raise ValueError("TXID sidecar database mismatch")
+    value = path.read_text(encoding="ascii").strip()
+    if not _STRICT_TXID.fullmatch(value):
+        raise ValueError("invalid Litestream TXID sidecar")
+    return int(value, 16)
+
+
+def require_strict_position_advancement(initial: dict[str, int], selected: dict[str, int], reached: dict[str, int]) -> None:
+    expected = set(_LITESTREAM_DATABASES)
+    if set(initial) != expected or set(selected) != expected or set(reached) != expected:
+        raise ValueError("position inventories must contain exactly the required databases")
+    for name in _LITESTREAM_DATABASES:
+        if not all(isinstance(values[name], int) and values[name] >= 0 for values in (initial, selected, reached)):
+            raise ValueError("positions must be non-negative integers")
+        if selected[name] <= initial[name] or reached[name] < selected[name]:
+            raise ValueError(f"{name} did not strictly advance to selected cut")
+
+
+def reconcile_epoch_ledger(ledger: list[dict[str, Any]], restored: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    """Reconcile each submitted operation without turning ambiguity into rejection."""
+    if not isinstance(ledger, list) or not isinstance(restored, dict):
+        raise ValueError("invalid epoch reconciliation inputs")
+    submitted: dict[tuple[str, str], dict[str, Any]] = {}
+    for event in ledger:
+        if (not isinstance(event, dict) or set(event) < {"database", "op_key", "outcome"}
+                or event["database"] not in _LITESTREAM_DATABASES or not isinstance(event["op_key"], str)
+                or event["outcome"] not in {"acknowledged", "rejected", "ambiguous"}):
+            raise ValueError("invalid epoch ledger entry")
+        key = (event["database"], event["op_key"])
+        if key in submitted:
+            raise ValueError("duplicate epoch ledger operation")
+        if event["outcome"] != "rejected" and not re.fullmatch(r"[0-9a-f]{64}", event.get("payload_sha256", "")):
+            raise ValueError("non-rejected operation lacks payload hash")
+        submitted[key] = event
+    result = {"acknowledged": [], "rejected": [], "ambiguous": [], "recovered_ambiguous": [],
+              "lost_acknowledged": [], "recovered_rejected": [], "unexpected": [], "payload_mismatch": []}
+    for database in _LITESTREAM_DATABASES:
+        value = restored.get(database)
+        if not isinstance(value, dict) or not isinstance(value.get("operations"), list):
+            raise ValueError("restored summary lacks operation inventory")
+        recovered: dict[str, str] = {}
+        for operation in value["operations"]:
+            if not isinstance(operation, dict) or set(operation) != {"key", "payload_sha256"}:
+                raise ValueError("invalid restored operation summary")
+            key, digest = operation["key"], operation["payload_sha256"]
+            if not isinstance(key, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise ValueError("invalid restored operation summary")
+            if key in recovered:
+                raise ValueError("duplicate restored operation")
+            recovered[key] = digest
+        for (db, key), event in submitted.items():
+            if db != database:
+                continue
+            outcome = event["outcome"]
+            digest = recovered.get(key)
+            if digest is not None and outcome == "rejected":
+                result["recovered_rejected"].append(key)
+            elif digest is not None and outcome != "rejected":
+                if digest != event["payload_sha256"]:
+                    result["payload_mismatch"].append(key)
+                elif outcome == "ambiguous":
+                    result["recovered_ambiguous"].append(key)
+            elif outcome == "acknowledged":
+                result["lost_acknowledged"].append(key)
+            result[outcome].append(key)
+        result["unexpected"].extend(key for key in recovered if (database, key) not in submitted)
+    for values in result.values():
+        values.sort()
+    if (result["lost_acknowledged"] or result["recovered_rejected"] or result["unexpected"]
+            or result["payload_mismatch"]):
+        raise CorrectnessFailure("epoch ledger reconciliation failed")
+    return result
 
 
 def compare_database_summaries(*summaries: dict[str, Any]) -> bool:
@@ -370,13 +507,22 @@ def compare_database_summaries(*summaries: dict[str, Any]) -> bool:
     return all(summary == summaries[0] for summary in summaries[1:])
 
 
-def task5_unit_argv(unit: str, env_path: str, command: list[str]) -> list[str]:
+def task5_unit_argv(unit: str, env_path: str, command: list[str], *, stdout_path: str | None = None,
+                    stderr_path: str | None = None) -> list[str]:
     if not re.fullmatch(r"hat-task5-[0-9a-f]{10}-(?:e[12]-uploader|e1-follower-(?:main|session|aux))", unit):
         raise ValueError("invalid Task5 unit")
     if not env_path.startswith("/var/lib/hat-qualification/") or not command or any(not isinstance(arg, str) or not arg for arg in command):
         raise ValueError("invalid Task5 process arguments")
+    paths = (stdout_path, stderr_path)
+    if any(path is not None and (not path.startswith("/var/lib/hat-qualification/") or ".." in Path(path).parts) for path in paths):
+        raise ValueError("invalid Task5 log path")
+    properties = [f"--property=EnvironmentFile={env_path}"]
+    if stdout_path is not None:
+        properties.append(f"--property=StandardOutput=append:{stdout_path}")
+    if stderr_path is not None:
+        properties.append(f"--property=StandardError=append:{stderr_path}")
     return ["systemd-run", f"--unit={unit}", "--collect", "--property=RuntimeMaxSec=900",
-            f"--property=EnvironmentFile={env_path}", "--", *command]
+            *properties, "--", *command]
 
 
 def scrub_private_tree(path: Path, root: Path) -> None:
@@ -439,6 +585,13 @@ def validate_binary_version(product: str, output: str) -> str:
     if product not in patterns or not isinstance(output, str) or not re.fullmatch(patterns[product], output):
         raise RuntimeError("unexpected binary version")
     return "0.33.11" if product == "trailbase" else "0.5.17"
+
+
+def validate_litestream_task5_help(restore: str, replicate: str, sync: str) -> None:
+    required = ((restore, ("-config", "-follow-interval", "-txid")),
+                (replicate, ("-config",)), (sync, ("-config", "-wait", "-json")))
+    if any(not isinstance(output, str) or any(option not in output for option in options) for output, options in required):
+        raise RuntimeError("pinned Litestream Task5 CLI semantics are unavailable")
 
 
 def _binary_version_evidence(trail_output: str, litestream_output: str) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
@@ -2166,7 +2319,7 @@ def _task5_remote_json(node: Node, context: RunContext, m0_dir: str, action: str
         "write": {"status", "epoch", "operations", "trailbase_stopped"},
         "sync": {"status", "positions"}, "wait": {"status", "positions"},
         "finite": {"status", "databases", "positions"},
-        "summaries": {"status", "databases"},
+        "summaries": {"status", "databases"}, "cleanup": {"status"},
     }
     if action not in schemas or not isinstance(value, dict) or set(value) != schemas[action] or value.get("status") != "PASS":
         raise RuntimeError(f"incomplete or unknown Task5 remote {action} output on {node.name}")
@@ -2201,7 +2354,70 @@ def _task5_install_binaries(node: Node, context: RunContext) -> tuple[str, str]:
     trail_output = _stdout(ssh(node, [target + "/trail", "--version"]))
     litestream_output = _stdout(ssh(node, [target + "/litestream", "version"]))
     _binary_version_evidence(trail_output, litestream_output)
+    help_outputs = []
+    for command in (("restore", "-h"), ("replicate", "-h"), ("sync", "-h")):
+        help_outputs.append(_stdout(ssh(node, [target + "/litestream", *command])))
+    validate_litestream_task5_help(*help_outputs)
     return target + "/trail", target + "/litestream"
+
+
+def task5_replica_uri(bucket: str, run_id: str, epoch: str, database: str) -> str:
+    _safe_config_component(bucket, "bucket")
+    _safe_config_component(run_id, "run id")
+    _safe_config_component(epoch, "epoch")
+    if database not in _LITESTREAM_DATABASES:
+        raise ValueError("invalid Task5 database")
+    return f"s3://{bucket}/qualification/{run_id}/{epoch}/{database}"
+
+
+def _task5_prepare_log_paths(node: Node, root: str, unit: str) -> tuple[str, str]:
+    directory = root + "/logs"
+    stdout_path, stderr_path = directory + "/" + unit + ".stdout", directory + "/" + unit + ".stderr"
+    if ssh(node, ["mkdir", "-m", "700", "-p", "--", directory], check=False).returncode:
+        raise RuntimeError(f"could not create Task5 log directory on {node.name}")
+    for path in (stdout_path, stderr_path):
+        if ssh(node, ["install", "-m", "600", "/dev/null", path], check=False).returncode:
+            raise RuntimeError(f"could not create Task5 log on {node.name}")
+    return stdout_path, stderr_path
+
+
+def _task5_prepare_source_directory(node: Node, path: str) -> None:
+    if ssh(node, ["mkdir", "-m", "700", "-p", "--", path], check=False).returncode:
+        raise RuntimeError(f"could not create Task5 follower source directory on {node.name}")
+    checked = ssh(node, ["stat", "-c", "%F %a", "--", path], check=False)
+    if checked.returncode or _stdout(checked).strip() != "directory 700":
+        raise RuntimeError(f"invalid Task5 follower source directory on {node.name}")
+    # A source identifier is metadata only.  A local DB here would bypass the S3 restore.
+    for name in _LITESTREAM_DATABASES:
+        candidate = path + "/" + name + ".db"
+        if (ssh(node, ["test", "!", "-e", candidate], check=False).returncode
+                or ssh(node, ["test", "!", "-L", candidate], check=False).returncode):
+            raise RuntimeError(f"unexpected local source DB on {node.name}")
+
+
+def _task5_validate_log_text(text: str) -> list[dict[str, Any]]:
+    events = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            fields = dict(part.split("=", 1) for part in shlex.split(line) if "=" in part)
+            if not {"level", "msg"}.issubset(fields):
+                raise RuntimeError("unrecognized Task5 follower log format")
+            event = {"level": fields["level"], "message": fields["msg"]}
+        if not isinstance(event, dict) or not event:
+            raise RuntimeError("invalid Task5 follower log event")
+        level = str(event.get("level", "")).upper()
+        message = str(event.get("message", event.get("msg", "")))
+        if (level in {"ERROR", "FATAL"} or re.search(r"\b(?:error|fatal|decoder|storage)\b", message, re.I)
+                or re.search(r"error\s+applying|apply\s+(?:error|failed)", message, re.I)):
+            raise RuntimeError("Task5 follower log reported an error")
+        events.append({"level": level, "message": message})
+    if not events:
+        raise RuntimeError("Task5 follower logs are empty")
+    return events
 
 
 def _task5_start_unit(node: Node, argv: list[str]) -> None:
@@ -2226,85 +2442,158 @@ def _task5_wait_socket(node: Node, socket_path: str, unit: str) -> None:
     raise RuntimeError(f"Task5 process {unit} socket readiness timed out")
 
 
-def _task5_stop_unit(node: Node, unit: str, config: str) -> dict[str, Any]:
-    ssh(node, ["systemctl", "stop", unit], check=False, timeout=30)
+def _task5_stop_unit(node: Node, unit: str, config: str, stdout_path: str | None = None,
+                     stderr_path: str | None = None) -> dict[str, Any]:
+    stopped = ssh(node, ["systemctl", "stop", unit], check=False, timeout=30)
+    if stopped.returncode:
+        raise RuntimeError(f"Task5 stop query failed for {unit}")
     for _ in range(40):
-        state = _stdout(ssh(node, ["systemctl", "is-active", unit], check=False)).strip()
-        if state in {"inactive", "failed"}:
+        status = ssh(node, ["systemctl", "show", unit, "-p", "ActiveState", "--value"], check=False)
+        if status.returncode:
+            raise RuntimeError(f"Task5 status query failed for {unit}")
+        state = _stdout(status).strip()
+        if state == "inactive":
             break
+        if state != "activating":
+            raise RuntimeError(f"Task5 process {unit} has unexpected state {state!r}")
         time.sleep(0.25)
     else:
         raise RuntimeError(f"Task5 process {unit} did not stop")
-    main_pid = _stdout(ssh(node, ["systemctl", "show", unit, "-p", "MainPID", "--value"], check=False)).strip()
-    if main_pid not in {"", "0"}:
-        raise RuntimeError(f"Task5 process {unit} retained pid {main_pid}")
-    journal = ssh(node, ["journalctl", f"_SYSTEMD_UNIT={unit}.service", "_COMM=litestream", "--no-pager", "-o", "cat"], check=False)
-    if journal.returncode not in {0, 1}:
-        raise RuntimeError(f"cannot inspect Task5 process log for {unit}")
-    events = []
-    for line in _stdout(journal).splitlines():
-        if not line.strip():
-            continue
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"unknown Task5 process output for {unit}") from exc
-        if not isinstance(event, dict) or not event:
-            raise RuntimeError(f"unknown Task5 process output for {unit}")
-        if str(event.get("level", "")).upper() == "ERROR" or event.get("error"):
-            raise RuntimeError(f"Task5 process reported an error for {unit}")
-        events.append(event)
-    return {"unit": unit, "state": state, "log_lines": len(events),
-            "log_sha256": hashlib.sha256(_stdout(journal).encode()).hexdigest()}
+    main = ssh(node, ["systemctl", "show", unit, "-p", "MainPID", "--value"], check=False)
+    if main.returncode or _stdout(main).strip() != "0":
+        raise RuntimeError(f"Task5 process {unit} retained a main pid")
+    if not stdout_path or not stderr_path:
+        raise RuntimeError(f"Task5 process {unit} has no protected log paths")
+    log_events = []
+    raw_parts = []
+    for path in (stdout_path, stderr_path):
+        metadata = ssh(node, ["stat", "-c", "%F %a %s", "--", path], check=False)
+        if metadata.returncode:
+            raise RuntimeError(f"missing Task5 process log for {unit}")
+        kind, mode, size = _stdout(metadata).strip().split()
+        if kind != "regular file" or mode != "600" or int(size) == 0:
+            raise RuntimeError(f"invalid Task5 process log for {unit}")
+        content = ssh(node, ["cat", "--", path], check=False)
+        if content.returncode:
+            raise RuntimeError(f"cannot read Task5 process log for {unit}")
+        raw = _stdout(content)
+        raw_parts.append(raw)
+        log_events.extend(_task5_validate_log_text(raw))
+    return {"unit": unit, "state": "inactive", "main_pid": 0, "log_lines": len(log_events),
+            "log_sha256": hashlib.sha256("".join(raw_parts).encode()).hexdigest(),
+            "logs": [stdout_path, stderr_path]}
+
+
+def _parse_task5_list_keys(xml: bytes) -> list[str]:
+    from xml.etree import ElementTree
+    try:
+        root = ElementTree.fromstring(xml)
+    except ElementTree.ParseError as exc:
+        raise RuntimeError("Task5 S3 inventory returned invalid XML") from exc
+    local = lambda tag: tag.rsplit("}", 1)[-1]
+    if local(root.tag) != "ListBucketResult":
+        raise RuntimeError("Task5 S3 inventory has an invalid root")
+    allowed = {"Name", "Prefix", "KeyCount", "MaxKeys", "IsTruncated", "Contents"}
+    if any(local(node.tag) not in allowed for node in root):
+        raise RuntimeError("Task5 S3 inventory has an invalid shape")
+    truncated = [node for node in root if local(node.tag) == "IsTruncated"]
+    if len(truncated) != 1 or (truncated[0].text or "") != "false":
+        raise RuntimeError("Task5 S3 inventory requires exactly one IsTruncated=false")
+    keys: list[str] = []
+    for contents in (node for node in root if local(node.tag) == "Contents"):
+        key_nodes = [node for node in contents if local(node.tag) == "Key"]
+        if len(key_nodes) != 1 or not key_nodes[0].text:
+            raise RuntimeError("Task5 S3 inventory has an invalid Contents entry")
+        keys.append(key_nodes[0].text)
+    if len(keys) != len(set(keys)):
+        raise RuntimeError("Task5 S3 inventory contains duplicate keys")
+    return keys
 
 
 def _task5_s3_inventory(client: Any, prefix: str) -> list[dict[str, str]]:
-    from xml.etree import ElementTree
     from s3 import header_value
     listed = client.list(prefix)
-    if listed[0] != 200:
+    if not isinstance(listed, tuple) or len(listed) != 3 or listed[0] != 200 or not isinstance(listed[2], bytes):
         raise RuntimeError("Task5 S3 inventory LIST failed")
-    try:
-        root = ElementTree.fromstring(listed[2])
-    except ElementTree.ParseError as exc:
-        raise RuntimeError("Task5 S3 inventory returned invalid XML") from exc
-    def values(name: str) -> list[str]:
-        return [element.text or "" for element in root.iter() if element.tag.rsplit("}", 1)[-1] == name]
-    if values("IsTruncated") not in ([], ["false"]):
-        raise RuntimeError("Task5 S3 inventory is truncated or ambiguous")
-    keys = values("Key")
-    if len(keys) != len(set(keys)) or any(not key.startswith(prefix) for key in keys):
-        raise RuntimeError("Task5 S3 inventory contains duplicate or foreign keys")
+    keys = _parse_task5_list_keys(listed[2])
+    if any(not key.startswith(prefix) for key in keys):
+        raise RuntimeError("Task5 S3 inventory contains a foreign key")
     inventory = []
     for key in sorted(keys):
         response = client.get(key)
+        if not isinstance(response, tuple) or len(response) != 3:
+            raise RuntimeError("Task5 S3 inventory GET has an invalid response")
         etag = header_value(response[1], "etag")
-        if response[0] != 200 or not etag:
+        if response[0] != 200 or not etag or not isinstance(response[2], bytes):
             raise RuntimeError("Task5 S3 inventory GET failed")
         inventory.append({"key": key, "etag": etag, "sha256": hashlib.sha256(response[2]).hexdigest()})
     inventory_digest(inventory)
     return inventory
 
 
+def _validate_support_archive_members(archive: Path) -> tuple[str, ...]:
+    """Allow exactly config.textproto and an explicitly declared regular secrets tree."""
+    names: list[str] = []
+    with tarfile.open(archive, "r:gz") as source_archive:
+        for member in source_archive.getmembers():
+            name = member.name.rstrip("/")
+            if name in names or not name or "\\" in member.name or name.startswith("/") or ".." in Path(name).parts:
+                raise ValueError("unsafe support archive member")
+            if member.issym() or member.islnk() or not (member.isfile() or member.isdir()):
+                raise ValueError("unsafe support archive member type")
+            if name == "config.textproto":
+                if not member.isfile():
+                    raise ValueError("config.textproto must be regular")
+            elif name == "secrets":
+                if not member.isdir():
+                    raise ValueError("secrets must be a directory")
+            elif not name.startswith("secrets/"):
+                raise ValueError("unknown support archive member")
+            names.append(name)
+    if "config.textproto" not in names or "secrets" not in names:
+        raise ValueError("support archive must contain config.textproto and secrets directory")
+    return tuple(names)
+
+
+def _safe_extract_support_archive(archive: Path, destination: Path) -> tuple[str, ...]:
+    members = _validate_support_archive_members(archive)
+    destination.mkdir(mode=0o700, parents=True, exist_ok=False)
+    try:
+        with tarfile.open(archive, "r:gz") as source_archive:
+            source_archive.extractall(destination, filter="data")
+    except Exception:
+        shutil.rmtree(destination, ignore_errors=True)
+        raise
+    return members
+
+
+def _task5_remote_cleanup(node: Node, context: RunContext, m0_dir: str, root: str, paths: list[str]) -> None:
+    if not paths:
+        return
+    result = _task5_remote_json(node, context, m0_dir, "cleanup", root, *paths)
+    if result != {"status": "PASS"}:
+        raise RuntimeError(f"remote cleanup returned incomplete evidence on {node.name}")
+
+
 def _task5_transfer_support(fm1: Node, fm2: Node, source: str, destination: str,
                             context: RunContext) -> Path:
     archive = context.local_root / "trailbase-support.tar.gz"
-    result = ssh(fm1, ["tar", "-C", source, "-czf", "-", "config.textproto", "secrets"], check=False)
-    if result.returncode or not result.stdout:
-        raise RuntimeError("could not collect TrailBase support files")
-    archive.write_bytes(result.stdout); archive.chmod(0o600)
-    with tarfile.open(archive, "r:gz") as source_archive:
-        members = source_archive.getmembers()
-        if (not members or any(member.issym() or member.islnk() or not (member.isfile() or member.isdir())
-                               or member.name.startswith("/") or ".." in Path(member.name).parts
-                               or (member.name != "config.textproto" and not member.name.startswith("secrets/"))
-                               for member in members)):
-            raise RuntimeError("unsafe TrailBase support archive")
     remote_archive = context.remote_root + "/trailbase-support.tar.gz"
-    scp_to(fm2, archive, remote_archive)
-    if ssh(fm2, ["tar", "-C", destination, "-xzf", remote_archive], check=False).returncode:
-        raise RuntimeError("could not install TrailBase support files")
-    return archive
+    # Register both names before either side is created; failure cleanup must not depend on assignment later.
+    try:
+        result = ssh(fm1, ["tar", "-C", source, "-czf", "-", "config.textproto", "secrets"], check=False)
+        if result.returncode or not result.stdout:
+            raise RuntimeError("could not collect TrailBase support files")
+        archive.write_bytes(result.stdout); archive.chmod(0o600)
+        _validate_support_archive_members(archive)
+        scp_to(fm2, archive, remote_archive)
+        if ssh(fm2, ["tar", "-C", destination, "-xzf", remote_archive], check=False).returncode:
+            raise RuntimeError("could not install TrailBase support files")
+        return archive
+    except Exception:
+        archive.unlink(missing_ok=True)
+        # The outer flow's root-confined scrub removes the registered remote archive.
+        raise
 
 
 def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, repository: Path,
@@ -2323,7 +2612,10 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
     }
     remote_files: dict[str, list[str]] = {node.name: [] for node in nodes}
     unit_configs: list[tuple[Node, str, str]] = []
-    support_archive: Path | None = None
+    unit_logs: dict[str, tuple[str, str]] = {}
+    support_archive: Path | None = context.local_root / "trailbase-support.tar.gz"
+    remote_support_archive = context.remote_root + "/trailbase-support.tar.gz"
+    remote_files["fm2"].append(remote_support_archive)
     stage = "initialize"
     pins_path = context.local_root / "ssh-pins"
     try:
@@ -2360,6 +2652,9 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
             clean = context.remote_root + "/clean-e2"; clean_data = clean + "/data"
             if ssh(fm2, ["mkdir", "-m", "700", "-p", "--", promoted_data], check=False).returncode:
                 raise RuntimeError("could not create restore depot on fm2")
+            source_dirs = {"fm2": context.remote_root + "/e1-source", "fm3": context.remote_root + "/e2-source"}
+            _task5_prepare_source_directory(fm2, source_dirs["fm2"])
+            _task5_prepare_source_directory(fm3, source_dirs["fm3"])
 
             stage = "write-private-configs"
             staging = context.local_root / "runtime"; staging.mkdir(mode=0o700)
@@ -2390,19 +2685,26 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
                 if mode != ["600", "600"]: raise RuntimeError("remote Task5 config/env mode mismatch")
 
             stage = "epoch-e1"
+            upload1_logs = _task5_prepare_log_paths(fm1, context.remote_root, units["e1-uploader"])
+            unit_logs[units["e1-uploader"]] = upload1_logs
+            remote_files["fm1"].extend(upload1_logs)
             uploader1 = task5_unit_argv(units["e1-uploader"], envs["fm1-e1"],
-                [lite1, "replicate", "-config", configs["fm1-e1"]])
+                [lite1, "replicate", "-config", configs["fm1-e1"]], stdout_path=upload1_logs[0], stderr_path=upload1_logs[1])
             _task5_start_unit(fm1, uploader1); unit_configs.append((fm1, units["e1-uploader"], configs["fm1-e1"]))
             _task5_wait_socket(fm1, context.remote_root + "/fm1-e1/litestream.sock", units["e1-uploader"])
             # Litestream v0.5.17 restore -f exits when the replica has no baseline yet.
-            _task5_remote_json(fm1, context, m0_dirs["fm1"], "sync", lite1, configs["fm1-e1"], source1)
+            initial1 = _task5_remote_json(fm1, context, m0_dirs["fm1"], "sync", lite1, configs["fm1-e1"], source1)
             _, lite2 = binaries["fm2"]
             follower_units = []
             for name in _LITESTREAM_DATABASES:
                 unit = units[f"e1-follower-{name}"]; follower_units.append(unit)
+                stdout_path, stderr_path = _task5_prepare_log_paths(fm2, context.remote_root, unit)
+                unit_logs[unit] = (stdout_path, stderr_path)
+                remote_files["fm2"].extend((stdout_path, stderr_path))
                 argv = task5_unit_argv(unit, envs["fm2-e1"], [lite2, "restore", "-config", configs["fm2-e1"],
                     "-f", "-follow-interval", "1s", "-o", promoted_data + f"/{name}.db",
-                    context.remote_root + f"/e1-source/{name}.db"])
+                    task5_replica_uri(values["IDRIVE_BUCKET"], context.run_id, "e1", name)],
+                    stdout_path=stdout_path, stderr_path=stderr_path)
                 _task5_start_unit(fm2, argv); unit_configs.append((fm2, unit, configs["fm2-e1"]))
 
             write1 = _task5_remote_json(fm1, context, m0_dirs["fm1"], "write", trail1, depot1, "e1",
@@ -2410,22 +2712,26 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
             append_evidence(evidence, {"operation": "task5-http-writes", **write1}, repository)
             sync1 = _task5_remote_json(fm1, context, m0_dirs["fm1"], "sync", lite1, configs["fm1-e1"], source1)
             positions1 = context.local_root / "e1-positions.json"; positions1.write_text(json.dumps(sync1["positions"])); positions1.chmod(0o600)
+            initial_positions1 = context.local_root / "e1-initial-positions.json"; initial_positions1.write_text(json.dumps(initial1["positions"])); initial_positions1.chmod(0o600)
             remote_positions1 = context.remote_root + "/e1-positions.json"; scp_to(fm2, positions1, remote_positions1)
-            remote_files["fm2"].append(remote_positions1)
-            reached = _task5_remote_json(fm2, context, m0_dirs["fm2"], "wait", promoted_data, remote_positions1, *follower_units)
+            remote_initial1 = context.remote_root + "/e1-initial-positions.json"; scp_to(fm2, initial_positions1, remote_initial1)
+            remote_files["fm2"].extend((remote_positions1, remote_initial1))
+            reached = _task5_remote_json(fm2, context, m0_dirs["fm2"], "wait", promoted_data, remote_positions1, remote_initial1, *follower_units,
+                                          *(path for unit in follower_units for path in unit_logs[unit]))
             append_evidence(evidence, {"operation": "task5-e1-cuts", "selected": sync1["positions"], "reached": reached["positions"]}, repository)
             for unit in follower_units:
-                stopped = _task5_stop_unit(fm2, unit, configs["fm2-e1"]); append_evidence(evidence, {"operation": "task5-process-stop", **stopped}, repository)
+                stopped = _task5_stop_unit(fm2, unit, configs["fm2-e1"], *unit_logs[unit]); append_evidence(evidence, {"operation": "task5-process-stop", **stopped}, repository)
                 unit_configs = [item for item in unit_configs if item[1] != unit]
-            stopped = _task5_stop_unit(fm1, units["e1-uploader"], configs["fm1-e1"]); append_evidence(evidence, {"operation": "task5-process-stop", **stopped}, repository)
+            stopped = _task5_stop_unit(fm1, units["e1-uploader"], configs["fm1-e1"], *unit_logs[units["e1-uploader"]]); append_evidence(evidence, {"operation": "task5-process-stop", **stopped}, repository)
             unit_configs = [item for item in unit_configs if item[1] != units["e1-uploader"]]
 
             oracle1 = context.remote_root + "/finite-e1"
             finite1 = _task5_remote_json(fm2, context, m0_dirs["fm2"], "finite", lite2, configs["fm2-e1"], oracle1,
-                                          remote_positions1, context.remote_root + "/e1-source", timeout=600)
+                                          remote_positions1, f"s3://{values['IDRIVE_BUCKET']}/qualification/{context.run_id}/e1", timeout=600)
             followed1 = _task5_remote_json(fm2, context, m0_dirs["fm2"], "summaries", promoted_data)["databases"]
             restored1 = _task5_remote_json(fm2, context, m0_dirs["fm2"], "summaries", oracle1)["databases"]
             if not compare_database_summaries(followed1, restored1): raise RuntimeError("e1 follower and finite restore differ")
+            reconcile_epoch_ledger(write1["operations"], restored1)
             append_evidence(evidence, {"operation": "task5-e1-compare", "positions": finite1["positions"],
                                        "databases": followed1, "match": True}, repository)
 
@@ -2441,25 +2747,29 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
 
             stage = "epoch-e2"
             trail2, _ = binaries["fm2"]
+            upload2_logs = _task5_prepare_log_paths(fm2, context.remote_root, units["e2-uploader"])
+            unit_logs[units["e2-uploader"]] = upload2_logs
+            remote_files["fm2"].extend(upload2_logs)
             uploader2 = task5_unit_argv(units["e2-uploader"], envs["fm2-e2"],
-                [lite2, "replicate", "-config", configs["fm2-e2"]])
+                [lite2, "replicate", "-config", configs["fm2-e2"]], stdout_path=upload2_logs[0], stderr_path=upload2_logs[1])
             _task5_start_unit(fm2, uploader2); unit_configs.append((fm2, units["e2-uploader"], configs["fm2-e2"]))
             _task5_wait_socket(fm2, context.remote_root + "/fm2-e2/litestream.sock", units["e2-uploader"])
             write2 = _task5_remote_json(fm2, context, m0_dirs["fm2"], "write", trail2, promoted, "e2",
                                          context.remote_root + "/operations-e2.jsonl", timeout=180)
             append_evidence(evidence, {"operation": "task5-http-writes", **write2}, repository)
             sync2 = _task5_remote_json(fm2, context, m0_dirs["fm2"], "sync", lite2, configs["fm2-e2"], promoted_data)
-            stopped = _task5_stop_unit(fm2, units["e2-uploader"], configs["fm2-e2"]); append_evidence(evidence, {"operation": "task5-process-stop", **stopped}, repository)
+            stopped = _task5_stop_unit(fm2, units["e2-uploader"], configs["fm2-e2"], *unit_logs[units["e2-uploader"]]); append_evidence(evidence, {"operation": "task5-process-stop", **stopped}, repository)
             unit_configs = []
             positions2 = context.local_root / "e2-positions.json"; positions2.write_text(json.dumps(sync2["positions"])); positions2.chmod(0o600)
             remote_positions2 = context.remote_root + "/e2-positions.json"; scp_to(fm3, positions2, remote_positions2)
             remote_files["fm3"].append(remote_positions2)
             _, lite3 = binaries["fm3"]
             finite2 = _task5_remote_json(fm3, context, m0_dirs["fm3"], "finite", lite3, configs["fm3-e2"], clean_data,
-                                          remote_positions2, context.remote_root + "/e2-source", timeout=600)
+                                          remote_positions2, f"s3://{values['IDRIVE_BUCKET']}/qualification/{context.run_id}/e2", timeout=600)
             promoted2 = _task5_remote_json(fm2, context, m0_dirs["fm2"], "summaries", promoted_data)["databases"]
             restored2 = _task5_remote_json(fm3, context, m0_dirs["fm3"], "summaries", clean_data)["databases"]
             if not compare_database_summaries(promoted2, restored2): raise RuntimeError("e2 promoted files and clean restore differ")
+            reconcile_epoch_ledger(write1["operations"] + write2["operations"], restored2)
             append_evidence(evidence, {"operation": "task5-e2-compare", "positions": finite2["positions"],
                                        "databases": promoted2, "match": True}, repository)
             stage = "verify-e1-immutability"
@@ -2482,7 +2792,7 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
     finally:
         cleanup_failures = []
         for node, unit, config in reversed(unit_configs):
-            try: _task5_stop_unit(node, unit, config)
+            try: _task5_stop_unit(node, unit, config, *unit_logs.get(unit, ("", "")))
             except Exception as exc: cleanup_failures.append(f"stop:{node.name}:{unit}:{type(exc).__name__}")
         if _SSH_KNOWN_HOSTS is not None:
             for node in nodes:
@@ -2496,13 +2806,11 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
                 private_files.extend(context.remote_root + f"/fixture/{depot}/traildepot/config.textproto" for depot in ("a", "b", "c"))
                 private_files.append(context.remote_root + "/promoted/config.textproto")
                 private_dirs = [context.remote_root + f"/fixture/{depot}/traildepot/secrets" for depot in ("a", "b", "c")]
-                private_dirs.append(context.remote_root + "/promoted/secrets")
+                private_dirs.extend((context.remote_root + "/promoted/secrets", context.remote_root + "/e1-source",
+                                     context.remote_root + "/e2-source", context.remote_root + "/logs"))
                 try:
-                    removed_files = ssh(node, ["rm", "-f", "--", *private_files], check=False)
-                    removed_dirs = ssh(node, ["rm", "-rf", "--", *private_dirs], check=False)
-                    if (removed_files.returncode or removed_dirs.returncode
-                            or any(ssh(node, ["test", "!", "-e", path], check=False).returncode for path in (*private_files, *private_dirs))):
-                        cleanup_failures.append(f"scrub:{node.name}")
+                    _task5_remote_cleanup(node, context, m0_dirs.get(node.name, context.remote_root), context.remote_root,
+                                          [*private_files, *private_dirs])
                 except Exception as exc: cleanup_failures.append(f"scrub:{node.name}:{type(exc).__name__}")
         scrub_private_tree(context.local_root / "runtime", context.local_root)
         if support_archive is not None: support_archive.unlink(missing_ok=True)
