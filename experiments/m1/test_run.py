@@ -1,3 +1,4 @@
+import ast
 import datetime
 import hashlib
 import inspect
@@ -32,7 +33,7 @@ from run import (
     write_litestream_s3_config, validate_litestream_s3_config, inventory_digest,
     assert_inventory_unchanged, scrub_private_path, scrub_private_tree, compare_database_summaries,
     task5_unit_argv, task5_replica_uri, read_strict_txid_sidecar, require_strict_position_advancement,
-    reconcile_epoch_ledger, validate_litestream_task5_help, _parse_task5_list_keys, _validate_support_archive_members, _parse_task5_log_stat, _task5_validate_log_text, _TASK5_REMOTE_SCRIPT,
+    reconcile_epoch_ledger, validate_litestream_task5_help, _parse_task5_list_keys, _validate_support_archive_members, _parse_task5_log_stat, _task5_validate_log_text, _TASK5_REMOTE_SCRIPT, _task5_prepare_runtime_root,
 )
 
 FP = "SHA256:" + "A" * 43
@@ -1860,6 +1861,31 @@ class LitestreamTask5Tests(unittest.TestCase):
                          "s3://bucket/qualification/20260907T120000Z-0123456789/e1/main")
         with self.assertRaises(ValueError): task5_replica_uri("bucket", "run", "e1", "logs")
 
+    def test_task5_runtime_root_is_created_and_verified_before_meta(self):
+        calls = []
+        ok = subprocess.CompletedProcess([], 0, "", "")
+        node_value = node()
+        def remote(_node, argv, **_kwargs):
+            calls.append(tuple(argv))
+            return ok
+        with mock.patch("run.ssh", side_effect=remote), \
+             mock.patch("run._verify_remote_directory", side_effect=lambda _node, path, **kwargs: calls.append(("verify", path, kwargs["mode"]))):
+            with mock.patch("run._REMOTE_ROOT", "/var/lib/hat-qualification/run"):
+                _task5_prepare_runtime_root(node_value, "/var/lib/hat-qualification/run/fm1-e1")
+        self.assertEqual(calls, [
+            ("mkdir", "-m", "700", "--", "/var/lib/hat-qualification/run/fm1-e1"),
+            ("verify", "/var/lib/hat-qualification/run/fm1-e1", 0o700),
+            ("mkdir", "-m", "700", "--", "/var/lib/hat-qualification/run/fm1-e1/meta"),
+            ("verify", "/var/lib/hat-qualification/run/fm1-e1/meta", 0o700),
+        ])
+
+    def test_task5_runtime_roots_are_verified_before_any_unit_start(self):
+        source = inspect.getsource(_cross_host_flow)
+        prepare = source.index("_task5_prepare_runtime_root")
+        start = source.index("_task5_start_unit")
+        self.assertLess(prepare, start)
+        self.assertLess(source.index('register_cleanup_candidate(node.name, runtime_root)'), prepare)
+
     def test_remote_config_paths_and_replica_prefixes_are_exact_and_distinct(self):
         with tempfile.TemporaryDirectory() as directory:
             config = write_litestream_s3_config(Path(directory), "20260907T120000Z-0123456789", "e1",
@@ -1946,6 +1972,41 @@ class LitestreamTask5Tests(unittest.TestCase):
         transfer = source.index("_task5_transfer_support(fm1, fm2, depot1, promoted, context)")
         for candidate in ("promoted + \"/config.textproto\"", "promoted + \"/secrets\""):
             self.assertLess(source.index(candidate), transfer)
+
+    def test_task5_cleanup_accepts_executable_descendant_but_rejects_writable(self):
+        tree = ast.parse(_TASK5_REMOTE_SCRIPT)
+        functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)
+                     and node.name in {"_trusted_directory", "remove_confined"}]
+        namespace = {"os": os, "stat": stat, "Path": Path, "RuntimeError": RuntimeError}
+        exec(compile(ast.Module(body=functions, type_ignores=[]), "task5-remote.py", "exec"), namespace)
+        remove_confined = namespace["remove_confined"]
+        def root_owned(value):
+            fields = list(value); fields[4] = fields[5] = 0
+            return os.stat_result(fields)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "run"; root.mkdir(mode=0o700)
+            executable = root / "executable"; executable.mkdir(mode=0o755)
+            (executable / "child").write_text("x")
+            writable = root / "writable"; writable.mkdir(mode=0o775); writable.chmod(0o775)
+            original_lstat, original_fstat = os.lstat, os.fstat
+            template = original_lstat(root)
+            def fake_lstat(path, *args, **kwargs):
+                if str(path) in {"/var", "/var/lib", "/var/lib/hat-qualification"}:
+                    fields = list(template); fields[0] = stat.S_IFDIR | 0o700; fields[4] = fields[5] = 0
+                    return os.stat_result(fields)
+                return root_owned(original_lstat(path, *args, **kwargs))
+            fake_fstat = lambda fd: root_owned(original_fstat(fd))
+            with mock.patch.object(os, "lstat", side_effect=fake_lstat), \
+                 mock.patch.object(os, "fstat", side_effect=fake_fstat):
+                remove_confined(root, str(executable))
+                self.assertFalse(executable.exists())
+                with self.assertRaises(RuntimeError): remove_confined(root, str(writable))
+                self.assertTrue(writable.exists())
+        self.assertIn("value.st_mode & 0o022", _TASK5_REMOTE_SCRIPT)
+        self.assertIn("stat.S_IMODE(current.st_mode) != 0o700", _TASK5_REMOTE_SCRIPT)
+        self.assertIn("trusted_descendant(child_fd)", _TASK5_REMOTE_SCRIPT)
+        self.assertIn("cleanup refuses symlink", _TASK5_REMOTE_SCRIPT)
+        self.assertIn("cleanup refuses special file", _TASK5_REMOTE_SCRIPT)
 
     def test_task5_complete_cleanup_candidates_cover_sources_logs_and_no_remaining_pass(self):
         source = inspect.getsource(_cross_host_flow)

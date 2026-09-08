@@ -347,9 +347,15 @@ def remove_confined(root, candidate):
     if any(not part or part in {".", ".."} for part in relative.parts):
         raise RuntimeError("invalid cleanup path component")
     flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    def trusted(fd):
+    def trusted_root(fd):
         value = os.fstat(fd)
-        if value.st_uid != 0 or value.st_gid != 0 or stat.S_IMODE(value.st_mode) != 0o700:
+        if (not stat.S_ISDIR(value.st_mode) or value.st_uid != 0 or value.st_gid != 0
+                or stat.S_IMODE(value.st_mode) != 0o700):
+            raise RuntimeError("cleanup directory is not trusted")
+    def trusted_descendant(fd):
+        value = os.fstat(fd)
+        if (not stat.S_ISDIR(value.st_mode) or value.st_uid != 0 or value.st_gid != 0
+                or value.st_mode & 0o022):
             raise RuntimeError("cleanup directory is not trusted")
     def remove(parent_fd, name):
         try: value = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
@@ -358,7 +364,7 @@ def remove_confined(root, candidate):
         if stat.S_ISDIR(value.st_mode):
             child_fd = os.open(name, flags, dir_fd=parent_fd)
             try:
-                trusted(child_fd)
+                trusted_descendant(child_fd)
                 with os.scandir(child_fd) as entries:
                     for entry in entries: remove(child_fd, entry.name)
                 os.rmdir(name, dir_fd=parent_fd)
@@ -368,14 +374,14 @@ def remove_confined(root, candidate):
         else: raise RuntimeError("cleanup refuses special file")
     root_fd = os.open(root, flags)
     try:
-        trusted(root_fd)
+        trusted_root(root_fd)
         parent_fd = root_fd
         opened = []
         try:
             for part in relative.parts[:-1]:
                 try: child_fd = os.open(part, flags, dir_fd=parent_fd)
                 except FileNotFoundError: return
-                trusted(child_fd); opened.append(child_fd); parent_fd = child_fd
+                trusted_descendant(child_fd); opened.append(child_fd); parent_fd = child_fd
             remove(parent_fd, relative.parts[-1])
         finally:
             for fd in reversed(opened): os.close(fd)
@@ -2696,6 +2702,22 @@ def _task5_prepare_log_paths(node: Node, root: str, unit: str) -> tuple[str, str
     return stdout_path, stderr_path
 
 
+def _task5_prepare_runtime_root(node: Node, path: str) -> None:
+    if _REMOTE_ROOT is None:
+        raise RuntimeError("Task5 remote run root is not initialized")
+    try:
+        confined_remote_path(_REMOTE_ROOT, path)
+    except ValueError as exc:
+        raise RuntimeError("Task5 runtime root is outside the remote run root") from exc
+    if ssh(node, ["mkdir", "-m", "700", "--", path], check=False).returncode:
+        raise RuntimeError(f"could not create Task5 runtime root on {node.name}")
+    _verify_remote_directory(node, path, mode=0o700)
+    meta = path + "/meta"
+    if ssh(node, ["mkdir", "-m", "700", "--", meta], check=False).returncode:
+        raise RuntimeError(f"could not create Task5 metadata directory on {node.name}")
+    _verify_remote_directory(node, meta, mode=0o700)
+
+
 def _task5_prepare_source_directory(node: Node, path: str) -> None:
     if ssh(node, ["mkdir", "-m", "700", "-p", "--", path], check=False).returncode:
         raise RuntimeError(f"could not create Task5 follower source directory on {node.name}")
@@ -3241,6 +3263,8 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
             configs: dict[str, str] = {}
             envs: dict[str, str] = {}
             for label, (node, epoch, source_root, runtime_root) in config_specs.items():
+                register_cleanup_candidate(node.name, runtime_root)
+                _task5_prepare_runtime_root(node, runtime_root)
                 local_config = write_litestream_s3_config(staging / label, context.run_id, epoch,
                     endpoint=values["IDRIVE_ENDPOINT"], region=values["IDRIVE_REGION"], bucket=values["IDRIVE_BUCKET"],
                     source_root=source_root, runtime_root=runtime_root)
