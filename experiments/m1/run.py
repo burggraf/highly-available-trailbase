@@ -10,6 +10,7 @@ import platform
 import posixpath
 import re
 import shlex
+import shutil
 import stat
 import sys
 import subprocess
@@ -121,6 +122,14 @@ _LITESTREAM_CHECKSUMS_SHA256 = "f5c30b11a19ef14fc64581be19aa50ee81dcc7f53eb42973
 _WRITER_UNITS = ("hat-trailbase.service", "hat-litestream.service")
 _LITESTREAM_DATABASES = ("main", "session", "aux")
 _STRICT_TXID = re.compile(r"^[0-9a-f]{16}$")
+_TASK5_LOG_MAX_BYTES = 1024 * 1024
+_TASK5_LOG_MAX_LINES = 10_000
+_TASK5_S3_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+_TASK5_S3_MAX_KEYS = 1000
+_TASK5_SUPPORT_ARCHIVE_MAX_BYTES = 8 * 1024 * 1024
+_TASK5_SUPPORT_ARCHIVE_MAX_MEMBERS = 64
+_TASK5_SUPPORT_FILE_MAX_BYTES = 4 * 1024 * 1024
+_TASK5_SUPPORT_TOTAL_BYTES = 8 * 1024 * 1024
 
 
 def _safe_config_component(value: str, label: str) -> str:
@@ -232,8 +241,11 @@ def scrub_private_path(path: Path, root: Path) -> None:
 
 
 _TASK5_REMOTE_SCRIPT = r'''#!/usr/bin/env python3
-import hashlib, json, os, shutil, sqlite3, subprocess, sys, time, stat
+import hashlib, json, os, re, shlex, shutil, sqlite3, subprocess, sys, time, stat
 from pathlib import Path
+
+LOG_MAX_BYTES = 1024 * 1024
+LOG_MAX_LINES = 10000
 
 m0_dir, action, *args = sys.argv[1:]
 sys.path.insert(0, m0_dir)
@@ -261,11 +273,53 @@ def strict_txid(output, name):
         raise RuntimeError("invalid follower TXID sidecar")
     return int(value, 16)
 
+def _trusted_directory(path, private=False):
+    try: current = os.lstat(path)
+    except FileNotFoundError: raise RuntimeError("cleanup directory is absent")
+    if (stat.S_ISLNK(current.st_mode) or not stat.S_ISDIR(current.st_mode)
+            or current.st_uid != os.getuid() or (current.st_mode & 0o022)
+            or (private and stat.S_IMODE(current.st_mode) != 0o700)):
+        raise RuntimeError("cleanup directory is not trusted")
+
+def bounded_log(path):
+    with open(path, "rb") as source:
+        data = source.read(LOG_MAX_BYTES + 1)
+    if len(data) > LOG_MAX_BYTES:
+        raise RuntimeError("Task5 follower log exceeds byte bound")
+    try: text = data.decode("utf-8")
+    except UnicodeDecodeError as exc: raise RuntimeError("Task5 follower log is not UTF-8") from exc
+    if len(text.splitlines()) > LOG_MAX_LINES:
+        raise RuntimeError("Task5 follower log exceeds line bound")
+    return text
+
+def parse_log(text):
+    events = []
+    for line in text.splitlines():
+        if not line.strip(): continue
+        try: value = json.loads(line)
+        except json.JSONDecodeError:
+            try: fields = dict(part.split("=", 1) for part in shlex.split(line) if "=" in part)
+            except ValueError as exc: raise RuntimeError("unrecognized Task5 follower log format") from exc
+            event = fields
+        else: event = value
+        if (not isinstance(event, dict) or not isinstance(event.get("level"), str)
+                or not event["level"] or not isinstance(event.get("msg", event.get("message")), str)
+                or not event.get("msg", event.get("message"))):
+            raise RuntimeError("invalid Task5 follower log event")
+        level = event["level"].upper(); message = event.get("msg", event.get("message"))
+        if level in {"ERROR", "FATAL"} or re.search(r"(?:error applying updates|apply(?:ing)? updates? failed|failed to apply|apply failure|decoder error|storage error)", message, re.I):
+            raise RuntimeError("Task5 follower log reported an error")
+        events.append({"level": level, "message": message})
+    if not events: raise RuntimeError("Task5 follower logs are empty")
+    return events
+
 def remove_confined(root, candidate):
     root, candidate = Path(root), Path(candidate)
-    root_stat = os.lstat(root)
-    if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
-        raise RuntimeError("invalid cleanup root")
+    # Check the managed chain immediately before any deletion.  /var and /var/lib
+    # are trusted system ancestors; the managed base and run root are private.
+    for path, private in ((Path("/var"), False), (Path("/var/lib"), False),
+                          (Path("/var/lib/hat-qualification"), True), (root, True)):
+        _trusted_directory(path, private)
     if not candidate.is_absolute() or candidate == root:
         raise RuntimeError("invalid cleanup path")
     try: candidate.relative_to(root)
@@ -292,6 +346,8 @@ def remove_confined(root, candidate):
         try: current_stat = os.lstat(current)
         except FileNotFoundError: continue
         if stat.S_ISLNK(current_stat.st_mode): raise RuntimeError("cleanup refuses symlink component")
+        if stat.S_ISDIR(current_stat.st_mode) and (current_stat.st_uid != os.getuid() or current_stat.st_mode & 0o022):
+            raise RuntimeError("cleanup refuses untrusted component")
     remove(candidate)
 
 def summary(database, name):
@@ -380,11 +436,7 @@ elif action == "wait":
     while time.monotonic() < deadline:
         if any(subprocess.run(["systemctl", "is-active", "--quiet", unit]).returncode for unit in units): raise RuntimeError("follower exited before cut")
         for path in log_paths:
-            if Path(path).exists() and Path(path).read_text(errors="replace").strip():
-                for line in Path(path).read_text(errors="replace").splitlines():
-                    event = m0.parse_follower_line(line)
-                    if event.get("unrecognized") or event.get("error") or str(event.get("level", "")).upper() in {"ERROR", "FATAL"}:
-                        raise RuntimeError("follower log error before cut")
+            if Path(path).exists(): parse_log(bounded_log(path))
         reached = {name: strict_txid(output, name) for name in DBS
                    if Path(str(output / f"{name}.db") + "-txid").is_file()}
         if len(reached) == 3:
@@ -522,7 +574,8 @@ def task5_unit_argv(unit: str, env_path: str, command: list[str], *, stdout_path
     if stderr_path is not None:
         properties.append(f"--property=StandardError=append:{stderr_path}")
     return ["systemd-run", f"--unit={unit}", "--collect", "--property=RuntimeMaxSec=900",
-            *properties, "--", *command]
+            f"--property=LimitFSIZE={_TASK5_LOG_MAX_BYTES}", "--property=LogRateLimitIntervalSec=1s",
+            f"--property=LogRateLimitBurst={_TASK5_LOG_MAX_LINES}", *properties, "--", *command]
 
 
 def scrub_private_tree(path: Path, root: Path) -> None:
@@ -2396,28 +2449,63 @@ def _task5_prepare_source_directory(node: Node, path: str) -> None:
 
 
 def _task5_validate_log_text(text: str) -> list[dict[str, Any]]:
+    """Parse pinned Litestream v0.5.17 JSON/logfmt records with bounded fields."""
+    if not isinstance(text, str) or len(text.encode("utf-8", "replace")) > _TASK5_LOG_MAX_BYTES:
+        raise RuntimeError("Task5 follower log exceeds byte bound")
+    if len(text.splitlines()) > _TASK5_LOG_MAX_LINES:
+        raise RuntimeError("Task5 follower log exceeds line bound")
     events = []
     for line in text.splitlines():
         if not line.strip():
             continue
         try:
-            event = json.loads(line)
+            value = json.loads(line)
         except json.JSONDecodeError:
-            fields = dict(part.split("=", 1) for part in shlex.split(line) if "=" in part)
-            if not {"level", "msg"}.issubset(fields):
-                raise RuntimeError("unrecognized Task5 follower log format")
-            event = {"level": fields["level"], "message": fields["msg"]}
-        if not isinstance(event, dict) or not event:
+            try:
+                fields = dict(part.split("=", 1) for part in shlex.split(line) if "=" in part)
+            except ValueError as exc:
+                raise RuntimeError("unrecognized Task5 follower log format") from exc
+            event = fields
+        else:
+            event = value
+        message = event.get("msg", event.get("message")) if isinstance(event, dict) else None
+        if (not isinstance(event, dict) or not isinstance(event.get("level"), str)
+                or not event["level"] or not isinstance(message, str) or not message):
             raise RuntimeError("invalid Task5 follower log event")
-        level = str(event.get("level", "")).upper()
-        message = str(event.get("message", event.get("msg", "")))
-        if (level in {"ERROR", "FATAL"} or re.search(r"\b(?:error|fatal|decoder|storage)\b", message, re.I)
-                or re.search(r"error\s+applying|apply\s+(?:error|failed)", message, re.I)):
+        level = event["level"].upper()
+        if level in {"ERROR", "FATAL"} or re.search(r"(?:error applying updates|apply(?:ing)? updates? failed|failed to apply|apply failure|decoder error|storage error)", message, re.I):
             raise RuntimeError("Task5 follower log reported an error")
         events.append({"level": level, "message": message})
     if not events:
         raise RuntimeError("Task5 follower logs are empty")
     return events
+
+
+def _parse_task5_log_stat(output: str) -> tuple[str, str, int]:
+    fields = output.strip().split("\t")
+    if len(fields) != 3:
+        raise RuntimeError("invalid Task5 process log metadata")
+    kind, mode, size = fields
+    if kind != "regular file" or mode != "600":
+        raise RuntimeError("invalid Task5 process log metadata")
+    try:
+        size = int(size)
+    except ValueError as exc:
+        raise RuntimeError("invalid Task5 process log size") from exc
+    return kind, mode, size
+
+
+def _task5_read_log(node: Node, path: str) -> str:
+    result = ssh(node, ["head", "-c", str(_TASK5_LOG_MAX_BYTES + 1), "--", path], check=False)
+    if result.returncode:
+        raise RuntimeError("cannot read Task5 process log")
+    raw = result.stdout if isinstance(result.stdout, bytes) else _stdout(result).encode()
+    if len(raw) > _TASK5_LOG_MAX_BYTES:
+        raise RuntimeError("Task5 process log exceeds byte bound")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError("Task5 process log is not UTF-8") from exc
 
 
 def _task5_start_unit(node: Node, argv: list[str]) -> None:
@@ -2440,6 +2528,25 @@ def _task5_wait_socket(node: Node, socket_path: str, unit: str) -> None:
             raise RuntimeError(f"Task5 process {unit} exited before socket readiness")
         time.sleep(0.25)
     raise RuntimeError(f"Task5 process {unit} socket readiness timed out")
+
+
+def _task5_cleanup_started_unit(node: Node, unit: str) -> None:
+    stopped = ssh(node, ["systemctl", "stop", unit], check=False, timeout=30)
+    load = ssh(node, ["systemctl", "show", unit, "-p", "LoadState", "--value"], check=False)
+    if load.returncode:
+        raise RuntimeError(f"Task5 cleanup LoadState query failed for {unit}")
+    load_state = _stdout(load).strip()
+    if load_state == "not-found":
+        return
+    if stopped.returncode:
+        raise RuntimeError(f"Task5 cleanup stop failed for {unit}")
+    if load_state != "loaded":
+        raise RuntimeError(f"Task5 cleanup found unexpected LoadState {load_state!r} for {unit}")
+    active = ssh(node, ["systemctl", "show", unit, "-p", "ActiveState", "--value"], check=False)
+    main = ssh(node, ["systemctl", "show", unit, "-p", "MainPID", "--value"], check=False)
+    if (active.returncode or _stdout(active).strip() not in {"inactive", "failed"}
+            or main.returncode or _stdout(main).strip() != "0"):
+        raise RuntimeError(f"Task5 cleanup cannot prove {unit} stopped")
 
 
 def _task5_stop_unit(node: Node, unit: str, config: str, stdout_path: str | None = None,
@@ -2467,16 +2574,16 @@ def _task5_stop_unit(node: Node, unit: str, config: str, stdout_path: str | None
     log_events = []
     raw_parts = []
     for path in (stdout_path, stderr_path):
-        metadata = ssh(node, ["stat", "-c", "%F %a %s", "--", path], check=False)
+        metadata = ssh(node, ["stat", "-c", "%F\t%a\t%s", "--", path], check=False)
         if metadata.returncode:
             raise RuntimeError(f"missing Task5 process log for {unit}")
-        kind, mode, size = _stdout(metadata).strip().split()
-        if kind != "regular file" or mode != "600" or int(size) == 0:
-            raise RuntimeError(f"invalid Task5 process log for {unit}")
-        content = ssh(node, ["cat", "--", path], check=False)
-        if content.returncode:
-            raise RuntimeError(f"cannot read Task5 process log for {unit}")
-        raw = _stdout(content)
+        kind, mode, size = _parse_task5_log_stat(_stdout(metadata))
+        try:
+            if int(size) <= 0 or int(size) > _TASK5_LOG_MAX_BYTES:
+                raise ValueError
+        except ValueError as exc:
+            raise RuntimeError(f"invalid Task5 process log size for {unit}") from exc
+        raw = _task5_read_log(node, path)
         raw_parts.append(raw)
         log_events.extend(_task5_validate_log_text(raw))
     return {"unit": unit, "state": "inactive", "main_pid": 0, "log_lines": len(log_events),
@@ -2484,8 +2591,10 @@ def _task5_stop_unit(node: Node, unit: str, config: str, stdout_path: str | None
             "logs": [stdout_path, stderr_path]}
 
 
-def _parse_task5_list_keys(xml: bytes) -> list[str]:
+def _parse_task5_list_keys(xml: bytes, *, prefix: str | None = None) -> list[str]:
     from xml.etree import ElementTree
+    if not isinstance(xml, bytes) or len(xml) > _TASK5_S3_MAX_RESPONSE_BYTES:
+        raise RuntimeError("Task5 S3 inventory response exceeds bound")
     try:
         root = ElementTree.fromstring(xml)
     except ElementTree.ParseError as exc:
@@ -2493,20 +2602,31 @@ def _parse_task5_list_keys(xml: bytes) -> list[str]:
     local = lambda tag: tag.rsplit("}", 1)[-1]
     if local(root.tag) != "ListBucketResult":
         raise RuntimeError("Task5 S3 inventory has an invalid root")
-    allowed = {"Name", "Prefix", "KeyCount", "MaxKeys", "IsTruncated", "Contents"}
-    if any(local(node.tag) not in allowed for node in root):
+    required = {"Name", "Prefix", "KeyCount", "MaxKeys", "IsTruncated"}
+    children = [local(node.tag) for node in root]
+    if any(tag not in required | {"Contents"} for tag in children) or set(children) - {"Contents"} != required:
         raise RuntimeError("Task5 S3 inventory has an invalid shape")
-    truncated = [node for node in root if local(node.tag) == "IsTruncated"]
-    if len(truncated) != 1 or (truncated[0].text or "") != "false":
-        raise RuntimeError("Task5 S3 inventory requires exactly one IsTruncated=false")
+    if any(children.count(tag) != 1 for tag in required):
+        raise RuntimeError("Task5 S3 inventory has an invalid shape")
+    values = {tag: next(node for node in root if local(node.tag) == tag).text or "" for tag in required}
+    if not values["Name"] or values["IsTruncated"] != "false" or values["MaxKeys"] != str(_TASK5_S3_MAX_KEYS):
+        raise RuntimeError("Task5 S3 inventory requires an exact untruncated LIST")
+    if prefix is not None and values["Prefix"] != prefix:
+        raise RuntimeError("Task5 S3 inventory prefix mismatch")
+    try: key_count = int(values["KeyCount"])
+    except ValueError as exc: raise RuntimeError("Task5 S3 inventory has an invalid KeyCount") from exc
+    if key_count < 0 or key_count > _TASK5_S3_MAX_KEYS:
+        raise RuntimeError("Task5 S3 inventory has an invalid KeyCount")
     keys: list[str] = []
     for contents in (node for node in root if local(node.tag) == "Contents"):
-        key_nodes = [node for node in contents if local(node.tag) == "Key"]
-        if len(key_nodes) != 1 or not key_nodes[0].text:
+        if [local(node.tag) for node in contents] != ["Key"]:
             raise RuntimeError("Task5 S3 inventory has an invalid Contents entry")
-        keys.append(key_nodes[0].text)
-    if len(keys) != len(set(keys)):
-        raise RuntimeError("Task5 S3 inventory contains duplicate keys")
+        key = contents[0].text
+        if not key:
+            raise RuntimeError("Task5 S3 inventory has an invalid Contents entry")
+        keys.append(key)
+    if key_count != len(keys) or len(keys) != len(set(keys)):
+        raise RuntimeError("Task5 S3 inventory contains duplicate or mismatched keys")
     return keys
 
 
@@ -2515,7 +2635,14 @@ def _task5_s3_inventory(client: Any, prefix: str) -> list[dict[str, str]]:
     listed = client.list(prefix)
     if not isinstance(listed, tuple) or len(listed) != 3 or listed[0] != 200 or not isinstance(listed[2], bytes):
         raise RuntimeError("Task5 S3 inventory LIST failed")
-    keys = _parse_task5_list_keys(listed[2])
+    keys = _parse_task5_list_keys(listed[2], prefix=prefix)
+    bucket = getattr(client, "bucket", None)
+    if bucket is not None:
+        from xml.etree import ElementTree
+        root = ElementTree.fromstring(listed[2])
+        name = next((node.text for node in root if node.tag.rsplit("}", 1)[-1] == "Name"), None)
+        if name != bucket:
+            raise RuntimeError("Task5 S3 inventory bucket mismatch")
     if any(not key.startswith(prefix) for key in keys):
         raise RuntimeError("Task5 S3 inventory contains a foreign key")
     inventory = []
@@ -2532,24 +2659,43 @@ def _task5_s3_inventory(client: Any, prefix: str) -> list[dict[str, str]]:
 
 
 def _validate_support_archive_members(archive: Path) -> tuple[str, ...]:
-    """Allow exactly config.textproto and an explicitly declared regular secrets tree."""
+    """Allow only the support files, with bounded compressed and decompressed sizes."""
+    archive = Path(archive)
+    try:
+        if archive.stat().st_size > _TASK5_SUPPORT_ARCHIVE_MAX_BYTES:
+            raise ValueError("support archive exceeds compressed size bound")
+    except OSError as exc:
+        raise ValueError("support archive cannot be inspected") from exc
     names: list[str] = []
-    with tarfile.open(archive, "r:gz") as source_archive:
-        for member in source_archive.getmembers():
-            name = member.name.rstrip("/")
-            if name in names or not name or "\\" in member.name or name.startswith("/") or ".." in Path(name).parts:
-                raise ValueError("unsafe support archive member")
-            if member.issym() or member.islnk() or not (member.isfile() or member.isdir()):
-                raise ValueError("unsafe support archive member type")
-            if name == "config.textproto":
-                if not member.isfile():
-                    raise ValueError("config.textproto must be regular")
-            elif name == "secrets":
-                if not member.isdir():
-                    raise ValueError("secrets must be a directory")
-            elif not name.startswith("secrets/"):
-                raise ValueError("unknown support archive member")
-            names.append(name)
+    total = 0
+    try:
+        with tarfile.open(archive, "r:gz") as source_archive:
+            for member in source_archive:
+                if len(names) >= _TASK5_SUPPORT_ARCHIVE_MAX_MEMBERS:
+                    raise ValueError("support archive exceeds member bound")
+                name = member.name.rstrip("/")
+                if (name in names or not name or "\\" in member.name or name.startswith("/")
+                        or ".." in Path(name).parts):
+                    raise ValueError("unsafe support archive member")
+                if member.issym() or member.islnk() or not (member.isfile() or member.isdir()):
+                    raise ValueError("unsafe support archive member type")
+                if member.isfile():
+                    if member.size < 0 or member.size > _TASK5_SUPPORT_FILE_MAX_BYTES:
+                        raise ValueError("support archive member exceeds size bound")
+                    total += member.size
+                    if total > _TASK5_SUPPORT_TOTAL_BYTES:
+                        raise ValueError("support archive exceeds decompressed size bound")
+                if name == "config.textproto":
+                    if not member.isfile():
+                        raise ValueError("config.textproto must be regular")
+                elif name == "secrets":
+                    if not member.isdir():
+                        raise ValueError("secrets must be a directory")
+                elif not name.startswith("secrets/"):
+                    raise ValueError("unknown support archive member")
+                names.append(name)
+    except (tarfile.TarError, OSError) as exc:
+        raise ValueError("invalid support archive") from exc
     if "config.textproto" not in names or "secrets" not in names:
         raise ValueError("support archive must contain config.textproto and secrets directory")
     return tuple(names)
@@ -2579,12 +2725,13 @@ def _task5_transfer_support(fm1: Node, fm2: Node, source: str, destination: str,
                             context: RunContext) -> Path:
     archive = context.local_root / "trailbase-support.tar.gz"
     remote_archive = context.remote_root + "/trailbase-support.tar.gz"
-    # Register both names before either side is created; failure cleanup must not depend on assignment later.
+    # Create remotely, inspect/copy through the existing bounded no-follow reader.
     try:
-        result = ssh(fm1, ["tar", "-C", source, "-czf", "-", "config.textproto", "secrets"], check=False)
-        if result.returncode or not result.stdout:
+        result = ssh(fm1, ["tar", "-C", source, "-czf", remote_archive, "config.textproto", "secrets"], check=False)
+        if result.returncode or ssh(fm1, ["chmod", "600", "--", remote_archive], check=False).returncode:
             raise RuntimeError("could not collect TrailBase support files")
-        archive.write_bytes(result.stdout); archive.chmod(0o600)
+        _copy_from_node(fm1, remote_archive, archive, max_bytes=_TASK5_SUPPORT_ARCHIVE_MAX_BYTES)
+        archive.chmod(0o600)
         _validate_support_archive_members(archive)
         scp_to(fm2, archive, remote_archive)
         if ssh(fm2, ["tar", "-C", destination, "-xzf", remote_archive], check=False).returncode:
@@ -2612,6 +2759,7 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
     }
     remote_files: dict[str, list[str]] = {node.name: [] for node in nodes}
     unit_configs: list[tuple[Node, str, str]] = []
+    started_units: set[tuple[str, str]] = set()
     unit_logs: dict[str, tuple[str, str]] = {}
     support_archive: Path | None = context.local_root / "trailbase-support.tar.gz"
     remote_support_archive = context.remote_root + "/trailbase-support.tar.gz"
@@ -2690,7 +2838,7 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
             remote_files["fm1"].extend(upload1_logs)
             uploader1 = task5_unit_argv(units["e1-uploader"], envs["fm1-e1"],
                 [lite1, "replicate", "-config", configs["fm1-e1"]], stdout_path=upload1_logs[0], stderr_path=upload1_logs[1])
-            _task5_start_unit(fm1, uploader1); unit_configs.append((fm1, units["e1-uploader"], configs["fm1-e1"]))
+            _task5_start_unit(fm1, uploader1); started_units.add((fm1.name, units["e1-uploader"])); unit_configs.append((fm1, units["e1-uploader"], configs["fm1-e1"]))
             _task5_wait_socket(fm1, context.remote_root + "/fm1-e1/litestream.sock", units["e1-uploader"])
             # Litestream v0.5.17 restore -f exits when the replica has no baseline yet.
             initial1 = _task5_remote_json(fm1, context, m0_dirs["fm1"], "sync", lite1, configs["fm1-e1"], source1)
@@ -2705,7 +2853,7 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
                     "-f", "-follow-interval", "1s", "-o", promoted_data + f"/{name}.db",
                     task5_replica_uri(values["IDRIVE_BUCKET"], context.run_id, "e1", name)],
                     stdout_path=stdout_path, stderr_path=stderr_path)
-                _task5_start_unit(fm2, argv); unit_configs.append((fm2, unit, configs["fm2-e1"]))
+                _task5_start_unit(fm2, argv); started_units.add((fm2.name, unit)); unit_configs.append((fm2, unit, configs["fm2-e1"]))
 
             write1 = _task5_remote_json(fm1, context, m0_dirs["fm1"], "write", trail1, depot1, "e1",
                                          context.remote_root + "/operations-e1.jsonl", timeout=180)
@@ -2736,6 +2884,7 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
                                        "databases": followed1, "match": True}, repository)
 
             stage = "promote-e1"
+            remote_files["fm1"].append(context.remote_root + "/trailbase-support.tar.gz")
             support_archive = _task5_transfer_support(fm1, fm2, depot1, promoted, context)
             remote_files["fm2"].append(context.remote_root + "/trailbase-support.tar.gz")
             e1_prefix = f"qualification/{context.run_id}/e1/"
@@ -2752,7 +2901,7 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
             remote_files["fm2"].extend(upload2_logs)
             uploader2 = task5_unit_argv(units["e2-uploader"], envs["fm2-e2"],
                 [lite2, "replicate", "-config", configs["fm2-e2"]], stdout_path=upload2_logs[0], stderr_path=upload2_logs[1])
-            _task5_start_unit(fm2, uploader2); unit_configs.append((fm2, units["e2-uploader"], configs["fm2-e2"]))
+            _task5_start_unit(fm2, uploader2); started_units.add((fm2.name, units["e2-uploader"])); unit_configs.append((fm2, units["e2-uploader"], configs["fm2-e2"]))
             _task5_wait_socket(fm2, context.remote_root + "/fm2-e2/litestream.sock", units["e2-uploader"])
             write2 = _task5_remote_json(fm2, context, m0_dirs["fm2"], "write", trail2, promoted, "e2",
                                          context.remote_root + "/operations-e2.jsonl", timeout=180)
@@ -2796,12 +2945,13 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
             except Exception as exc: cleanup_failures.append(f"stop:{node.name}:{unit}:{type(exc).__name__}")
         if _SSH_KNOWN_HOSTS is not None:
             for node in nodes:
-                for unit in units.values():
+                for owner, unit in sorted(started_units):
+                    if owner != node.name:
+                        continue
                     try:
-                        ssh(node, ["systemctl", "stop", unit], check=False, timeout=15)
-                        if _stdout(ssh(node, ["systemctl", "is-active", unit], check=False)).strip() not in {"inactive", "failed", "unknown"}:
-                            cleanup_failures.append(f"active:{node.name}:{unit}")
-                    except Exception as exc: cleanup_failures.append(f"stop:{node.name}:{unit}:{type(exc).__name__}")
+                        _task5_cleanup_started_unit(node, unit)
+                    except Exception as exc:
+                        cleanup_failures.append(f"stop:{node.name}:{unit}:{type(exc).__name__}")
                 private_files = [*remote_files[node.name], context.remote_root + "/fixture/fixture-private.json"]
                 private_files.extend(context.remote_root + f"/fixture/{depot}/traildepot/config.textproto" for depot in ("a", "b", "c"))
                 private_files.append(context.remote_root + "/promoted/config.textproto")
@@ -2812,12 +2962,20 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
                     _task5_remote_cleanup(node, context, m0_dirs.get(node.name, context.remote_root), context.remote_root,
                                           [*private_files, *private_dirs])
                 except Exception as exc: cleanup_failures.append(f"scrub:{node.name}:{type(exc).__name__}")
-        scrub_private_tree(context.local_root / "runtime", context.local_root)
-        if support_archive is not None: support_archive.unlink(missing_ok=True)
-        scrub_private_tree(pins_path, context.local_root)
-        try: append_evidence(evidence, {"operation": "task5-cleanup", "result": "PASS" if not cleanup_failures else "NO-GO",
+        for cleanup_action in (
+            lambda: scrub_private_tree(context.local_root / "runtime", context.local_root),
+            lambda: support_archive.unlink(missing_ok=True) if support_archive is not None else None,
+            lambda: scrub_private_tree(pins_path, context.local_root),
+        ):
+            try:
+                cleanup_action()
+            except Exception as exc:
+                cleanup_failures.append(f"local:{type(exc).__name__}")
+        try:
+            append_evidence(evidence, {"operation": "task5-cleanup", "result": "PASS" if not cleanup_failures else "NO-GO",
                                        "failures": cleanup_failures}, repository)
-        except Exception: pass
+        except Exception:
+            pass
         _SSH_KNOWN_HOSTS = None; _REMOTE_ROOT = None
         if cleanup_failures:
             raise RuntimeError("Task5 cleanup did not complete")

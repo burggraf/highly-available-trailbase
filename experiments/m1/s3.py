@@ -12,6 +12,8 @@ from urllib.parse import quote, urlsplit
 from urllib.request import Request, urlopen
 from http.client import HTTPSConnection
 
+S3_RESPONSE_MAX_BYTES = 16 * 1024 * 1024
+
 try:
     from run import require_private_file, register_secret
 except ImportError:  # pragma: no cover
@@ -122,15 +124,22 @@ class S3Client:
         actual["Authorization"] = f"AWS4-HMAC-SHA256 Credential={self.access_key}/{scope}, SignedHeaders={signed}, Signature={signature}"
         return SignedRequest(self.endpoint + canonical_uri, actual)
 
+    @staticmethod
+    def _read_response(response) -> bytes:
+        body = response.read(S3_RESPONSE_MAX_BYTES + 1)
+        if len(body) > S3_RESPONSE_MAX_BYTES:
+            raise RuntimeError("S3 response exceeds size bound")
+        return body
+
     def request(self, method: str, key: str = "", *, body: bytes = b"", headers: dict[str, str] | None = None, query: dict[str, str] | None = None) -> tuple[int, dict[str, str], bytes]:
         path = ("/" + self.bucket + "/" + key) if key else ("/" + self.bucket)
         signed = self.signed_request(method, path, headers or {}, body, query=query)
         url = signed.url + (("?" + _canonical_query(query)) if query else "")
         try:
             with urlopen(Request(url, data=body if method not in {"GET", "HEAD"} else None, headers=signed.headers, method=method), timeout=30) as response:
-                return response.status, dict(response.headers.items()), response.read()
+                return response.status, dict(response.headers.items()), self._read_response(response)
         except HTTPError as exc:
-            return exc.code, dict(exc.headers.items()), exc.read()
+            return exc.code, dict(exc.headers.items()), self._read_response(exc)
         except (URLError, TimeoutError):
             raise
 
@@ -157,7 +166,8 @@ class S3Client:
 
     def get(self, key: str): return self.request("GET", key)
     def head(self, key: str): return self.request("HEAD", key)
-    def list(self, prefix: str = ""): return self.request("GET", query={"list-type": "2", "prefix": prefix})
+    def list(self, prefix: str = ""):
+        return self.request("GET", query={"list-type": "2", "prefix": prefix, "max-keys": "1000"})
     def delete(self, key: str, *, etag: str | None = None):
         return self.request("DELETE", key, headers={"If-Match": quote_etag(etag)} if etag is not None else {})
 

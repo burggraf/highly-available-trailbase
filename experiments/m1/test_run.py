@@ -31,7 +31,7 @@ from run import (
     write_litestream_s3_config, validate_litestream_s3_config, inventory_digest,
     assert_inventory_unchanged, scrub_private_path, scrub_private_tree, compare_database_summaries,
     task5_unit_argv, task5_replica_uri, read_strict_txid_sidecar, require_strict_position_advancement,
-    reconcile_epoch_ledger, validate_litestream_task5_help, _parse_task5_list_keys, _validate_support_archive_members, _TASK5_REMOTE_SCRIPT,
+    reconcile_epoch_ledger, validate_litestream_task5_help, _parse_task5_list_keys, _validate_support_archive_members, _parse_task5_log_stat, _task5_validate_log_text, _TASK5_REMOTE_SCRIPT,
 )
 
 FP = "SHA256:" + "A" * 43
@@ -1692,6 +1692,18 @@ class LitestreamTask5Tests(unittest.TestCase):
         self.assertEqual(_parse_task5_list_keys(xml), ["p/a"])
         for bad in (xml.replace(b'<IsTruncated>false</IsTruncated>', b''), xml.replace(b'<IsTruncated>false</IsTruncated>', b'<IsTruncated>false</IsTruncated><IsTruncated>false</IsTruncated>'), xml.replace(b'<Contents>', b'<Unknown>')):
             with self.assertRaises(RuntimeError): _parse_task5_list_keys(bad)
+
+    def test_pinned_litestream_logs_require_message_but_allow_metadata(self):
+        text = ('{"time":"2026-09-07T00:00:00Z","level":"info","msg":"replicating","db":"main"}\n'
+                'time=2026-09-07T00:00:01Z level=INFO msg="checkpoint complete" component=replicator\n')
+        self.assertEqual(len(_task5_validate_log_text(text)), 2)
+        for bad in ('{"level":"INFO"}\n', '{"level":"ERROR","message":"boom"}\n',
+                    'level=INFO msg="failed to apply updates"\n', 'not a log record\n'):
+            with self.assertRaises(RuntimeError): _task5_validate_log_text(bad)
+
+    def test_task5_stat_parser_preserves_multiword_file_kind(self):
+        self.assertEqual(_parse_task5_log_stat("regular file\t600\t42\n"), ("regular file", "600", 42))
+        with self.assertRaises(RuntimeError): _parse_task5_log_stat("regular  file 600 42\\n")
 
     def test_pinned_litestream_help_contract_is_explicit(self):
         validate_litestream_task5_help("-config -follow-interval -txid", "-config", "-config -wait -json")
