@@ -26,6 +26,7 @@ from run import (
     _binary_version_evidence, _copy_from_node, _run_m0_linux_parity,
     _validate_m0_aggregate, _validate_m0_log_archive, _validate_provision_summary,
     _validate_post_reboot_summary, _provision_workflow, provision, REMOTE_PROVISION_TIMEOUT,
+    _M0_COLLECT_SCRIPT,
 )
 
 FP = "SHA256:" + "A" * 43
@@ -394,6 +395,17 @@ class RemoteRootTests(unittest.TestCase):
         result = subprocess.CompletedProcess([], 0, b"regular file\t0\t0\t600\t/safe/file\n", b"")
         with mock.patch("run.ssh", return_value=result):
             self.assertEqual(_remote_stat(node(), "/safe/file"), ("regular file", 0, 0, 0o600, "/safe/file"))
+
+    def test_reboot_returns_new_boot_identity_for_evidence(self):
+        old = "01234567-89ab-cdef-0123-456789abcdef"
+        new = "abcdef01-2345-6789-abcd-ef0123456789"
+        responses = [subprocess.CompletedProcess([], 0, b"", b""),
+                     subprocess.CompletedProcess([], 0, (new + "\n").encode(), b""),
+                     subprocess.CompletedProcess([], 0, b"a\n", b"")]
+        responses += [subprocess.CompletedProcess([], 0, b"masked\n", b""),
+                      subprocess.CompletedProcess([], 3, b"inactive\n", b"")] * 2
+        with mock.patch("run.ssh", side_effect=responses), mock.patch("run.time.sleep"):
+            self.assertEqual(_verify_reboot(node("a"), old), new)
 
     def test_reboot_query_error_is_not_treated_as_inactive(self):
         old = "01234567-89ab-cdef-0123-456789abcdef"
@@ -1378,7 +1390,7 @@ class ProvisionTests(unittest.TestCase):
                      mock.patch("run._verify_remote_directory"), mock.patch("run.scp_to"), mock.patch("run.ssh", side_effect=ssh_fixture), \
                      mock.patch("run.invoke_fence", return_value={"valid": True, "evidence": {"state": "running"}}), \
                      mock.patch("run._preflight_boot_ids", return_value={n.name: "01234567-89ab-cdef-0123-456789abcdef" for n in nodes}), \
-                     mock.patch("run._require_live_identity"), mock.patch("run._verify_reboot"), \
+                     mock.patch("run._require_live_identity"), mock.patch("run._verify_reboot", return_value="01234567-89ab-cdef-0123-456789abcdef"), \
                      mock.patch("run._run_m0_linux_parity", return_value=StorageStatus.PASS):
                     result = _provision_workflow(nodes, context, evidence, Path.cwd(),
                                                  inventory_path=root / "inventory", linode_env=root / "env",
@@ -1388,6 +1400,16 @@ class ProvisionTests(unittest.TestCase):
                 self.assertEqual(sum(event.get("event") == "provision" and "node" in event for event in events), 3)
                 if not mutate:
                     self.assertEqual(sum(event.get("event") == "reboot-mask-check" for event in events), 3)
+
+    def test_m0_collector_rejects_symlinked_run_root(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, output = Path(d) / "root", Path(d) / "out"
+            root.mkdir(mode=0o700); output.mkdir(mode=0o700)
+            target = root / "real"; target.mkdir()
+            (root / "run-1").symlink_to(target, target_is_directory=True)
+            result = subprocess.run(["python3", "-c", _M0_COLLECT_SCRIPT, str(root), str(output)],
+                                    capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
 
     def test_m0_log_archive_requires_exact_safe_manifest_hashes(self):
         with tempfile.TemporaryDirectory() as d:

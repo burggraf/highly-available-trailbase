@@ -1347,7 +1347,9 @@ def _copy_m0_source(node: Node, context: RunContext, repository: Path) -> str:
 
 _M0_COLLECT_SCRIPT = r'''import hashlib, json, pathlib, tarfile, sys
 root, output = map(pathlib.Path, sys.argv[1:])
-runs = [path for path in root.iterdir() if path.is_dir() and path.name.startswith("run-")]
+runs = [path for path in root.iterdir() if path.name.startswith("run-")]
+if any(path.is_symlink() or not path.is_dir() for path in runs):
+    raise RuntimeError("unsafe M0 run root")
 evidence = {"run_count": len(runs), "result_present": False, "log_count": 0, "logs": []}
 logs = []
 def safe_relative(path, base):
@@ -1640,6 +1642,7 @@ def _verify_reboot(node: Node, old_boot: str, *, timeout: float = 240.0) -> None
         if (enabled.returncode not in (0, 1) or _stdout(enabled).strip() != "masked"
                 or active.returncode != 3 or _stdout(active).strip() != "inactive"):
             raise RuntimeError("writer service mask did not survive reboot")
+    return new_boot
 
 
 def _append_provision_no_go(evidence: Path | None, repository: Path, *, stage: str, exc: BaseException) -> None:
@@ -1695,7 +1698,7 @@ def _provision_workflow(nodes: list[Node], context: RunContext, evidence: Path, 
                 if not inspected.get("valid") or provider.get("state") != "running":
                     raise RuntimeError("provider identity/state is not confirmed before reboot")
                 _require_live_identity(node, boot_ids[node.name])
-                _verify_reboot(node, boot_ids[node.name])
+                new_boot_id = _verify_reboot(node, boot_ids[node.name])
                 post = ssh(node, ["python3", remote_coordinator, "__remote-verify", context.remote_root],
                            check=False, timeout=REMOTE_PROVISION_TIMEOUT)
                 if post.returncode:
@@ -1706,7 +1709,9 @@ def _provision_workflow(nodes: list[Node], context: RunContext, evidence: Path, 
                     raise RuntimeError("invalid post-reboot verification result") from exc
                 _validate_post_reboot_summary(post_summary, summaries[node.name])
                 append_evidence(evidence, {"event": "reboot-mask-check", "node": node.name,
-                                           "status": "PASS", "services": post_summary["services"],
+                                           "status": "PASS", "old_boot_id": boot_ids[node.name],
+                                           "new_boot_id": new_boot_id,
+                                           "services": post_summary["services"],
                                            "versions": post_summary["versions"],
                                            "binary_versions": post_summary["binary_versions"],
                                            "archives": post_summary["archives"],
