@@ -2742,6 +2742,9 @@ def _validate_task5_cleanup_response(value: Any, requested_paths: list[str]) -> 
         seen.add(item["path"])
     if seen != set(requested_paths):
         raise RuntimeError("Task5 cleanup result does not cover requested paths")
+    expected_status = "PASS" if all(item["result"] == "PASS" for item in value["results"]) else "NO-GO"
+    if value["status"] != expected_status:
+        raise RuntimeError("Task5 cleanup status does not match results")
     return value
 
 

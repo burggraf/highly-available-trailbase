@@ -2187,6 +2187,26 @@ class LitestreamTask5Tests(unittest.TestCase):
             with self.subTest(bad=bad), self.assertRaises(RuntimeError):
                 _validate_task5_cleanup_response(bad, paths)
 
+    def test_task5_cleanup_rejects_pass_with_any_no_go(self):
+        from run import _validate_task5_cleanup_response
+        paths = ["/run/a", "/run/b"]
+        value = {"status": "PASS", "results": [
+            {"path": paths[0], "result": "PASS", "proof": "absent", "error": None},
+            {"path": paths[1], "result": "NO-GO", "proof": "removal-failed", "error": "busy"},
+        ]}
+        with self.assertRaises(RuntimeError):
+            _validate_task5_cleanup_response(value, paths)
+
+    def test_task5_cleanup_rejects_no_go_with_all_pass(self):
+        from run import _validate_task5_cleanup_response
+        paths = ["/run/a", "/run/b"]
+        value = {"status": "NO-GO", "results": [
+            {"path": paths[0], "result": "PASS", "proof": "absent", "error": None},
+            {"path": paths[1], "result": "PASS", "proof": "absent", "error": None},
+        ]}
+        with self.assertRaises(RuntimeError):
+            _validate_task5_cleanup_response(value, paths)
+
     def test_loaded_secret_collision_redacts_position_labels(self):
         with mock.patch("run._LOADED_SECRET_VALUES", {"session", "0000000000000002"}):
             value = redact({"database": "session", "txid": "0000000000000002"})
