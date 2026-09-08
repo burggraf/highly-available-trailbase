@@ -36,7 +36,7 @@ from run import (
     reconcile_epoch_ledger, validate_litestream_task5_help, _parse_task5_list_keys, _validate_support_archive_members, _parse_task5_log_stat, _task5_validate_log_text, _TASK5_REMOTE_SCRIPT, _task5_prepare_runtime_root, _json_object_without_duplicates,
     _task5_bounded_failure_detail, _task5_remote_json, _task5_stop_unit, _task5_attest_preserved_logs,
     _task5_attest_preserved_runtime, _task5_sensitive_cleanup_order, _task5_removable_paths,
-    _task5_retained_inventory,
+    _task5_retained_inventory, _task5_attest_retained_candidates, _task5_attest_local_candidates,
     _raise_scp_failure,
 )
 
@@ -2320,6 +2320,10 @@ class LitestreamTask5Tests(unittest.TestCase):
                        if json.loads(line).get("operation") == "task5-cleanup-node"]
             self.assertEqual([event["node"] for event in cleanup], ["fm1", "fm2", "fm3"])
             self.assertTrue(all(not event["attempted"] and not event["prepared"] for event in cleanup))
+            final = json.loads(evidence.read_text().splitlines()[-1])
+            self.assertEqual(final["local_control_cleanup"], [{"path": str(local_root / "task5-remote.py"), "state": "absent"}])
+            self.assertEqual(final["local_retained_evidence"], [])
+            self.assertFalse((local_root / "task5-remote.py").exists())
 
     def test_cross_host_bootstrap_failure_cleans_only_prepared_nodes(self):
         nodes = [node(name) for name in ("fm1", "fm2", "fm3")]
@@ -2463,6 +2467,43 @@ class LitestreamTask5Tests(unittest.TestCase):
             {"database": "session", "txid": "0000000000000002"},
             {"database": "aux", "txid": "0000000000000003"},
         ])
+
+    def test_retained_attestation_emits_only_present_no_follow_metadata(self):
+        candidates = {"binaries": ["/run/bin"], "ledgers": ["/run/missing"]}
+        present = subprocess.CompletedProcess([], 0, b"d\t0\t0\t700\t/run/bin\n", b"")
+        missing = subprocess.CompletedProcess([], 1, b"", b"missing\n")
+        with mock.patch("run.ssh", side_effect=[present, missing]):
+            records = _task5_attest_retained_candidates(node(), candidates)
+        self.assertEqual(records, [{"category": "binaries", "path": "/run/bin", "state": "present",
+                                    "type": "directory", "uid": 0, "gid": 0, "mode": 0o700}])
+
+    def test_local_retained_positions_use_lstat_and_omit_missing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            selected = root / "e1-positions.json"; selected.write_text("{}")
+            selected.chmod(0o600)
+            records = _task5_attest_local_candidates(root, {"positions": [str(selected), str(root / "e2-positions.json")]})
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["state"], "present")
+        self.assertEqual(records[0]["type"], "regular file")
+        self.assertEqual(records[0]["mode"], 0o600)
+
+    def test_task5_retention_registration_precedes_partial_artifact_stages(self):
+        source = inspect.getsource(_cross_host_flow)
+        checks = (
+            ("register_retained(node.name, \"binaries\"", "_task5_install_binaries"),
+            ("register_retained(node.name, \"copied_source\"", "_copy_m0_source"),
+            ("register_retained(\"fm1\", \"databases\"", "_task5_remote_json(fm1, context, m0_dirs[\"fm1\"], \"bootstrap\""),
+            ("register_retained(\"fm1\", \"ledgers\", operations_e1", "operations_e1, timeout=180"),
+            ("register_retained(\"fm2\", \"promoted_data\"", "[\"mkdir\", \"-m\", \"700\", \"-p\""),
+            ("register_retained(\"fm2\", \"restored_data\", oracle1", "_task5_remote_json(fm2, context, m0_dirs[\"fm2\"], \"finite\""),
+            ("register_retained(\"fm3\", \"clean_data\", clean", "_task5_remote_json(fm3, context, m0_dirs[\"fm3\"], \"finite\""),
+        )
+        for registration, side_effect in checks:
+            with self.subTest(registration=registration):
+                self.assertLess(source.index(registration), source.index(side_effect))
+        self.assertNotIn('register_retained("fm2", "ledgers", context.remote_root + "/operations-e1.jsonl")', source)
+        self.assertIn("scrub_local_control", source)
 
     def test_remote_runner_contains_executable_required_stages(self):
         for stage in ('action == "bootstrap"', 'action == "write"', 'action == "sync"',

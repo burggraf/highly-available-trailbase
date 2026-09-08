@@ -3015,6 +3015,65 @@ def _task5_read_log(node: Node, path: str) -> str:
         raise RuntimeError("Task5 process log is not UTF-8") from exc
 
 
+def _task5_attest_retained_candidates(node: Node, candidates: dict[str, list[str]]) -> list[dict[str, Any]]:
+    """Bounded no-follow metadata for existing remote retained candidates only."""
+    type_names = {"d": "directory", "f": "regular file", "l": "symbolic link", "s": "socket",
+                  "p": "fifo", "c": "character device", "b": "block device"}
+    flattened = [(category, path) for category, paths in candidates.items() for path in paths]
+    if len(flattened) > 256:
+        raise RuntimeError("Task5 retained inventory exceeds bound")
+    records: list[dict[str, Any]] = []
+    for category, path in flattened:
+        result = ssh(node, ["find", "-P", path, "-maxdepth", "0", "-printf", "%y\\t%u\\t%g\\t%m\\t%p\\n"], check=False)
+        if result.returncode:
+            continue
+        raw = getattr(result, "stdout", b"")
+        if isinstance(raw, str):
+            raw = raw.encode("utf-8")
+        if len(raw) > 4096:
+            raise RuntimeError("Task5 retained metadata exceeds bound")
+        fields = _stdout(result).strip().split("\t")
+        if len(fields) != 5 or fields[4] != path or fields[0] not in type_names:
+            continue
+        try:
+            uid, gid, mode = int(fields[1]), int(fields[2]), int(fields[3], 8)
+        except ValueError as exc:
+            raise RuntimeError(f"invalid Task5 retained metadata for {node.name}") from exc
+        if uid < 0 or gid < 0 or mode < 0:
+            raise RuntimeError(f"invalid Task5 retained metadata for {node.name}")
+        records.append({"category": category, "path": path, "state": "present", "type": type_names[fields[0]],
+                        "uid": uid, "gid": gid, "mode": mode})
+    return records
+
+
+def _task5_attest_local_candidates(root: Path, candidates: dict[str, list[str]]) -> list[dict[str, Any]]:
+    """Bounded no-follow metadata for existing private local evidence only."""
+    root = Path(root).absolute()
+    flattened = [(category, Path(path)) for category, paths in candidates.items() for path in paths]
+    if len(flattened) > 64:
+        raise RuntimeError("Task5 local retained inventory exceeds bound")
+    type_names = {stat.S_IFDIR: "directory", stat.S_IFREG: "regular file", stat.S_IFLNK: "symbolic link",
+                  stat.S_IFSOCK: "socket", stat.S_IFIFO: "fifo", stat.S_IFCHR: "character device",
+                  stat.S_IFBLK: "block device"}
+    records: list[dict[str, Any]] = []
+    for category, path in flattened:
+        path = path.absolute()
+        try:
+            path.relative_to(root)
+        except ValueError as exc:
+            raise ValueError("local retained evidence escapes run root") from exc
+        try:
+            value = path.lstat()
+        except FileNotFoundError:
+            continue
+        kind = stat.S_IFMT(value.st_mode)
+        if kind not in type_names:
+            raise RuntimeError("invalid local retained metadata")
+        records.append({"category": category, "path": str(path), "state": "present", "type": type_names[kind],
+                        "uid": value.st_uid, "gid": value.st_gid, "mode": stat.S_IMODE(value.st_mode)})
+    return records
+
+
 def _task5_attest_preserved_runtime(node: Node, roots: list[str]) -> list[dict[str, Any]]:
     """Attest runtime trees before failure cleanup; sockets must remain available for review."""
     if not roots or len(roots) != len(set(roots)):
@@ -3476,9 +3535,18 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
     remote_files: dict[str, list[str]] = {node.name: [] for node in nodes}
     sensitive_files: dict[str, list[str]] = {node.name: [] for node in nodes}
     runtime_roots: dict[str, list[str]] = {node.name: [] for node in nodes}
+    runtime_candidates: dict[str, list[str]] = {node.name: [] for node in nodes}
     retained_evidence: dict[str, dict[str, list[str]]] = {
         node.name: _task5_retained_inventory() for node in nodes
     }
+    retained_attestation: dict[str, list[dict[str, Any]]] = {node.name: [] for node in nodes}
+    local_position_candidates = {"positions": [
+        str(context.local_root / "e1-positions.json"),
+        str(context.local_root / "e1-initial-positions.json"),
+        str(context.local_root / "e2-positions.json"),
+    ]}
+    local_position_attestation: list[dict[str, Any]] = []
+    local_control_cleanup: list[dict[str, str]] = []
     process_cleanup_failures: dict[str, list[str]] = {node.name: [] for node in nodes}
     def register_cleanup_candidate(node_name: str, path: str) -> None:
         if path not in remote_files[node_name]:
@@ -3509,16 +3577,18 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
     support_archive: Path | None = None
     stage = "initialize"
     pins_path = context.local_root / "ssh-pins"
+    script = context.local_root / "task5-remote.py"
     try:
         pins_path.mkdir(mode=0o700)
         _SSH_KNOWN_HOSTS = build_pinned_known_hosts(nodes, pins_path / "pins")
         if _task5_s3_inventory(client, f"qualification/{context.run_id}/"):
             raise RuntimeError("Task5 S3 run prefix already exists")
-        script = context.local_root / "task5-remote.py"
         if True:
             script.write_text(_TASK5_REMOTE_SCRIPT, encoding="utf-8"); script.chmod(0o700)
             for node in nodes:
                 stage = f"prepare-{node.name}"
+                register_retained(node.name, "binaries", context.remote_root + "/bin")
+                register_retained(node.name, "copied_source", context.remote_root + "/source/experiments/m0")
                 ensure_remote_root(node, context)
                 prepared_nodes.add(node.name)
                 for service in _WRITER_UNITS:
@@ -3527,13 +3597,14 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
                     if enabled != "masked" or active not in {"inactive", "failed"}:
                         raise RuntimeError(f"writer service safety primitive failed on {node.name}")
                 binaries[node.name] = _task5_install_binaries(node, context)
-                register_retained(node.name, "binaries", context.remote_root + "/bin/trail")
-                register_retained(node.name, "binaries", context.remote_root + "/bin/litestream")
-                m0_dirs[node.name] = _copy_m0_source(node, context, repository)
-                register_retained(node.name, "copied_source", m0_dirs[node.name])
+                m0_dirs[node.name] = context.remote_root + "/source/experiments/m0"
+                copied_source = _copy_m0_source(node, context, repository)
+                if copied_source != m0_dirs[node.name]:
+                    register_retained(node.name, "copied_source", copied_source)
+                    m0_dirs[node.name] = copied_source
                 remote_script = context.remote_root + "/task5-remote.py"
+                register_cleanup_candidate(node.name, remote_script)
                 scp_to(node, script, remote_script)
-                remote_files[node.name].append(remote_script)
                 cleanup_ready_nodes.add(node.name)
             append_evidence(evidence, {"operation": "task5-init", "run_id": context.run_id,
                 "remote_root": context.remote_root, "nodes": sorted(by_name), "services": "masked-and-inactive",
@@ -3542,25 +3613,23 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
             stage = "bootstrap-fixture"
             trail1, lite1 = binaries["fm1"]
             fixture = context.remote_root + "/fixture"
+            register_retained("fm1", "databases", fixture)
             register_sensitive_candidate("fm1", fixture + "/fixture-private.json")
             for depot in ("a", "b", "c"):
                 register_sensitive_candidate("fm1", fixture + f"/{depot}/traildepot/config.textproto")
                 register_sensitive_candidate("fm1", fixture + f"/{depot}/traildepot/secrets")
             bootstrap = _task5_remote_json(fm1, context, m0_dirs["fm1"], "bootstrap", trail1, lite1, fixture, timeout=180)
             depot1 = bootstrap["depot"]; source1 = depot1 + "/data"
-            for depot in ("a", "b", "c"):
-                for name in _LITESTREAM_DATABASES:
-                    register_retained("fm1", "databases", fixture + f"/{depot}/traildepot/data/{name}.db")
             promoted = context.remote_root + "/promoted"; promoted_data = promoted + "/data"
             clean = context.remote_root + "/clean-e2"; clean_data = clean + "/data"
+            register_retained("fm2", "promoted_data", promoted)
             if ssh(fm2, ["mkdir", "-m", "700", "-p", "--", promoted_data], check=False).returncode:
                 raise RuntimeError("could not create restore depot on fm2")
-            register_retained("fm2", "promoted_data", promoted_data)
             source_dirs = {"fm2": context.remote_root + "/e1-source", "fm3": context.remote_root + "/e2-source"}
             for node_name, source_dir in source_dirs.items():
                 register_cleanup_candidate(node_name, source_dir)
-                _task5_prepare_source_directory(by_name[node_name], source_dir)
                 register_retained(node_name, "copied_source", source_dir)
+                _task5_prepare_source_directory(by_name[node_name], source_dir)
 
             stage = "write-private-configs"
             staging = context.local_root / "runtime"; staging.mkdir(mode=0o700)
@@ -3573,6 +3642,9 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
             configs: dict[str, str] = {}
             envs: dict[str, str] = {}
             for label, (node, epoch, source_root, runtime_root) in config_specs.items():
+                register_cleanup_candidate(node.name, runtime_root)
+                register_cleanup_candidate(node.name, runtime_root + "/litestream.sock")
+                runtime_candidates[node.name].append(runtime_root)
                 _task5_prepare_runtime_root(node, runtime_root)
                 runtime_roots[node.name].append(runtime_root)
                 local_config = write_litestream_s3_config(staging / label, context.run_id, epoch,
@@ -3593,10 +3665,10 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
                 if mode != ["600", "600"]: raise RuntimeError("remote Task5 config/env mode mismatch")
 
             stage = "epoch-e1"
+            register_retained("fm1", "logs", context.remote_root + "/logs")
             upload1_logs = _task5_prepare_log_paths(fm1, context.remote_root, units["e1-uploader"])
             unit_logs[units["e1-uploader"]] = upload1_logs
             log_paths_by_node["fm1"].extend(upload1_logs)
-            register_retained("fm1", "logs", context.remote_root + "/logs")
             uploader1 = task5_unit_argv(units["e1-uploader"], envs["fm1-e1"],
                 [lite1, "replicate", "-config", configs["fm1-e1"]], stdout_path=upload1_logs[0], stderr_path=upload1_logs[1])
             started_units.add((fm1.name, units["e1-uploader"])); _task5_start_unit(fm1, uploader1); unit_configs.append((fm1, units["e1-uploader"], configs["fm1-e1"]))
@@ -3610,16 +3682,16 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
                 stdout_path, stderr_path = _task5_prepare_log_paths(fm2, context.remote_root, unit)
                 unit_logs[unit] = (stdout_path, stderr_path)
                 log_paths_by_node["fm2"].extend((stdout_path, stderr_path))
-                register_retained("fm2", "logs", context.remote_root + "/logs")
                 argv = task5_unit_argv(unit, envs["fm2-e1"], [lite2, "restore", "-config", configs["fm2-e1"],
                     "-f", "-follow-interval", "1s", "-o", promoted_data + f"/{name}.db",
                     source_dirs["fm2"] + f"/{name}.db"],
                     stdout_path=stdout_path, stderr_path=stderr_path)
                 started_units.add((fm2.name, unit)); _task5_start_unit(fm2, argv); unit_configs.append((fm2, unit, configs["fm2-e1"]))
 
+            operations_e1 = context.remote_root + "/operations-e1.jsonl"
+            register_retained("fm1", "ledgers", operations_e1)
             write1 = _task5_remote_json(fm1, context, m0_dirs["fm1"], "write", trail1, depot1, "e1",
-                                         context.remote_root + "/operations-e1.jsonl", timeout=180)
-            register_retained("fm1", "ledgers", context.remote_root + "/operations-e1.jsonl")
+                                         operations_e1, timeout=180)
             append_evidence(evidence, {"operation": "task5-http-writes", **write1}, repository)
             sync1 = _task5_remote_json(fm1, context, m0_dirs["fm1"], "sync", lite1, configs["fm1-e1"], context.remote_root + "/fm1-e1/litestream.sock", source1)
             positions1 = context.local_root / "e1-positions.json"; positions1.write_text(json.dumps(sync1["positions"])); positions1.chmod(0o600)
@@ -3638,16 +3710,14 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
             unit_configs = [item for item in unit_configs if item[1] != units["e1-uploader"]]
 
             oracle1 = context.remote_root + "/finite-e1"
+            register_retained("fm2", "restored_data", oracle1)
             finite1 = _task5_remote_json(fm2, context, m0_dirs["fm2"], "finite", lite2, configs["fm2-e1"], oracle1,
                                           remote_positions1, source_dirs["fm2"], timeout=600)
             followed1 = _task5_remote_json(fm2, context, m0_dirs["fm2"], "summaries", promoted_data)["databases"]
             restored1 = _task5_remote_json(fm2, context, m0_dirs["fm2"], "summaries", oracle1)["databases"]
-            register_retained("fm2", "restored_data", oracle1)
-            for name in _LITESTREAM_DATABASES:
-                register_retained("fm2", "databases", promoted_data + f"/{name}.db")
-                register_retained("fm2", "databases", oracle1 + f"/{name}.db")
+            register_retained("fm2", "databases", promoted_data)
+            register_retained("fm2", "databases", oracle1)
             if not compare_database_summaries(followed1, restored1): raise RuntimeError("e1 follower and finite restore differ")
-            register_retained("fm2", "ledgers", context.remote_root + "/operations-e1.jsonl")
             reconcile_epoch_ledger(write1["operations"], restored1)
             append_evidence(evidence, {"operation": "task5-e1-compare", "positions": _task5_position_records(finite1["positions"]),
                                        "databases": followed1, "match": True}, repository)
@@ -3665,18 +3735,19 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
 
             stage = "epoch-e2"
             trail2, _ = binaries["fm2"]
+            register_retained("fm2", "logs", context.remote_root + "/logs")
+            operations_e2 = context.remote_root + "/operations-e2.jsonl"
+            register_retained("fm2", "ledgers", operations_e2)
             upload2_logs = _task5_prepare_log_paths(fm2, context.remote_root, units["e2-uploader"])
             unit_logs[units["e2-uploader"]] = upload2_logs
             log_paths_by_node["fm2"].extend(upload2_logs)
-            register_retained("fm2", "logs", context.remote_root + "/logs")
             uploader2 = task5_unit_argv(units["e2-uploader"], envs["fm2-e2"],
                 [lite2, "replicate", "-config", configs["fm2-e2"]], stdout_path=upload2_logs[0], stderr_path=upload2_logs[1])
             started_units.add((fm2.name, units["e2-uploader"])); _task5_start_unit(fm2, uploader2); unit_configs.append((fm2, units["e2-uploader"], configs["fm2-e2"]))
             _task5_wait_socket(fm2, context.remote_root + "/fm2-e2/litestream.sock", units["e2-uploader"])
             write2 = _task5_remote_json(fm2, context, m0_dirs["fm2"], "write", trail2, promoted, "e2",
-                                         context.remote_root + "/operations-e2.jsonl", timeout=180)
+                                         operations_e2, timeout=180)
             append_evidence(evidence, {"operation": "task5-http-writes", **write2}, repository)
-            register_retained("fm2", "ledgers", context.remote_root + "/operations-e2.jsonl")
             sync2 = _task5_remote_json(fm2, context, m0_dirs["fm2"], "sync", lite2, configs["fm2-e2"], context.remote_root + "/fm2-e2/litestream.sock", promoted_data)
             stopped = _task5_stop_unit(fm2, units["e2-uploader"], configs["fm2-e2"], *unit_logs[units["e2-uploader"]]); append_evidence(evidence, {"operation": "task5-process-stop", **stopped}, repository)
             unit_configs = []
@@ -3684,13 +3755,12 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
             remote_positions2 = context.remote_root + "/e2-positions.json"; scp_to(fm3, positions2, remote_positions2)
             remote_files["fm3"].append(remote_positions2)
             _, lite3 = binaries["fm3"]
+            register_retained("fm3", "clean_data", clean)
             finite2 = _task5_remote_json(fm3, context, m0_dirs["fm3"], "finite", lite3, configs["fm3-e2"], clean_data,
                                           remote_positions2, context.remote_root + "/e2-source", timeout=600)
             promoted2 = _task5_remote_json(fm2, context, m0_dirs["fm2"], "summaries", promoted_data)["databases"]
             restored2 = _task5_remote_json(fm3, context, m0_dirs["fm3"], "summaries", clean_data)["databases"]
-            register_retained("fm3", "clean_data", clean_data)
-            for name in _LITESTREAM_DATABASES:
-                register_retained("fm3", "databases", clean_data + f"/{name}.db")
+            register_retained("fm3", "databases", clean_data)
             if not compare_database_summaries(promoted2, restored2): raise RuntimeError("e2 promoted files and clean restore differ")
             reconcile_epoch_ledger(write1["operations"] + write2["operations"], restored2)
             append_evidence(evidence, {"operation": "task5-e2-compare", "positions": _task5_position_records(finite2["positions"]),
@@ -3738,12 +3808,32 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
                         preserved = _task5_attest_preserved_logs(node, paths)
                         append_evidence(evidence, {"operation": "task5-preserved-logs", "node": node.name,
                                                    "logs": preserved}, repository)
-                    if runtime_roots[node.name]:
-                        preserved_runtime = _task5_attest_preserved_runtime(node, runtime_roots[node.name])
+                    if runtime_candidates[node.name]:
+                        preserved_runtime = _task5_attest_preserved_runtime(node, runtime_candidates[node.name])
                         append_evidence(evidence, {"operation": "task5-preserved-runtime", "node": node.name,
                                                    "runtime": preserved_runtime}, repository)
                 except Exception as exc:
                     cleanup_failures.append(f"preserve:{node.name}:{type(exc).__name__}")
+            try:
+                retained_attestation[node.name] = _task5_attest_retained_candidates(
+                    node, retained_evidence[node.name])
+                if retained_attestation[node.name]:
+                    present = {record["path"] for record in retained_attestation[node.name]}
+                    retained_evidence[node.name] = {
+                        category: [path for path in paths if path in present]
+                        for category, paths in retained_evidence[node.name].items()
+                    }
+                if primary_flow_failed:
+                    runtime_attestation_candidates = {"runtime": [path for root in runtime_candidates[node.name]
+                                                                     for path in (root, root + "/litestream.sock")]}
+                    retained_attestation[node.name].extend(
+                        _task5_attest_retained_candidates(node, runtime_attestation_candidates))
+            except Exception as exc:
+                cleanup_failures.append(f"attest:{node.name}:{type(exc).__name__}")
+        try:
+            local_position_attestation = _task5_attest_local_candidates(context.local_root, local_position_candidates)
+        except Exception as exc:
+            cleanup_failures.append(f"attest:local:{type(exc).__name__}")
         for node in nodes:
             cleanup_attempted = False
             cleanup_result = "SKIPPED"
@@ -3764,9 +3854,11 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
                     cleanup_failures.append(f"sensitive:{node.name}:{type(exc).__name__}")
                 general_paths = _task5_removable_paths(remote_files[node.name], retained_evidence[node.name])
                 if not primary_flow_failed:
-                    general_paths.extend(runtime_roots[node.name])
-                    if log_paths_by_node[node.name] and context.remote_root + "/logs" not in retained_evidence[node.name]["logs"]:
-                        general_paths.append(context.remote_root + "/logs")
+                    general_paths = list(dict.fromkeys(general_paths))
+                else:
+                    runtime_paths = {path for root in runtime_candidates[node.name]
+                                     for path in (root, root + "/litestream.sock")}
+                    general_paths = [path for path in general_paths if path not in runtime_paths]
                 try:
                     general_result = _task5_remote_cleanup(node, context, m0_dirs[node.name], general_paths)
                     general_result = _validate_task5_cleanup_response(general_result, general_paths)
@@ -3786,16 +3878,34 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
                                            "attempted": cleanup_attempted,
                                            "result": cleanup_result, "reason": cleanup_reason,
                                            "pass_scope": ["stopped processes", "removed credentials/configs/temporary control files"],
+                                           "pass_scope_text": "PASS covers stopped Task5 processes and removed remote credentials/configs/processes/temporary control files; local positions and remote raw evidence are retained.",
                                            "retained_evidence": {category: sorted(paths) for category, paths in retained_evidence[node.name].items()},
+                                           "retained_attestation": retained_attestation[node.name],
                                            "processes": {"status": "PASS" if not process_cleanup_failures[node.name] else "NO-GO",
                                                          "failures": process_cleanup_failures[node.name]},
                                            "sensitive": sensitive_result, "general": general_result}, repository)
             except Exception as exc:
                 cleanup_failures.append(f"evidence:{node.name}:{type(exc).__name__}")
+        def scrub_local_control() -> None:
+            candidate = script.absolute()
+            try:
+                candidate.relative_to(context.local_root.absolute())
+            except ValueError as exc:
+                raise ValueError("Task5 local control escapes run root") from exc
+            if os.path.lexists(candidate):
+                value = candidate.lstat()
+                if not (stat.S_ISREG(value.st_mode) or stat.S_ISLNK(value.st_mode)):
+                    raise RuntimeError("Task5 local remote-control script is not removable")
+                candidate.unlink()
+            if os.path.lexists(candidate):
+                raise RuntimeError("Task5 local remote-control script remains")
+            local_control_cleanup.append({"path": str(candidate), "state": "absent"})
+
         for cleanup_action in (
             lambda: scrub_private_tree(context.local_root / "runtime", context.local_root),
             lambda: support_archive.unlink(missing_ok=True) if support_archive is not None else None,
             lambda: scrub_private_tree(pins_path, context.local_root),
+            scrub_local_control,
         ):
             try:
                 cleanup_action()
@@ -3804,13 +3914,17 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
         try:
             append_evidence(evidence, {"operation": "task5-cleanup", "result": "PASS" if not cleanup_failures else "NO-GO",
                                        "pass_scope": ["stopped processes", "removed credentials/configs/temporary control files"],
+                                       "pass_scope_text": "PASS covers stopped Task5 processes and removed remote credentials/configs/processes/temporary control files; local positions and remote raw evidence are retained.",
                                        "retained_evidence": {node.name: {category: sorted(paths) for category, paths in retained_evidence[node.name].items()} for node in nodes},
+                                       "retained_attestation": retained_attestation,
+                                       "local_retained_evidence": local_position_attestation,
+                                       "local_control_cleanup": local_control_cleanup,
                                        "failures": cleanup_failures}, repository)
         except Exception:
             pass
         _SSH_KNOWN_HOSTS = None; _REMOTE_ROOT = None
         if cleanup_failures:
-            raise RuntimeError("Task5 cleanup did not complete")
+            raise RuntimeError("Task5 cleanup did not complete: " + ";".join(cleanup_failures))
 
 
 def cross_host(nodes: list[Node], context: RunContext, evidence: Path, repository: Path,
