@@ -1095,9 +1095,24 @@ class ProvisionTests(unittest.TestCase):
     def test_installed_package_query_uses_dpkg_status_field_without_shell_expansion(self):
         installed = subprocess.CompletedProcess([], 0, "install ok installed", "")
         with mock.patch("run.subprocess.run", return_value=installed) as execute:
-            self.assertEqual(_install_required_packages(), [])
+            self.assertEqual(_install_required_packages(), ["ca-certificates", "curl", "python3", "sqlite3", "unzip"])
         self.assertEqual(execute.call_count, 5)
         self.assertTrue(all(call.args[0][2] == "-f=${Status}" for call in execute.call_args_list))
+
+    def test_newly_installed_packages_are_requeried_and_reported_completely(self):
+        calls = []
+        def run(argv, **kwargs):
+            calls.append(argv)
+            if argv[0] == "dpkg-query":
+                package = argv[-1]
+                queried = len([call for call in calls if call[0] == "dpkg-query"])
+                installed = queried > 5 or package in {"ca-certificates", "curl", "python3"}
+                return subprocess.CompletedProcess(argv, 0 if installed else 1,
+                                                   "install ok installed" if installed else "", "")
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        with mock.patch("run.subprocess.run", side_effect=run):
+            self.assertEqual(_install_required_packages(), ["ca-certificates", "curl", "python3", "sqlite3", "unzip"])
+        self.assertEqual([call[0] for call in calls].count("apt-get"), 2)
 
     def test_versions_are_exact(self):
         trail = "trail v0.33.11-0-gf24291b8 (2026-09-04)\nsqlite: 3.53.2\n"
@@ -1123,10 +1138,12 @@ class ProvisionTests(unittest.TestCase):
         machine = "x86_64"
         trail = artifact_for("trailbase", machine).executable_sha256
         litestream = artifact_for("litestream", machine).executable_sha256
-        results = [{"scenario": scenario, "iteration": iteration, "status": "PASS"}
+        results = [{"scenario": scenario, "iteration": iteration, "status": "PASS",
+                    "evidence": {"logs_ref": "logs/"}}
                    for iteration in range(1, 4)
                    for scenario in ("follow", "graceful", "crash", "lagged-crash")]
-        results.append({"scenario": "guards", "iteration": 1, "status": "PASS"})
+        results.append({"scenario": "guards", "iteration": 1, "status": "PASS",
+                        "evidence": {"logs_ref": "logs/"}})
         aggregate = {"scenario": "all", "status": "PASS", "repeat": 3,
                      "platform": {"system": "Linux", "machine": machine},
                      "trail_sha256": trail, "litestream_sha256": litestream, "results": results}
@@ -1140,6 +1157,8 @@ class ProvisionTests(unittest.TestCase):
                              ("trail_sha256", "0" * 64), ("litestream_sha256", "0" * 64)):
             mutations.append(({**aggregate, field: value}, manifest, result_digest))
         mutations.extend([
+            ({**aggregate, "results": [{**results[0], "evidence": {}}] + results[1:]}, manifest, result_digest),
+            ({**aggregate, "results": [{**results[0], "evidence": {"logs_ref": "logs/other/"}}] + results[1:]}, manifest, result_digest),
             ({**aggregate, "platform": {"system": "Darwin", "machine": machine}}, manifest, result_digest),
             ({**aggregate, "platform": {"system": "Linux", "machine": "aarch64"}}, manifest, result_digest),
             ({**aggregate, "results": results[:-1] + [{**results[-1], "scenario": "follow"}]}, manifest, result_digest),
@@ -1339,7 +1358,7 @@ class ProvisionTests(unittest.TestCase):
     def test_provision_summary_and_reboot_parity_are_exact(self):
         machine = "x86_64"
         trail = "trail v0.33.11-0-gf24291b8 (2026-09-04)\nsqlite: 3.53.2"
-        summary = {"status": "PASS", "architecture": machine, "installed_packages": [],
+        summary = {"status": "PASS", "architecture": machine, "installed_packages": ["ca-certificates", "curl", "python3", "sqlite3", "unzip"],
                    "versions": {"trailbase": "0.33.11", "litestream": "0.5.17"},
                    "binary_versions": {"trailbase": {"reported": trail, "build": "v0.33.11-0-gf24291b8",
                                                         "embedded_sqlite_version": "3.53.2"},
@@ -1349,8 +1368,14 @@ class ProvisionTests(unittest.TestCase):
                    "services": {"hat-trailbase.service": "masked-and-inactive",
                                 "hat-litestream.service": "masked-and-inactive"}}
         _validate_provision_summary(summary)
-        post = {key: summary[key] for key in summary if key != "installed_packages"}
+        for packages in (summary["installed_packages"][:-1], [*summary["installed_packages"], "unexpected"]):
+            with self.assertRaises(RuntimeError):
+                _validate_provision_summary({**summary, "installed_packages": packages})
+        post = dict(summary)
         _validate_post_reboot_summary(post, summary)
+        for packages in (summary["installed_packages"][:-1], [*summary["installed_packages"], "unexpected"]):
+            with self.assertRaises(RuntimeError):
+                _validate_post_reboot_summary({**post, "installed_packages": packages}, summary)
         for field in ("archives", "executables", "versions", "binary_versions", "services"):
             changed = dict(post)
             changed[field] = dict(post[field])
@@ -1361,7 +1386,7 @@ class ProvisionTests(unittest.TestCase):
     def test_three_node_provision_fixture_records_reboot_parity_and_mutation_no_go(self):
         machine = "x86_64"
         trail = "trail v0.33.11-0-gf24291b8 (2026-09-04)\nsqlite: 3.53.2"
-        summary = {"status": "PASS", "architecture": machine, "installed_packages": [],
+        summary = {"status": "PASS", "architecture": machine, "installed_packages": ["ca-certificates", "curl", "python3", "sqlite3", "unzip"],
                    "versions": {"trailbase": "0.33.11", "litestream": "0.5.17"},
                    "binary_versions": {"trailbase": {"reported": trail, "build": "v0.33.11-0-gf24291b8",
                                                         "embedded_sqlite_version": "3.53.2"},
@@ -1376,7 +1401,7 @@ class ProvisionTests(unittest.TestCase):
         for mutate in (False, True):
             with self.subTest(mutate=mutate), tempfile.TemporaryDirectory() as d:
                 root = Path(d); evidence = root / "evidence.jsonl"
-                post = {key: summary[key] for key in summary if key != "installed_packages"}
+                post = dict(summary)
                 if mutate:
                     post["executables"] = dict(post["executables"])
                     post["executables"]["trailbase"] = "0" * 64
@@ -1414,9 +1439,10 @@ class ProvisionTests(unittest.TestCase):
                         _download_public("https://github.com/start", Path(d) / "artifact", max_bytes=1024)
                 self.assertFalse((Path(d) / "artifact").exists())
 
-    def test_archive_member_rejects_any_backslash(self):
-        for name in ("logs\\evil.log", "logs\\\\evil.log", "logs/../evil.log"):
+    def test_archive_member_rejects_any_backslash_or_non_logs_path(self):
+        for name in ("logs\\evil.log", "logs\\\\evil.log", "logs/../evil.log", "README.md", "evil.log", "logs/"):
             self.assertFalse(_safe_archive_member(name))
+        self.assertTrue(_safe_archive_member("logs/worker.log"))
 
     def test_m0_collector_rejects_symlinked_run_root(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1439,8 +1465,22 @@ class ProvisionTests(unittest.TestCase):
                                                    "sha256": hashlib.sha256(data).hexdigest()}]}
             self.assertTrue(_validate_m0_log_archive(archive_path, manifest))
             for mutation in ({**manifest, "logs": [{"path": "../escape", "sha256": manifest["logs"][0]["sha256"]}]},
+                             {**manifest, "logs": [{"path": "README.md", "sha256": manifest["logs"][0]["sha256"]}]},
+                             {**manifest, "logs": [*manifest["logs"], manifest["logs"][0]]},
                              {**manifest, "logs": [{"path": "logs/worker.log", "sha256": "0" * 64}]}):
                 self.assertFalse(_validate_m0_log_archive(archive_path, mutation))
+
+    def test_m0_archive_rejects_non_logs_tar_member_and_duplicate_members(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); data = b"partial log\\n"
+            manifest = {"log_count": 1, "logs": [{"path": "logs/worker.log", "sha256": hashlib.sha256(data).hexdigest()}]}
+            for member_names in (("logs/worker.log", "README.md"), ("logs/worker.log", "logs/worker.log")):
+                archive_path = root / ("-".join(member_names).replace("/", "_") + ".tar.gz")
+                with tarfile.open(archive_path, "w:gz") as archive:
+                    for name in member_names:
+                        info = tarfile.TarInfo(name); info.size = len(data)
+                        archive.addfile(info, io.BytesIO(data))
+                self.assertFalse(_validate_m0_log_archive(archive_path, manifest))
 
 
 if __name__ == "__main__": unittest.main()

@@ -140,6 +140,18 @@ def missing_packages(installed: set[str]) -> list[str]:
     return sorted(set(_REQUIRED_PACKAGES) - installed)
 
 
+def _query_required_packages() -> list[str]:
+    installed = set()
+    for package in _REQUIRED_PACKAGES:
+        result = subprocess.run(
+            ["dpkg-query", "-W", "-f=${Status}", package], capture_output=True, text=True,
+            check=False, timeout=30,
+        )
+        if result.returncode == 0 and result.stdout.strip() == "install ok installed":
+            installed.add(package)
+    return sorted(installed)
+
+
 def validate_binary_version(product: str, output: str) -> str:
     patterns = {
         "trailbase": r"^trail v0\.33\.11-[0-9]+-g[0-9a-f]{8} \(\d{4}-\d{2}-\d{2}\)\nsqlite: \d+\.\d+\.\d+\n?$",
@@ -173,7 +185,7 @@ _PROVISION_SUMMARY_KEYS = {
     "status", "architecture", "installed_packages", "versions", "binary_versions",
     "archives", "executables", "services",
 }
-_POST_REBOOT_SUMMARY_KEYS = _PROVISION_SUMMARY_KEYS - {"installed_packages"}
+_POST_REBOOT_SUMMARY_KEYS = _PROVISION_SUMMARY_KEYS
 
 
 def _validate_provision_summary(summary: Any) -> dict[str, Any]:
@@ -186,7 +198,7 @@ def _validate_provision_summary(summary: Any) -> dict[str, Any]:
     specs = {product: artifact_for(product, machine) for product in ("trailbase", "litestream")}
     packages = summary["installed_packages"]
     if (not isinstance(packages, list) or any(not isinstance(item, str) for item in packages)
-            or packages != sorted(set(packages)) or not set(packages) <= set(_REQUIRED_PACKAGES)):
+            or packages != sorted(set(packages)) or packages != sorted(_REQUIRED_PACKAGES)):
         raise RuntimeError("remote provisioning package summary mismatch")
     if summary["versions"] != {product: spec.version for product, spec in specs.items()}:
         raise RuntimeError("remote provisioning version summary mismatch")
@@ -223,8 +235,8 @@ def _validate_provision_summary(summary: Any) -> dict[str, Any]:
 def _validate_post_reboot_summary(summary: Any, initial: dict[str, Any]) -> None:
     if not isinstance(summary, dict) or set(summary) != _POST_REBOOT_SUMMARY_KEYS:
         raise RuntimeError("post-reboot provisioning summary schema mismatch")
-    _validate_provision_summary({**summary, "installed_packages": initial["installed_packages"]})
-    for field in ("architecture", "versions", "binary_versions", "archives", "executables", "services"):
+    _validate_provision_summary(summary)
+    for field in ("architecture", "installed_packages", "versions", "binary_versions", "archives", "executables", "services"):
         if summary[field] != initial[field]:
             raise RuntimeError(f"post-reboot {field} changed")
 
@@ -1152,14 +1164,7 @@ def _release_api(spec: Artifact) -> str:
 
 
 def _install_required_packages() -> list[str]:
-    installed = set()
-    for package in _REQUIRED_PACKAGES:
-        result = subprocess.run(
-            ["dpkg-query", "-W", "-f=${Status}", package], capture_output=True, text=True,
-            check=False, timeout=30,
-        )
-        if result.returncode == 0 and result.stdout.strip() == "install ok installed":
-            installed.add(package)
+    installed = set(_query_required_packages())
     needed = missing_packages(installed)
     if needed:
         environment = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
@@ -1168,14 +1173,10 @@ def _install_required_packages() -> list[str]:
             ["apt-get", "install", "-y", "--no-install-recommends", *needed],
             env=environment, capture_output=True, check=True, timeout=300,
         )
-    for package in needed:
-        result = subprocess.run(
-            ["dpkg-query", "-W", "-f=${Status}", package], capture_output=True, text=True,
-            check=False, timeout=30,
-        )
-        if result.returncode or result.stdout.strip() != "install ok installed":
-            raise RuntimeError("required package installation did not complete")
-    return needed
+        installed = set(_query_required_packages())
+    if installed != set(_REQUIRED_PACKAGES):
+        raise RuntimeError("required package installation did not complete")
+    return sorted(installed)
 
 
 def _trusted_remote_root(root: Path) -> Path:
@@ -1218,7 +1219,10 @@ def _remote_verify(remote_root: Path) -> dict[str, Any]:
                                        text=True, check=True, timeout=30).stdout
     versions, binary_versions = _binary_version_evidence(trail_output, litestream_output)
     services = {unit: _service_state(unit) for unit in _WRITER_UNITS}
-    return {"status": "PASS", "architecture": machine, "versions": versions,
+    packages = _query_required_packages()
+    if packages != sorted(_REQUIRED_PACKAGES):
+        raise RuntimeError("required package state changed after reboot")
+    return {"status": "PASS", "architecture": machine, "installed_packages": packages, "versions": versions,
             "binary_versions": binary_versions,
             "archives": {spec.product: _remote_hash(downloads / spec.filename) for spec in specs},
             "executables": {spec.product: _remote_hash(binaries / spec.executable) for spec in specs},
@@ -1425,8 +1429,8 @@ def _safe_archive_member(name: Any) -> bool:
     if not isinstance(name, str) or "\\" in name:
         return False
     path = __import__("pathlib").PurePosixPath(name)
-    return (path.as_posix() == name and bool(path.parts) and not path.is_absolute()
-            and all(part not in ("", ".", "..") for part in path.parts))
+    return (path.as_posix() == name and len(path.parts) >= 2 and path.parts[0] == "logs"
+            and not path.is_absolute() and all(part not in ("", ".", "..") for part in path.parts))
 
 
 def _validate_m0_log_archive(archive_path: Path, manifest: Any) -> bool:
@@ -1513,11 +1517,9 @@ def _validate_m0_aggregate(node: Node, expected_architecture: str, aggregate: An
         and manifest.get("result_count") == 13
         and type(manifest.get("log_count")) is int
         and manifest.get("log_count") > 0
-        and (logs_archive is None or (
-            _validate_m0_log_archive(logs_archive, manifest)
-            and all(isinstance(item.get("evidence"), dict)
-                    and item["evidence"].get("logs_ref") == "logs/" for item in results)
-        ))
+        and all(isinstance(item.get("evidence"), dict)
+                and item["evidence"].get("logs_ref") == "logs/" for item in results)
+        and (logs_archive is None or _validate_m0_log_archive(logs_archive, manifest))
     )
 
 
@@ -1749,6 +1751,7 @@ def _provision_workflow(nodes: list[Node], context: RunContext, evidence: Path, 
                                            "status": "PASS", "old_boot_id": boot_ids[node.name],
                                            "new_boot_id": new_boot_id,
                                            "services": post_summary["services"],
+                                           "installed_packages": post_summary["installed_packages"],
                                            "versions": post_summary["versions"],
                                            "binary_versions": post_summary["binary_versions"],
                                            "archives": post_summary["archives"],
