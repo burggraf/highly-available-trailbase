@@ -1433,13 +1433,17 @@ def _scp_failure_category(result: subprocess.CompletedProcess) -> str:
     return "non_transient"
 
 def _safe_process_output(value: Any) -> bytes:
-    return redact(_result_text(value)).encode("utf-8", "replace")
+    detail = _task5_bounded_failure_detail(value)
+    return (detail or "").encode("utf-8")
 
 def _raise_scp_failure(result: subprocess.CompletedProcess, node: Node, check: bool, category: str) -> subprocess.CompletedProcess:
-    safe = subprocess.CompletedProcess(result.args, result.returncode, _safe_process_output(result.stdout), _safe_process_output(result.stderr))
+    # Sanitize before retaining diagnostics: callers must never receive raw SCP output.
+    stdout = _safe_process_output(result.stdout)
+    stderr = _safe_process_output(result.stderr)
+    safe = subprocess.CompletedProcess(result.args, result.returncode, stdout, stderr)
     safe.failure_category = category
     safe.failure_evidence = {"category": category, "returncode": result.returncode,
-                             "stderr": safe.stderr.decode("utf-8", "replace")}
+                             "stderr": stderr.decode("utf-8")}
     if check:
         error = subprocess.CalledProcessError(safe.returncode, ["scp", node.ssh], safe.stdout, safe.stderr)
         error.failure_category = category
@@ -2630,12 +2634,17 @@ def _task5_bounded_failure_detail(stderr: bytes | str | None) -> str | None:
         raw = stderr
     else:
         return None
+    try:
+        detail = redact(raw.decode("utf-8", "strict"))
+        raw = detail.encode("utf-8", "strict")
+    except (UnicodeDecodeError, UnicodeEncodeError):
+        return None
     raw = raw[-_TASK5_FAILURE_DETAIL_MAX_BYTES:]
     try:
         detail = raw.decode("utf-8", "strict")
     except UnicodeDecodeError:
         return None
-    if len(raw) > _TASK5_FAILURE_DETAIL_MAX_BYTES or len(detail) > _TASK5_FAILURE_DETAIL_MAX_BYTES:
+    if len(raw) > _TASK5_FAILURE_DETAIL_MAX_BYTES or len(detail.encode("utf-8")) > _TASK5_FAILURE_DETAIL_MAX_BYTES:
         return None
     if any((ord(char) < 32 and char not in "\t\r\n") or 127 <= ord(char) <= 159 for char in detail):
         return None
@@ -3307,6 +3316,10 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
             stage = "bootstrap-fixture"
             trail1, lite1 = binaries["fm1"]
             fixture = context.remote_root + "/fixture"
+            register_cleanup_candidate("fm1", fixture + "/fixture-private.json")
+            for depot in ("a", "b", "c"):
+                register_cleanup_candidate("fm1", fixture + f"/{depot}/traildepot/config.textproto")
+                register_cleanup_candidate("fm1", fixture + f"/{depot}/traildepot/secrets")
             bootstrap = _task5_remote_json(fm1, context, m0_dirs["fm1"], "bootstrap", trail1, lite1, fixture, timeout=180)
             depot1 = bootstrap["depot"]; source1 = depot1 + "/data"
             promoted = context.remote_root + "/promoted"; promoted_data = promoted + "/data"
@@ -3451,7 +3464,7 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
         try:
             append_evidence(evidence, {"operation": "task5-result", "result": "NO-GO", "stage": stage,
                                        "exception_type": type(exc).__name__, "failure": "cross-host flow did not complete",
-                                       "failure_detail": str(exc)}, repository)
+                                       "failure_detail": _task5_bounded_failure_detail(str(exc))}, repository)
         except Exception:
             pass
         return StorageStatus.NO_GO
@@ -3484,10 +3497,6 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
             paths = list(remote_files[node.name])
             if not primary_flow_failed and log_paths_by_node[node.name]:
                 paths.append(context.remote_root + "/logs")
-            if depot1 is not None and node.name == "fm1":
-                paths.append(context.remote_root + "/fixture/fixture-private.json")
-                paths.extend(context.remote_root + f"/fixture/{depot}/traildepot/config.textproto" for depot in ("a", "b", "c"))
-                paths.extend(context.remote_root + f"/fixture/{depot}/traildepot/secrets" for depot in ("a", "b", "c"))
             cleanup_attempted = False
             cleanup_result = "SKIPPED"
             cleanup_reason = "node-not-prepared"

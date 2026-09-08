@@ -35,6 +35,7 @@ from run import (
     task5_unit_argv, task5_replica_uri, read_strict_txid_sidecar, require_strict_position_advancement,
     reconcile_epoch_ledger, validate_litestream_task5_help, _parse_task5_list_keys, _validate_support_archive_members, _parse_task5_log_stat, _task5_validate_log_text, _TASK5_REMOTE_SCRIPT, _task5_prepare_runtime_root, _json_object_without_duplicates,
     _task5_bounded_failure_detail, _task5_remote_json, _task5_stop_unit, _task5_attest_preserved_logs,
+    _raise_scp_failure,
 )
 
 FP = "SHA256:" + "A" * 43
@@ -1875,8 +1876,32 @@ class LitestreamTask5Tests(unittest.TestCase):
             with self.subTest(stderr=stderr):
                 detail = _task5_bounded_failure_detail(stderr)
                 self.assertIsNone(detail)
-        self.assertEqual(_task5_bounded_failure_detail(b"x" * 2049), "x" * 2048)
-        self.assertEqual(_task5_bounded_failure_detail(b"x" * 2048), "x" * 2048)
+        with mock.patch("run._LOADED_SECRET_VALUES", set()):
+            self.assertEqual(_task5_bounded_failure_detail(b"x" * 2049), "x" * 2048)
+            self.assertEqual(_task5_bounded_failure_detail(b"x" * 2048), "x" * 2048)
+
+    def test_scp_failure_diagnostics_are_redacted_and_bounded_before_error(self):
+        secret = "scp-super-secret"
+        with mock.patch("run._LOADED_SECRET_VALUES", {secret}):
+            raw = ("prefix " + secret + " " + "x" * 5000 + "\x00\x1b[31m").encode()
+            failed = subprocess.CompletedProcess(["scp"], 7, raw, raw)
+            safe = _raise_scp_failure(failed, node(), False, "non_transient")
+            self.assertLessEqual(len(safe.stdout), 2048)
+            self.assertLessEqual(len(safe.stderr), 2048)
+            self.assertNotIn(secret.encode(), safe.stdout + safe.stderr)
+            self.assertNotIn(b"\x00", safe.stdout + safe.stderr)
+            self.assertLessEqual(len(safe.failure_evidence["stderr"].encode()), 2048)
+            with self.assertRaises(subprocess.CalledProcessError) as raised:
+                _raise_scp_failure(failed, node(), True, "non_transient")
+            self.assertLessEqual(len(str(raised.exception)), 4096)
+            self.assertNotIn(secret, str(raised.exception))
+
+    def test_common_failure_detail_redacts_secrets_before_bounding(self):
+        secret = "remote-task5-secret"
+        with mock.patch("run._LOADED_SECRET_VALUES", {secret}):
+            detail = _task5_bounded_failure_detail((secret + " " + "x" * 5000).encode())
+            self.assertLessEqual(len(detail.encode()), 2048)
+            self.assertNotIn(secret, detail)
 
     def test_task5_collected_unit_is_stopped_but_logs_remain_validated(self):
         unit = "hat-task5-0123456789-e1-uploader"
@@ -2144,7 +2169,13 @@ class LitestreamTask5Tests(unittest.TestCase):
             self.assertEqual(cleanup.call_count, 3)
             for call in cleanup.call_args_list:
                 self.assertEqual(call.args[1].remote_root, context.remote_root)
-                self.assertEqual(call.args[3], [context.remote_root + "/task5-remote.py"])
+                expected = [context.remote_root + "/task5-remote.py"]
+                if call.args[0].name == "fm1":
+                    fixture = context.remote_root + "/fixture"
+                    expected += [fixture + "/fixture-private.json"]
+                    for depot in ("a", "b", "c"):
+                        expected += [fixture + f"/{depot}/traildepot/config.textproto", fixture + f"/{depot}/traildepot/secrets"]
+                self.assertEqual(call.args[3], expected)
             events = [json.loads(line) for line in evidence.read_text().splitlines()
                       if json.loads(line).get("operation") == "task5-cleanup-node"]
             self.assertEqual(len(events), 3)
