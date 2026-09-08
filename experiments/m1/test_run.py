@@ -1690,7 +1690,10 @@ class LitestreamTask5Tests(unittest.TestCase):
     def test_s3_inventory_requires_one_explicit_false_and_strict_contents(self):
         xml = b'<ListBucketResult><Name>b</Name><Prefix>p/</Prefix><KeyCount>1</KeyCount><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated><Contents><Key>p/a</Key></Contents></ListBucketResult>'
         self.assertEqual(_parse_task5_list_keys(xml), ["p/a"])
-        for bad in (xml.replace(b'<IsTruncated>false</IsTruncated>', b''), xml.replace(b'<IsTruncated>false</IsTruncated>', b'<IsTruncated>false</IsTruncated><IsTruncated>false</IsTruncated>'), xml.replace(b'<Contents>', b'<Unknown>')):
+        metadata = (b'<Contents><Key>p/a</Key><LastModified>2026-09-07T00:00:00Z</LastModified>'
+                    b'<ETag>&quot;x&quot;</ETag><Size>1</Size><StorageClass>STANDARD</StorageClass></Contents>')
+        self.assertEqual(_parse_task5_list_keys(xml.replace(b'<Contents><Key>p/a</Key></Contents>', metadata)), ["p/a"])
+        for bad in (xml.replace(b'<IsTruncated>false</IsTruncated>', b''), xml.replace(b'<IsTruncated>false</IsTruncated>', b'<IsTruncated>false</IsTruncated><IsTruncated>false</IsTruncated>'), xml.replace(b'<Contents>', b'<Unknown>'), metadata.replace(b'</Key>', b'</Key><Key>p/b</Key>'), metadata.replace(b'</Size>', b'</Size><Unknown>x</Unknown>')):
             with self.assertRaises(RuntimeError): _parse_task5_list_keys(bad)
 
     def test_pinned_litestream_logs_require_message_but_allow_metadata(self):
@@ -1698,7 +1701,10 @@ class LitestreamTask5Tests(unittest.TestCase):
                 'time=2026-09-07T00:00:01Z level=INFO msg="checkpoint complete" component=replicator\n')
         self.assertEqual(len(_task5_validate_log_text(text)), 2)
         for bad in ('{"level":"INFO"}\n', '{"level":"ERROR","message":"boom"}\n',
-                    'level=INFO msg="failed to apply updates"\n', 'not a log record\n'):
+                    '{"level":"INFO","msg":"ok","msg":"duplicate"}\n',
+                    '{"level":"INFO","msg":"ok","unknown":"field"}\n',
+                    'level=INFO msg="failed to apply updates"\n',
+                    'level=INFO msg=ok msg=duplicate\n', 'not a log record\n'):
             with self.assertRaises(RuntimeError): _task5_validate_log_text(bad)
 
     def test_task5_stat_parser_preserves_multiword_file_kind(self):
@@ -1706,8 +1712,14 @@ class LitestreamTask5Tests(unittest.TestCase):
         with self.assertRaises(RuntimeError): _parse_task5_log_stat("regular  file 600 42\\n")
 
     def test_pinned_litestream_help_contract_is_explicit(self):
-        validate_litestream_task5_help("-config -follow-interval -txid", "-config", "-config -wait -json")
+        validate_litestream_task5_help("-config -follow-interval -txid", "-config", "-config -socket -wait -json")
         with self.assertRaises(RuntimeError): validate_litestream_task5_help("-config", "-config", "-config -wait -json")
+
+    def test_task5_commands_use_configured_db_paths_and_custom_socket(self):
+        self.assertIn('"-socket", socket_path', _TASK5_REMOTE_SCRIPT)
+        self.assertIn('"-config", str(config), "-txid"', _TASK5_REMOTE_SCRIPT)
+        self.assertNotIn('str(source).rstrip("/") + f"/{name}"', _TASK5_REMOTE_SCRIPT)
+        self.assertNotIn('f"s3://{values', _TASK5_REMOTE_SCRIPT)
 
     def test_task5_replica_uri_is_database_specific(self):
         self.assertEqual(task5_replica_uri("bucket", "20260907T120000Z-0123456789", "e1", "main"),
