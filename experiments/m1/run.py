@@ -1500,15 +1500,20 @@ def _validate_m0_aggregate(node: Node, expected_architecture: str, aggregate: An
         return False
     actual_matrix = {(item["scenario"], item["iteration"]) for item in results}
     log_paths = {item.get("path") for item in manifest.get("logs", []) if isinstance(item, dict)}
+    expected_refs = {f"logs/{scenario}-{iteration}/" for scenario, iteration in expected_matrix}
     refs = []
     for item in results:
         evidence = item.get("evidence")
         ref = evidence.get("logs_ref") if isinstance(evidence, dict) else None
-        if (not isinstance(ref, str) or not ref.startswith("logs/") or not ref.endswith("/")
-                or not _safe_archive_member(ref[:-1]) or ref in refs
+        expected_ref = f"logs/{item['scenario']}-{item['iteration']}/"
+        if (ref != expected_ref or ref not in expected_refs or ref in refs
                 or not any(isinstance(path, str) and path.startswith(ref) for path in log_paths)):
             return False
         refs.append(ref)
+    if set(refs) != expected_refs or any(
+            not isinstance(path, str) or not any(path.startswith(ref) for ref in expected_refs)
+            for path in log_paths):
+        return False
     if {path for path in log_paths if isinstance(path, str)} != {
             path for ref in refs for path in log_paths if isinstance(path, str) and path.startswith(ref)}:
         return False
