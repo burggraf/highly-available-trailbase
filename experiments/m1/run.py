@@ -1690,7 +1690,7 @@ def _run_m0_linux_parity(node: Node, context: RunContext, evidence: Path, local_
 def _create_runtime_root(node: Node, context: RunContext) -> str:
     base = context.remote_root
     _verify_remote_directory(node, base, mode=0o700)
-    root = confined_remote_path(base, base + "/m0-work")
+    root = confined_remote_path(base, base + "/w")
     available = ssh(node, ["df", "--output=avail", "-B1", "--", base], check=False)
     fields = _stdout(available).split()
     if available.returncode or len(fields) != 2 or fields[0] != "Avail" or not fields[1].isdigit():

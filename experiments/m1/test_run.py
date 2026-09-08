@@ -1525,7 +1525,7 @@ class ProvisionTests(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 0, b"", b"")
         with mock.patch("run._verify_remote_directory") as verify, mock.patch("run.ssh", side_effect=execute):
             work = _create_runtime_root(current, context)
-        self.assertEqual(work, context.remote_root + "/m0-work")
+        self.assertEqual(work, context.remote_root + "/w")
         verify.assert_any_call(current, context.remote_root, mode=0o700)
         verify.assert_any_call(current, work, mode=0o700)
         self.assertIn(["df", "--output=avail", "-B1", "--", context.remote_root], calls)
