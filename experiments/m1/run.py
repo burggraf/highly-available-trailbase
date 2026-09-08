@@ -285,8 +285,9 @@ def mask_writer_services(service_dir: Path, *, run=subprocess.run) -> None:
         raise RuntimeError("could not reload systemd")
     for unit in _WRITER_UNITS:
         enabled = run(["systemctl", "is-enabled", unit], capture_output=True, text=True, check=False, timeout=30)
-        active = run(["systemctl", "is-active", "--quiet", unit], capture_output=True, text=True, check=False, timeout=30)
-        if enabled.stdout.strip() != "masked" or active.returncode == 0:
+        active = run(["systemctl", "is-active", unit], capture_output=True, text=True, check=False, timeout=30)
+        if (enabled.returncode not in (0, 1) or enabled.stdout.strip() != "masked"
+                or active.returncode != 3 or active.stdout.strip() != "inactive"):
             raise RuntimeError("writer service is not persistently masked and stopped")
 
 
@@ -1292,13 +1293,26 @@ def _validate_m0_aggregate(node: Node, expected_architecture: str, aggregate: An
     )
 
 
+def _m0_scope_unit(context: RunContext) -> str:
+    return "hat-m0-" + context.run_id.rsplit("-", 1)[1]
+
+
+def _stop_m0_scope(node: Node, unit: str) -> None:
+    stopped = ssh(node, ["systemctl", "stop", unit], check=False, timeout=120)
+    reset = ssh(node, ["systemctl", "reset-failed", unit], check=False, timeout=120)
+    if stopped.returncode not in (0, 5) or reset.returncode not in (0, 1, 5):
+        raise RuntimeError("could not stop M0 scope")
+
+
 def _run_m0_linux_parity(node: Node, context: RunContext, evidence: Path, local_root: Path,
                          repository: Path, expected_architecture: str) -> StorageStatus:
     m0 = _copy_m0_source(node, context, repository)
     work = _create_runtime_root(node, context)
-    command = ["python3", m0 + "/run.py", "--trail", context.remote_root + "/bin/trail",
-               "--litestream", context.remote_root + "/bin/litestream", "--work-root", work,
-               "--scenario", "all", "--repeat", "3"]
+    unit = _m0_scope_unit(context)
+    workload = ["python3", m0 + "/run.py", "--trail", context.remote_root + "/bin/trail",
+                "--litestream", context.remote_root + "/bin/litestream", "--work-root", work,
+                "--scenario", "all", "--repeat", "3"]
+    command = ["systemd-run", "--scope", "--unit=" + unit, "--collect", "--quiet", "--", *workload]
     termination = "completed"
     exit_code = None
     diagnostic: bytes | str = b""
@@ -1314,10 +1328,15 @@ def _run_m0_linux_parity(node: Node, context: RunContext, evidence: Path, local_
         diagnostic = getattr(exc, "stderr", b"") or b""
 
     failures = []
-    if termination != "completed" or exit_code != 0:
+    abnormal = termination != "completed" or exit_code != 0
+    if abnormal:
         diagnostic_bytes = diagnostic.encode("utf-8", errors="replace") if isinstance(diagnostic, str) else diagnostic
         failures.append("resource capability: no space left on device"
                         if b"No space left on device" in diagnostic_bytes else "workload did not complete")
+        try:
+            _stop_m0_scope(node, unit)
+        except (OSError, subprocess.SubprocessError, RuntimeError):
+            failures.append("M0 scope cleanup failed")
     local_manifest = local_root / "fm1-m0-evidence.json"
     local_logs = local_root / "fm1-m0-logs.tar.gz"
     local_result = local_root / "fm1-m0-result.json"
@@ -1424,12 +1443,23 @@ def _verify_reboot(node: Node, old_boot: str, *, timeout: float = 240.0) -> None
         raise RuntimeError("node hostname changed after reboot")
     for unit in _WRITER_UNITS:
         enabled = ssh(node, ["systemctl", "is-enabled", unit], check=False)
-        active = ssh(node, ["systemctl", "is-active", "--quiet", unit], check=False)
-        if _stdout(enabled).strip() != "masked" or active.returncode == 0:
+        active = ssh(node, ["systemctl", "is-active", unit], check=False)
+        if (enabled.returncode not in (0, 1) or _stdout(enabled).strip() != "masked"
+                or active.returncode != 3 or _stdout(active).strip() != "inactive"):
             raise RuntimeError("writer service mask did not survive reboot")
 
 
-def provision(nodes: list[Node], context: RunContext, evidence: Path, repository: Path, *, inventory_path: Path, linode_env: Path, fence_command: Path) -> StorageStatus:
+def _append_provision_no_go(evidence: Path | None, repository: Path, *, stage: str, exc: BaseException) -> None:
+    if evidence is None:
+        return
+    try:
+        append_evidence(evidence, {"event": "provision", "status": "NO-GO", "stage": stage,
+                                   "exception_type": type(exc).__name__}, repository)
+    except Exception:
+        pass
+
+
+def _provision_workflow(nodes: list[Node], context: RunContext, evidence: Path, repository: Path, *, inventory_path: Path, linode_env: Path, fence_command: Path) -> StorageStatus:
     global _SSH_KNOWN_HOSTS, _REMOTE_ROOT
     _validate_prerequisites(nodes, inventory_path, linode_env, repository)
     local_root = _validate_local_context(context, repository)
@@ -1479,12 +1509,21 @@ def provision(nodes: list[Node], context: RunContext, evidence: Path, repository
             fm1 = next(node for node in nodes if node.name == "fm1")
             return _run_m0_linux_parity(fm1, context, evidence, local_root, repository, architectures["fm1"])
     except Exception as exc:
-        append_evidence(evidence, {"event": "provision", "status": "NO-GO", "stage": stage,
-                                   "exception_type": type(exc).__name__}, repository)
+        _append_provision_no_go(evidence, repository, stage=stage, exc=exc)
         return StorageStatus.NO_GO
     finally:
         _SSH_KNOWN_HOSTS = None
         _REMOTE_ROOT = None
+
+
+def provision(nodes: list[Node], context: RunContext, evidence: Path, repository: Path, *, inventory_path: Path, linode_env: Path, fence_command: Path) -> StorageStatus:
+    try:
+        return _provision_workflow(nodes, context, evidence, repository,
+                                   inventory_path=inventory_path, linode_env=linode_env,
+                                   fence_command=fence_command)
+    except Exception as exc:
+        _append_provision_no_go(evidence, repository, stage="provision", exc=exc)
+        return StorageStatus.NO_GO
 
 
 def _storage_matrix(nodes=None, context=None, evidence=None, repository=None, *, s3_env=None, cleanup=False) -> StorageStatus:
@@ -1880,19 +1919,34 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--inventory and --linode-env are required")
     if args.scenario == "provision" and args.fence_command is None:
         parser.error("provision requires --fence-command for pre-reboot identity confirmation")
+    if args.scenario == "provision":
+        context = None
+        evidence = None
+        try:
+            nodes = load_inventory(args.inventory, repository)
+            load_linode_env(args.linode_env, nodes, repository)
+            context = new_run_context(args.work_root, repository)
+            evidence = context.local_root / "evidence.jsonl"
+            preflight(nodes, context, evidence, repository, inventory_path=args.inventory, linode_env=args.linode_env)
+            init_remote(nodes, context, evidence, repository, inventory_path=args.inventory, linode_env=args.linode_env)
+            result = provision(nodes, context, evidence, repository, inventory_path=args.inventory,
+                               linode_env=args.linode_env, fence_command=args.fence_command)
+        except Exception as exc:
+            _append_provision_no_go(evidence, repository, stage="preflight/init", exc=exc)
+            print("provision NO-GO")
+            return 2
+        if result is StorageStatus.NO_GO:
+            print("provision NO-GO")
+            return 2
+        print(f"provision passed: {len(nodes)} nodes")
+        return 0
+
     nodes = load_inventory(args.inventory, repository)
     load_linode_env(args.linode_env, nodes, repository)
     if args.scenario in {"preflight", "provision"}:
         context = new_run_context(args.work_root, repository)
         evidence = context.local_root / "evidence.jsonl"
         preflight(nodes, context, evidence, repository, inventory_path=args.inventory, linode_env=args.linode_env)
-        if args.scenario == "provision":
-            init_remote(nodes, context, evidence, repository, inventory_path=args.inventory, linode_env=args.linode_env)
-            result = provision(nodes, context, evidence, repository, inventory_path=args.inventory,
-                               linode_env=args.linode_env, fence_command=args.fence_command)
-            if result is StorageStatus.NO_GO:
-                print("provision NO-GO")
-                return 2
     else:
         work_root = _absolute_no_symlinks(args.work_root)
         candidates = sorted((p for p in work_root.iterdir() if p.is_dir() and _RUN_ID.fullmatch(p.name) and (p / ".preflight-ok").is_file() and (p / ".preflight-handoff").is_file()), reverse=True)

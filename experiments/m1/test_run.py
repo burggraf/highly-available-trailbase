@@ -14,7 +14,7 @@ from pathlib import Path
 from unittest import mock
 
 from run import (
-    Node, RunContext, _FINGERPRINT, _require_facts, _known_host_fingerprint, _remote_stat, _verify_remote_directory,
+    Node, RunContext, _FINGERPRINT, _require_facts, _known_host_fingerprint, _remote_stat, _verify_remote_directory, _verify_reboot,
     invoke_fence, validate_fence_evidence, promotion_allowed,
     append_evidence, build_pinned_known_hosts, ensure_remote_root, init_remote,
     load_inventory, load_linode_env, new_run_context, require_private_file,
@@ -393,6 +393,20 @@ class RemoteRootTests(unittest.TestCase):
         result = subprocess.CompletedProcess([], 0, b"regular file\t0\t0\t600\t/safe/file\n", b"")
         with mock.patch("run.ssh", return_value=result):
             self.assertEqual(_remote_stat(node(), "/safe/file"), ("regular file", 0, 0, 0o600, "/safe/file"))
+
+    def test_reboot_query_error_is_not_treated_as_inactive(self):
+        old = "01234567-89ab-cdef-0123-456789abcdef"
+        new = "abcdef01-2345-6789-abcd-ef0123456789"
+        responses = [
+            subprocess.CompletedProcess([], 0, b"", b""),
+            subprocess.CompletedProcess([], 0, (new + "\n").encode(), b""),
+            subprocess.CompletedProcess([], 0, b"a\n", b""),
+            subprocess.CompletedProcess([], 0, b"masked\n", b""),
+            subprocess.CompletedProcess([], 1, b"", b"query failed"),
+        ]
+        with mock.patch("run.ssh", side_effect=responses), mock.patch("run.time.sleep"):
+            with self.assertRaises(RuntimeError):
+                _verify_reboot(node("a"), old)
 
     def test_remote_realpath_retries_transient_transport_failure(self):
         failed = subprocess.CompletedProcess([], 255, b"", b"transient")
@@ -1141,7 +1155,12 @@ class ProvisionTests(unittest.TestCase):
                     destination.write_bytes(partial if source.endswith("m0-evidence.json") else b"partial logs")
                     destination.chmod(0o600)
 
-                command = mock.Mock(side_effect=[termination, subprocess.CompletedProcess([], 0, b"", b"")])
+                command = mock.Mock(side_effect=[
+                    termination,
+                    subprocess.CompletedProcess([], 0, b"", b""),
+                    subprocess.CompletedProcess([], 0, b"", b""),
+                    subprocess.CompletedProcess([], 0, b"", b""),
+                ])
                 with mock.patch("run._copy_m0_source", return_value=context.remote_root + "/source/experiments/m0"), \
                      mock.patch("run._create_runtime_root", return_value="/run/hat/work"), \
                      mock.patch("run.ssh", command), mock.patch("run._copy_from_node", side_effect=copy), \
@@ -1149,8 +1168,11 @@ class ProvisionTests(unittest.TestCase):
                     status = _run_m0_linux_parity(node("fm1"), context, local / "evidence.jsonl", local, Path.cwd(), "x86_64")
 
                 self.assertIs(status, StorageStatus.NO_GO)
+                self.assertEqual(command.call_args_list[0].args[1][0], "systemd-run")
                 self.assertEqual(command.call_args_list[0].args[1][-4:], ["--scenario", "all", "--repeat", "3"])
-                self.assertIn("m0-evidence.json", command.call_args_list[1].args[1][2])
+                self.assertEqual(command.call_args_list[1].args[1][:2], ["systemctl", "stop"])
+                self.assertEqual(command.call_args_list[2].args[1][:2], ["systemctl", "reset-failed"])
+                self.assertIn("m0-evidence.json", command.call_args_list[3].args[1][2])
                 event = json.loads((local / "evidence.jsonl").read_text().splitlines()[-1])
                 self.assertEqual((event["event"], event["status"], event["repeat"]),
                                  ("m0-linux-parity", "NO-GO", 3))
@@ -1205,6 +1227,32 @@ class ProvisionTests(unittest.TestCase):
                                      "stage": "provision:fm1", "exception_type": "TimeoutExpired"})
             self.assertNotIn("private", json.dumps(event))
 
+    def test_provision_cli_bounds_preflight_failure_and_records_no_go(self):
+        nodes = [node("fm1"), node("fm2"), node("fm3")]
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d) / "runs"; local = root / "20260907T010203Z-0123456789"; local.mkdir(mode=0o700, parents=True)
+            context = RunContext(local.name, local, "/var/lib/hat-qualification/" + local.name)
+            with mock.patch("run.load_inventory", return_value=nodes), mock.patch("run.load_linode_env"), \
+                 mock.patch("run.new_run_context", return_value=context), \
+                 mock.patch("run.preflight", side_effect=RuntimeError("private preflight detail")), \
+                 mock.patch("run.init_remote"):
+                status = main(["provision", "--inventory", str(Path(d) / "inventory"),
+                               "--linode-env", str(Path(d) / "env"), "--fence-command", str(Path(d) / "fence"),
+                               "--work-root", str(root)])
+            self.assertEqual(status, 2)
+            event = json.loads((local / "evidence.jsonl").read_text().splitlines()[-1])
+            self.assertEqual(event["status"], "NO-GO")
+            self.assertEqual(event["stage"], "preflight/init")
+            self.assertNotIn("private", json.dumps(event))
+
+    def test_provision_boundary_keeps_no_go_when_evidence_write_fails(self):
+        with tempfile.TemporaryDirectory() as d:
+            with mock.patch("run._provision_workflow", side_effect=RuntimeError("private detail")), \
+                 mock.patch("run.append_evidence", side_effect=OSError("disk full")):
+                self.assertIs(provision([], RunContext("20260907T010203Z-0123456789", Path(d), "/safe"),
+                                      Path(d) / "evidence.jsonl", Path.cwd(), inventory_path=Path(d) / "i",
+                                      linode_env=Path(d) / "e", fence_command=Path(d) / "f"), StorageStatus.NO_GO)
+
     def test_provision_cli_returns_two_for_bounded_m0_no_go(self):
         nodes = [node("fm1"), node("fm2"), node("fm3")]
         with tempfile.TemporaryDirectory() as d, \
@@ -1227,8 +1275,11 @@ class ProvisionTests(unittest.TestCase):
         calls = []
         def run(argv, **kwargs):
             calls.append(argv)
-            return subprocess.CompletedProcess(argv, 3 if argv[1:3] == ["is-active", "--quiet"] else 0,
-                                               stdout="masked\n" if argv[1:2] == ["is-enabled"] else "", stderr="")
+            if argv[1:2] == ["is-enabled"]:
+                return subprocess.CompletedProcess(argv, 0, stdout="masked\n", stderr="")
+            if argv[1:2] == ["is-active"]:
+                return subprocess.CompletedProcess(argv, 3, stdout="inactive\n", stderr="")
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
         with tempfile.TemporaryDirectory() as d:
             service_dir = Path(d)
             mask_writer_services(service_dir, run=run)
@@ -1241,6 +1292,17 @@ class ProvisionTests(unittest.TestCase):
             (service_dir / "hat-trailbase.service").write_text("[Service]\nExecStart=/bin/true\n")
             with self.assertRaises(RuntimeError):
                 mask_writer_services(service_dir, run=run)
+
+    def test_writer_service_query_error_is_not_treated_as_inactive(self):
+        with tempfile.TemporaryDirectory() as d:
+            def broken(argv, **kwargs):
+                if argv[1:2] == ["is-enabled"]:
+                    return subprocess.CompletedProcess(argv, 0, stdout="masked\n", stderr="")
+                if argv[1:2] == ["is-active"]:
+                    return subprocess.CompletedProcess(argv, 1, stdout="", stderr="query failed")
+                return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+            with self.assertRaises(RuntimeError):
+                mask_writer_services(Path(d), run=broken)
 
 
 if __name__ == "__main__": unittest.main()
