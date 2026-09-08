@@ -29,7 +29,8 @@ from run import (
     _validate_post_reboot_summary, _provision_workflow, provision, REMOTE_PROVISION_TIMEOUT,
     _M0_COLLECT_SCRIPT, _download_public, _safe_archive_member,
     write_litestream_s3_config, validate_litestream_s3_config, inventory_digest,
-    assert_inventory_unchanged, scrub_private_path,
+    assert_inventory_unchanged, scrub_private_path, scrub_private_tree, compare_database_summaries,
+    task5_unit_argv, _TASK5_REMOTE_SCRIPT,
 )
 
 FP = "SHA256:" + "A" * 43
@@ -1617,8 +1618,6 @@ class ProvisionTests(unittest.TestCase):
                 self.assertFalse(_validate_m0_log_archive(archive_path, manifest))
 
 
-if __name__ == "__main__": unittest.main()
-
 class LitestreamTask5Tests(unittest.TestCase):
     def test_s3_config_is_private_explicit_and_three_database_singular_replica(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1667,6 +1666,17 @@ class LitestreamTask5Tests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 scrub_private_path(outside, root)
 
+    def test_nested_private_runtime_tree_is_scrubbed_without_escaping(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            nested = root / "pins" / "inner"
+            nested.mkdir(parents=True)
+            (nested / "known_hosts").write_text("private")
+            scrub_private_tree(root / "pins", root)
+            self.assertFalse((root / "pins").exists())
+            with self.assertRaises(ValueError):
+                scrub_private_tree(root.parent / "outside-task5", root)
+
     def test_e1_inventory_digest_is_immutable_across_e2(self):
         e1 = [{"key": "p/e1/main/1", "etag": '"a"', "sha256": "a" * 64},
               {"key": "p/e1/session/1", "etag": '"b"', "sha256": "b" * 64}]
@@ -1674,3 +1684,48 @@ class LitestreamTask5Tests(unittest.TestCase):
         e2 = e1 + [{"key": "p/e2/main/1", "etag": '"c"', "sha256": "c" * 64}]
         self.assertTrue(assert_inventory_unchanged(before, inventory_digest(e1)))
         self.assertFalse(assert_inventory_unchanged(before, inventory_digest(e2)))
+        with self.assertRaises(ValueError): inventory_digest([e1[0], e1[0]])
+
+    def test_remote_config_paths_and_replica_prefixes_are_exact_and_distinct(self):
+        with tempfile.TemporaryDirectory() as directory:
+            config = write_litestream_s3_config(Path(directory), "20260907T120000Z-0123456789", "e1",
+                endpoint="https://s3.example", region="r1", bucket="b1",
+                source_root="/var/lib/hat-qualification/run/source", runtime_root="/var/lib/hat-qualification/run/runtime")
+            text = config.read_text()
+            self.assertEqual(validate_litestream_s3_config(config), ("main", "session", "aux"))
+            self.assertEqual(text.count("qualification/20260907T120000Z-0123456789/e1/"), 3)
+            self.assertIn('path: "/var/lib/hat-qualification/run/source/main.db"', text)
+            self.assertIn('path: "/var/lib/hat-qualification/run/runtime/litestream.sock"', text)
+            config.write_text(text.replace("qualification/20260907T120000Z-0123456789/e1/aux",
+                                           "qualification/20260907T120000Z-0123456789/e1/main"))
+            with self.assertRaises(ValueError): validate_litestream_s3_config(config)
+
+    def test_process_argv_has_only_paths_and_no_credentials(self):
+        argv = task5_unit_argv("hat-task5-0123456789-e1-follower-main", "/var/lib/hat-qualification/run/e1.env",
+                              ["/var/lib/hat-qualification/run/bin/litestream", "restore", "-config", "/var/lib/hat-qualification/run/e1.yml"])
+        rendered = " ".join(argv)
+        self.assertIn("EnvironmentFile=/var/lib/hat-qualification/run/e1.env", rendered)
+        self.assertNotIn("ACCESS_KEY", rendered)
+        self.assertNotIn("SECRET", rendered)
+        for unit in ("wrong", "hat-task5-0123456789-e3-uploader", "hat-task5-bad-e1-uploader"):
+            with self.assertRaises(ValueError):
+                task5_unit_argv(unit, "/var/lib/hat-qualification/run/e1.env", ["litestream"])
+
+    def test_database_comparison_rejects_unknown_or_partial_output(self):
+        value = {name: {"integrity": "ok", "schema_sha256": name, "tables": {}, "operations": []}
+                 for name in ("main", "session", "aux")}
+        self.assertTrue(compare_database_summaries(value, json.loads(json.dumps(value))))
+        changed = json.loads(json.dumps(value)); changed["aux"]["operations"].append({"key": "x"})
+        self.assertFalse(compare_database_summaries(value, changed))
+        with self.assertRaises(ValueError): compare_database_summaries(value, {"main": value["main"]})
+        unknown = json.loads(json.dumps(value)); unknown["main"]["extra"] = True
+        with self.assertRaises(ValueError): compare_database_summaries(value, unknown)
+
+    def test_remote_runner_contains_executable_required_stages(self):
+        for stage in ('action == "bootstrap"', 'action == "write"', 'action == "sync"',
+                      'action == "wait"', 'action == "finite"', 'action == "summaries"',
+                      'PRAGMA integrity_check', 'PRAGMA foreign_key_check'):
+            self.assertIn(stage, _TASK5_REMOTE_SCRIPT)
+
+
+if __name__ == "__main__": unittest.main()
