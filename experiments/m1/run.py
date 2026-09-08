@@ -1406,16 +1406,19 @@ if len(runs) == 1:
             raise RuntimeError("symlink in M0 logs")
         if path.is_file() and path.parent.name == "logs":
             relative = safe_relative(path, run)
-            logs.append({"path": "logs/" + relative, "sha256": bounded_hash(path, LOG_MAX)})
+            archive_path = relative if relative.startswith("logs/") else "logs/" + relative
+            logs.append({"path": archive_path, "sha256": bounded_hash(path, LOG_MAX)})
     evidence["logs"] = logs
     evidence["log_count"] = len(logs)
 with tarfile.open(output / "m0-logs.tar.gz", "x:gz") as archive:
     for item in logs:
-        path = run / pathlib.PurePosixPath(item["path"][len("logs/"):])
+        path = run / pathlib.PurePosixPath(item["path"])
+        if not path.is_file():
+            path = run / pathlib.PurePosixPath(item["path"][len("logs/"):])
         info = archive.gettarinfo(str(path), arcname=item["path"])
         if not info.isfile():
             raise RuntimeError("non-regular M0 log")
-        if archive.tell() + path.stat().st_size > ARCHIVE_MAX:
+        if archive.fileobj.tell() + path.stat().st_size > ARCHIVE_MAX:
             raise RuntimeError("M0 log archive exceeds bound")
         with path.open("rb") as source:
             archive.addfile(info, source)

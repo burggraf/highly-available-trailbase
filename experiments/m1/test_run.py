@@ -1445,6 +1445,19 @@ class ProvisionTests(unittest.TestCase):
             self.assertFalse(_safe_archive_member(name))
         self.assertTrue(_safe_archive_member("logs/worker.log"))
 
+    def test_m0_collector_writes_archive_for_real_logs(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, output = Path(d) / "root", Path(d) / "out"
+            logs = root / "run-1" / "follow-1" / "logs"
+            logs.mkdir(parents=True); output.mkdir()
+            (logs / "worker.log").write_text("ok\\n")
+            result = subprocess.run(["python3", "-c", _M0_COLLECT_SCRIPT, str(root), str(output)], capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+            evidence = json.loads((output / "m0-evidence.json").read_text())
+            self.assertEqual(evidence["logs"][0]["path"], "logs/follow-1/logs/worker.log")
+            with tarfile.open(output / "m0-logs.tar.gz", "r:gz") as archive:
+                self.assertEqual(archive.getnames(), ["logs/follow-1/logs/worker.log"])
+
     def test_m0_collector_rejects_symlinked_run_root(self):
         with tempfile.TemporaryDirectory() as d:
             root, output = Path(d) / "root", Path(d) / "out"
