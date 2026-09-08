@@ -1885,6 +1885,39 @@ class LitestreamTask5Tests(unittest.TestCase):
             self.assertTrue(all(event["prepared"] and event["attempted"] and event["result"] == "PASS"
                                 for event in events))
 
+    def test_cross_host_cleanup_runner_failure_is_not_reported_as_pass(self):
+        nodes = [node(name) for name in ("fm1", "fm2", "fm3")]
+        binaries = ("/var/lib/hat-qualification/run/bin/trail", "/var/lib/hat-qualification/run/bin/litestream")
+        with tempfile.TemporaryDirectory() as directory:
+            local_root = Path(directory) / "run"
+            local_root.mkdir(mode=0o700)
+            context = RunContext("20260907T010203Z-0123456789", local_root,
+                                 "/var/lib/hat-qualification/20260907T010203Z-0123456789")
+            evidence = local_root / "evidence.jsonl"
+            def failing_install(node_value, _context):
+                if node_value.name == "fm1":
+                    raise RuntimeError("pinned help mismatch")
+                return binaries
+            with mock.patch("s3._read_s3_values", return_value={}), \
+                 mock.patch("s3.client_from_env", return_value=object()), \
+                 mock.patch("run.build_pinned_known_hosts", return_value=local_root / "pins"), \
+                 mock.patch("run.ensure_remote_root"), \
+                 mock.patch("run._task5_s3_inventory", return_value=[]), \
+                 mock.patch("run._task5_install_binaries", side_effect=failing_install), \
+                 mock.patch("run._task5_remote_cleanup") as cleanup:
+                with self.assertRaises(RuntimeError):
+                    _cross_host_flow(nodes, context, evidence, Path(__file__).resolve().parents[2],
+                                     s3_env=Path("/private/s3.env"))
+            cleanup.assert_not_called()
+            events = [json.loads(line) for line in evidence.read_text().splitlines()
+                      if json.loads(line).get("operation") == "task5-cleanup-node"]
+            self.assertEqual(events[0]["node"], "fm1")
+            self.assertEqual(events[0]["result"], "NO-GO")
+            self.assertEqual(events[0]["reason"], "cleanup-runner-not-prepared")
+            final = json.loads(evidence.read_text().splitlines()[-1])
+            self.assertEqual(final["operation"], "task5-cleanup")
+            self.assertEqual(final["result"], "NO-GO")
+
     def test_cross_host_prepare_failure_skips_unprepared_nodes(self):
         nodes = [node(name) for name in ("fm1", "fm2", "fm3")]
         binaries = ("/var/lib/hat-qualification/run/bin/trail", "/var/lib/hat-qualification/run/bin/litestream")

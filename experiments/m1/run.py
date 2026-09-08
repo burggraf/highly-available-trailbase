@@ -3190,7 +3190,9 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
                 else:
                     cleanup_result = "PASS"
             elif node.name in prepared_nodes:
+                cleanup_result = "NO-GO"
                 cleanup_reason = "cleanup-runner-not-prepared"
+                cleanup_failures.append(f"scrub:{node.name}:cleanup-runner-not-prepared")
             try:
                 append_evidence(evidence, {"operation": "task5-cleanup-node", "node": node.name,
                                            "prepared": node.name in prepared_nodes,
