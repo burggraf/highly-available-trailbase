@@ -406,7 +406,10 @@ def summary(database, name):
 
 if action == "cleanup":
     root = Path(args[0])
-    for candidate in args[1:]: remove_confined(root, candidate)
+    for candidate in args[1:]:
+        remove_confined(root, candidate)
+        if os.path.lexists(candidate):
+            raise RuntimeError("cleanup candidate remains")
     emit({"status": "PASS"})
     raise SystemExit(0)
 if action == "bootstrap":
@@ -2957,6 +2960,10 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
         **{f"e1-follower-{name}": f"hat-task5-{suffix}-e1-follower-{name}" for name in _LITESTREAM_DATABASES},
     }
     remote_files: dict[str, list[str]] = {node.name: [] for node in nodes}
+    def register_cleanup_candidate(node_name: str, path: str) -> None:
+        if path not in remote_files[node_name]:
+            remote_files[node_name].append(path)
+
     prepared_nodes: set[str] = set()
     cleanup_ready_nodes: set[str] = set()
     binaries: dict[str, tuple[str, str]] = {}
@@ -3007,8 +3014,9 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
             if ssh(fm2, ["mkdir", "-m", "700", "-p", "--", promoted_data], check=False).returncode:
                 raise RuntimeError("could not create restore depot on fm2")
             source_dirs = {"fm2": context.remote_root + "/e1-source", "fm3": context.remote_root + "/e2-source"}
-            _task5_prepare_source_directory(fm2, source_dirs["fm2"])
-            _task5_prepare_source_directory(fm3, source_dirs["fm3"])
+            for node_name, source_dir in source_dirs.items():
+                register_cleanup_candidate(node_name, source_dir)
+                _task5_prepare_source_directory(by_name[node_name], source_dir)
 
             stage = "write-private-configs"
             staging = context.local_root / "runtime"; staging.mkdir(mode=0o700)
@@ -3039,6 +3047,7 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
                 if mode != ["600", "600"]: raise RuntimeError("remote Task5 config/env mode mismatch")
 
             stage = "epoch-e1"
+            register_cleanup_candidate("fm1", context.remote_root + "/logs")
             upload1_logs = _task5_prepare_log_paths(fm1, context.remote_root, units["e1-uploader"])
             unit_logs[units["e1-uploader"]] = upload1_logs
             remote_files["fm1"].extend(upload1_logs)
@@ -3052,6 +3061,7 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
             follower_units = []
             for name in _LITESTREAM_DATABASES:
                 unit = units[f"e1-follower-{name}"]; follower_units.append(unit)
+                register_cleanup_candidate("fm2", context.remote_root + "/logs")
                 stdout_path, stderr_path = _task5_prepare_log_paths(fm2, context.remote_root, unit)
                 unit_logs[unit] = (stdout_path, stderr_path)
                 remote_files["fm2"].extend((stdout_path, stderr_path))
@@ -3090,8 +3100,9 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
                                        "databases": followed1, "match": True}, repository)
 
             stage = "promote-e1"
+            register_cleanup_candidate("fm2", promoted + "/config.textproto")
+            register_cleanup_candidate("fm2", promoted + "/secrets")
             _task5_transfer_support(fm1, fm2, depot1, promoted, context)
-            remote_files["fm2"].extend((promoted + "/config.textproto", promoted + "/secrets"))
             e1_prefix = f"qualification/{context.run_id}/e1/"
             e1_before = _task5_s3_inventory(client, e1_prefix)
             if not e1_before or any(key["key"].split("/")[3] not in _LITESTREAM_DATABASES for key in e1_before):
@@ -3101,6 +3112,7 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
 
             stage = "epoch-e2"
             trail2, _ = binaries["fm2"]
+            register_cleanup_candidate("fm2", context.remote_root + "/logs")
             upload2_logs = _task5_prepare_log_paths(fm2, context.remote_root, units["e2-uploader"])
             unit_logs[units["e2-uploader"]] = upload2_logs
             remote_files["fm2"].extend(upload2_logs)

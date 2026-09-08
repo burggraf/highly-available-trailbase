@@ -1,5 +1,6 @@
 import datetime
 import hashlib
+import inspect
 import io
 import json
 import os
@@ -1811,6 +1812,22 @@ class LitestreamTask5Tests(unittest.TestCase):
             _task5_remote_cleanup(node(), context, "/m0", [context.remote_root + "/private"])
         self.assertEqual(remote.call_args.args[4], context.remote_root)
         self.assertEqual(remote.call_args.args[5], context.remote_root + "/private")
+
+    def test_task5_partial_transfer_registers_all_promoted_support_before_transfer(self):
+        source = inspect.getsource(_cross_host_flow)
+        transfer = source.index("_task5_transfer_support(fm1, fm2, depot1, promoted, context)")
+        for candidate in ("promoted + \"/config.textproto\"", "promoted + \"/secrets\""):
+            self.assertLess(source.index(candidate), transfer)
+
+    def test_task5_complete_cleanup_candidates_cover_sources_logs_and_no_remaining_pass(self):
+        source = inspect.getsource(_cross_host_flow)
+        self.assertIn('source_dirs = {"fm2": context.remote_root + "/e1-source", "fm3": context.remote_root + "/e2-source"}', source)
+        self.assertIn("register_cleanup_candidate(node_name, source_dir)", source)
+        self.assertLess(source.index("register_cleanup_candidate(node_name, source_dir)"),
+                        source.index("_task5_prepare_source_directory(by_name[node_name], source_dir)"))
+        for node_name in ("fm1", "fm2"):
+            self.assertIn(f"register_cleanup_candidate(\"{node_name}\", context.remote_root + \"/logs\")", source)
+        self.assertIn("if os.path.lexists(candidate):", _TASK5_REMOTE_SCRIPT)
 
     def test_cross_host_early_failure_records_each_node_without_unbound_state(self):
         nodes = [node(name) for name in ("fm1", "fm2", "fm3")]
