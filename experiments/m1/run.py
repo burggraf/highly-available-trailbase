@@ -1153,6 +1153,16 @@ def build_pinned_known_hosts(nodes: list[Node], directory: Path) -> Path:
         raise
 
 
+def _remote_stat_failure_detail(path: str, stderr: bytes | str | None) -> str:
+    # Bound path and stderr independently so either remains useful in one capped detail.
+    safe_path = _task5_bounded_failure_detail(path) or _task5_bounded_failure_detail(repr(path)) or "<unavailable>"
+    safe_detail = _task5_bounded_failure_detail(stderr)
+    parts = [f"target={safe_path[-1024:]}"]
+    if safe_detail:
+        parts.append(f"detail={safe_detail[-900:]}")
+    return _task5_bounded_failure_detail("; ".join(parts)) or "target=<unavailable>"
+
+
 def _remote_stat(node: Node, path: str) -> tuple[str, int, int, int, str]:
     _validate_node_fields(node)
     command = ["stat", "-c", "%F\t%u\t%g\t%a\t%n", "--", path]
@@ -1160,16 +1170,11 @@ def _remote_stat(node: Node, path: str) -> tuple[str, int, int, int, str]:
         result = ssh(node, command, check=False)
         if result.returncode:
             category = _ssh_failure_category(result)
-            detail = _task5_bounded_failure_detail(getattr(result, "stderr", None))
             if category == "transient_transport" and attempt == 0:
                 continue
-            if category == "transient_transport":
-                message = "remote stat transport exhausted"
-            else:
-                message = "remote stat failed"
-            if detail:
-                message += f": {detail}"
-            raise RuntimeError(message)
+            message = ("remote stat transport exhausted"
+                       if category == "transient_transport" else "remote stat failed")
+            raise RuntimeError(f"{message}: {_remote_stat_failure_detail(path, getattr(result, 'stderr', None))}")
         fields = _stdout(result).strip().split("\t")
         if len(fields) != 5:
             raise RuntimeError(f"invalid remote path metadata: {path}")

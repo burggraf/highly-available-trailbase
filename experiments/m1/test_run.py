@@ -550,14 +550,37 @@ class RemoteRootTests(unittest.TestCase):
     def test_remote_stat_exhausted_transient_is_explicit_and_bounded(self):
         transient = subprocess.CompletedProcess([], 255, b"", b"ssh: connect to host fm1.example port 22: Connection refused\n")
         with mock.patch("run.ssh", side_effect=[transient, transient]) as call:
-            with self.assertRaisesRegex(RuntimeError, "remote stat transport exhausted"):
+            with self.assertRaisesRegex(RuntimeError, r"remote stat transport exhausted.*target=/safe"):
                 _remote_stat(node(), "/safe")
             self.assertEqual(call.call_count, 2)
+
+    def test_remote_stat_nontransport_empty_stderr_includes_target(self):
+        missing = subprocess.CompletedProcess([], 1, b"", b"")
+        with mock.patch("run.ssh", return_value=missing) as call:
+            with self.assertRaisesRegex(RuntimeError, r"remote stat failed.*target=/safe"):
+                _remote_stat(node(), "/safe")
+            self.assertEqual(call.call_count, 1)
+
+    def test_remote_stat_failure_evidence_is_safe_and_bounded_for_huge_control_inputs(self):
+        path = "/candidate/" + "p" * 5000 + "-tail\x00\x1b"
+        detail = ("detail " + "d" * 5000 + "\x00\x1b").encode()
+        for category, result, expected in (
+            ("transport", subprocess.CompletedProcess([], 255, b"", b"ssh: connect to host h port 22: Connection refused\n"), "remote stat transport exhausted"),
+            ("nontransport", subprocess.CompletedProcess([], 1, b"", detail), "remote stat failed"),
+        ):
+            with self.subTest(category=category), mock.patch("run.ssh", side_effect=[result, result]):
+                with self.assertRaises(RuntimeError) as raised:
+                    _remote_stat(node(), path)
+                message = str(raised.exception)
+                self.assertIn(expected, message)
+                self.assertLessEqual(len(message.encode()), 2100)
+                self.assertFalse(any((ord(char) < 32 and char not in "\\t\\r\\n") or 127 <= ord(char) <= 159
+                                     for char in message))
 
     def test_remote_stat_genuine_enoent_is_not_retried(self):
         missing = subprocess.CompletedProcess([], 1, b"", b"stat: cannot stat '/safe': No such file or directory\n")
         with mock.patch("run.ssh", return_value=missing) as call:
-            with self.assertRaisesRegex(RuntimeError, "remote stat failed"):
+            with self.assertRaisesRegex(RuntimeError, r"remote stat failed.*target=/safe"):
                 _remote_stat(node(), "/safe")
             self.assertEqual(call.call_count, 1)
 
