@@ -29,7 +29,7 @@ from run import (
     _validate_post_reboot_summary, _provision_workflow, provision, REMOTE_PROVISION_TIMEOUT,
     _M0_COLLECT_SCRIPT, _download_public, _safe_archive_member,
     write_litestream_s3_config, validate_litestream_s3_config, inventory_digest,
-    assert_inventory_unchanged,
+    assert_inventory_unchanged, scrub_private_path,
 )
 
 FP = "SHA256:" + "A" * 43
@@ -1642,6 +1642,20 @@ class LitestreamTask5Tests(unittest.TestCase):
                 write_litestream_s3_config(Path(directory) / "other2", "20260907T120000Z-0123456789", "e1",
                                            endpoint="https://s3.example", region="r1", bucket="b1",
                                            access_key="real-secret")
+
+    def test_scrub_private_path_removes_file_and_refuses_outside_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "root"
+            root.mkdir(mode=0o700)
+            secret = root / "config.yml"
+            secret.write_text("secret")
+            secret.chmod(0o600)
+            scrub_private_path(secret, root)
+            self.assertFalse(secret.exists())
+            outside = Path(directory) / "outside"
+            outside.write_text("keep")
+            with self.assertRaises(ValueError):
+                scrub_private_path(outside, root)
 
     def test_e1_inventory_digest_is_immutable_across_e2(self):
         e1 = [{"key": "p/e1/main/1", "etag": '"a"', "sha256": "a" * 64},

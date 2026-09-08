@@ -199,6 +199,18 @@ def assert_inventory_unchanged(before: str, after: str) -> bool:
     return isinstance(before, str) and isinstance(after, str) and bool(re.fullmatch(r"[0-9a-f]{64}", before)) and before == after
 
 
+def scrub_private_path(path: Path, root: Path) -> None:
+    """Remove only a private artifact beneath the supplied private run root."""
+    path = Path(path).resolve(strict=False)
+    root = Path(root).resolve(strict=True)
+    if path == root or root not in path.parents:
+        raise ValueError("private artifact escapes run root")
+    if path.is_symlink() or (path.exists() and path.is_file()):
+        path.unlink()
+    elif path.exists():
+        raise ValueError("refusing to scrub a directory")
+
+
 def artifact_for(product: str, machine: str) -> Artifact:
     try:
         return _ARTIFACTS[(product, machine)]
