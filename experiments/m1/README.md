@@ -27,7 +27,7 @@ python3 experiments/m1/run.py init-remote \
   --work-root /tmp/hat-m1
 ```
 
-`init-remote` verifies the root-owned, non-symlink `/var/lib/hat-qualification` base, atomically creates a unique `0700` run directory, and removes a newly-created directory if verification fails. Failed local runs remain private for inspection.
+`init-remote` verifies the root-owned, non-symlink `/var/lib/hat-qualification` base, atomically creates a unique `0700` run directory, and removes a newly-created directory if verification fails. Failed local runs remain private for inspection. Task5 treats databases, ledgers, pinned binaries, copied source, restored data, promoted data, clean data, and process logs as intentional private evidence; their declared paths remain available after both success and failure. Cleanup PASS is scoped only to stopped Task5 processes and individually absence-proven credentials, configs, and temporary control files. It does not claim whole-run-root removal; cleanup evidence declares retained-evidence categories and paths for each prepared node.
 
 ## Storage qualification
 

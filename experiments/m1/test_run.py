@@ -35,7 +35,8 @@ from run import (
     task5_unit_argv, task5_replica_uri, read_strict_txid_sidecar, require_strict_position_advancement,
     reconcile_epoch_ledger, validate_litestream_task5_help, _parse_task5_list_keys, _validate_support_archive_members, _parse_task5_log_stat, _task5_validate_log_text, _TASK5_REMOTE_SCRIPT, _task5_prepare_runtime_root, _json_object_without_duplicates,
     _task5_bounded_failure_detail, _task5_remote_json, _task5_stop_unit, _task5_attest_preserved_logs,
-    _task5_attest_preserved_runtime,
+    _task5_attest_preserved_runtime, _task5_sensitive_cleanup_order, _task5_removable_paths,
+    _task5_retained_inventory,
     _raise_scp_failure,
 )
 
@@ -2150,7 +2151,7 @@ class LitestreamTask5Tests(unittest.TestCase):
         response = {"status": "PASS", "results": [{"path": path, "result": "PASS",
                                                       "proof": "absent", "error": None}]}
         with mock.patch("run._task5_remote_json", return_value=response) as remote:
-            _task5_remote_cleanup(node(), context, "/m0", [path])
+            _task5_remote_cleanup(node(), context, "/m0", [path], sensitive=True)
         self.assertEqual(remote.call_args.args[4], context.remote_root)
         self.assertEqual(remote.call_args.args[5], path)
 
@@ -2217,6 +2218,24 @@ class LitestreamTask5Tests(unittest.TestCase):
         transfer = source.index("_task5_transfer_support(fm1, fm2, depot1, promoted, context)")
         for candidate in ("promoted + \"/config.textproto\"", "promoted + \"/secrets\""):
             self.assertLess(source.index(candidate), transfer)
+
+    def test_sensitive_cleanup_orders_credentials_before_trailbase_support(self):
+        paths = ["/run/fixture/secrets", "/run/e2.yml", "/run/fixture/config.textproto",
+                 "/run/e1.env", "/run/fixture/fixture-private.json"]
+        self.assertEqual(_task5_sensitive_cleanup_order(paths), [
+            "/run/e1.env", "/run/e2.yml", "/run/fixture/config.textproto",
+            "/run/fixture/secrets", "/run/fixture/fixture-private.json",
+        ])
+
+    def test_retained_evidence_is_declared_and_excluded_from_cleanup_candidates(self):
+        self.assertEqual(set(_task5_retained_inventory()), {
+            "databases", "ledgers", "binaries", "copied_source", "restored_data",
+            "promoted_data", "clean_data", "logs",
+        })
+        retained = {"databases": ["/run/fixture/data/main.db"],
+                    "copied_source": ["/run/source"], "binaries": ["/run/bin/trail"]}
+        candidates = ["/run/source", "/run/control.json", "/run/fixture/data/main.db", "/run/bin/trail"]
+        self.assertEqual(_task5_removable_paths(candidates, retained), ["/run/control.json"])
 
     def test_task5_cleanup_attempts_every_sensitive_candidate_after_one_failure(self):
         tree = ast.parse(_TASK5_REMOTE_SCRIPT)
@@ -2314,7 +2333,7 @@ class LitestreamTask5Tests(unittest.TestCase):
             def remote(_node, argv, **_kwargs):
                 output = b"masked\n" if argv[0] == "systemctl" and argv[1] == "is-enabled" else b"inactive\n"
                 return subprocess.CompletedProcess([], 0, output, b"")
-            def cleanup_response(_node, _context, _m0, paths):
+            def cleanup_response(_node, _context, _m0, paths, *, sensitive=False):
                 return {"status": "PASS", "results": [{"path": path, "result": "PASS",
                                                           "proof": "absent", "error": None} for path in paths]}
             with mock.patch("s3._read_s3_values", return_value={}), \
@@ -2338,17 +2357,27 @@ class LitestreamTask5Tests(unittest.TestCase):
                     expected = []
                     if call.args[0].name == "fm1":
                         fixture = context.remote_root + "/fixture"
-                        expected = [fixture + "/fixture-private.json"]
+                        expected = []
                         for depot in ("a", "b", "c"):
                             expected += [fixture + f"/{depot}/traildepot/config.textproto", fixture + f"/{depot}/traildepot/secrets"]
+                        expected += [fixture + "/fixture-private.json"]
                     self.assertEqual(call.args[3], expected)
+                    self.assertTrue(call.kwargs["sensitive"])
+                    self.assertTrue(all(item["proof"] == "absent" and item["result"] == "PASS"
+                                        for item in cleanup_response(call.args[0], call.args[1], call.args[2], call.args[3])["results"]))
                 else:
                     self.assertEqual(call.args[3], [context.remote_root + "/task5-remote.py"])
+                    self.assertNotIn("sensitive", call.kwargs)
             events = [json.loads(line) for line in evidence.read_text().splitlines()
                       if json.loads(line).get("operation") == "task5-cleanup-node"]
             self.assertEqual(len(events), 3)
             self.assertTrue(all(event["prepared"] and event["attempted"] and event["result"] == "PASS"
                                 for event in events))
+            self.assertTrue(all(event["pass_scope"] == ["stopped processes", "removed credentials/configs/temporary control files"]
+                                and event["processes"]["status"] == "PASS" for event in events))
+            self.assertTrue(all(set(event["retained_evidence"]) == set(_task5_retained_inventory())
+                                for event in events))
+            self.assertIn("/var/lib/hat-qualification/run/m0", events[0]["retained_evidence"]["copied_source"])
 
     def test_cross_host_cleanup_runner_failure_is_not_reported_as_pass(self):
         nodes = [node(name) for name in ("fm1", "fm2", "fm3")]
@@ -2398,7 +2427,7 @@ class LitestreamTask5Tests(unittest.TestCase):
             def ensure_prepared(node_value, _context):
                 if node_value.name == "fm2":
                     raise RuntimeError("node preparation failed")
-            def cleanup_response(_node, _context, _m0, paths):
+            def cleanup_response(_node, _context, _m0, paths, *, sensitive=False):
                 return {"status": "PASS", "results": [{"path": path, "result": "PASS",
                                                           "proof": "absent", "error": None} for path in paths]}
             with mock.patch("s3._read_s3_values", return_value={}), \
@@ -2424,7 +2453,7 @@ class LitestreamTask5Tests(unittest.TestCase):
 
     def test_task5_position_records_preserve_session_txid_through_evidence_redaction(self):
         from run import _task5_position_records
-        positions = {"main": "0000000000000001", "session": "0000000000000002", "aux": "0000000000000003"}
+        positions = {"main": 1, "session": 2, "aux": 3}
         with tempfile.TemporaryDirectory() as directory, mock.patch("run._LOADED_SECRET_VALUES", set()):
             path = Path(directory) / "evidence.jsonl"
             append_evidence(path, {"selected": _task5_position_records(positions)})
