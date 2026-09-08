@@ -1,0 +1,26 @@
+[Unit]
+Description=HAT D1 fixed-role demo node (no automatic writer restart)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hat-demo
+Group=hat-demo
+UMask=0077
+RuntimeDirectory=hat-demo
+RuntimeDirectoryMode=0700
+StateDirectory=hat-demo
+StateDirectoryMode=0700
+EnvironmentFile=/etc/hat-demo/backup.env
+ExecStart=/usr/bin/python3 /opt/hat-demo/node.py serve
+Restart=no
+KillMode=control-group
+TimeoutStopSec=45
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/hat-demo /run/hat-demo
+
+# Intentionally no Install section: never enable autonomous writable boot.
