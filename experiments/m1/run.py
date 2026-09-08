@@ -140,16 +140,24 @@ def missing_packages(installed: set[str]) -> list[str]:
     return sorted(set(_REQUIRED_PACKAGES) - installed)
 
 
-def _query_required_packages() -> list[str]:
-    installed = set()
+def _query_required_packages() -> list[dict[str, str]]:
+    records = []
+    output_format = "-f=${Package}\\t${Version}\\t${Architecture}\\t${Status}"
     for package in _REQUIRED_PACKAGES:
         result = subprocess.run(
-            ["dpkg-query", "-W", "-f=${Status}", package], capture_output=True, text=True,
+            ["dpkg-query", "-W", output_format, package], capture_output=True, text=True,
             check=False, timeout=30,
         )
-        if result.returncode == 0 and result.stdout.strip() == "install ok installed":
-            installed.add(package)
-    return sorted(installed)
+        if result.returncode:
+            if result.returncode == 1 and not result.stdout.strip():
+                continue
+            raise RuntimeError("required package query failed")
+        fields = result.stdout.strip().split("\t")
+        if (len(fields) != 4 or fields[0] != package or not fields[1] or not fields[2]
+                or fields[3] != "install ok installed"):
+            raise RuntimeError("required package state is malformed")
+        records.append(dict(zip(("name", "version", "architecture", "status"), fields)))
+    return records
 
 
 def validate_binary_version(product: str, output: str) -> str:
@@ -182,8 +190,8 @@ def _binary_version_evidence(trail_output: str, litestream_output: str) -> tuple
 
 
 _PROVISION_SUMMARY_KEYS = {
-    "status", "architecture", "installed_packages", "versions", "binary_versions",
-    "archives", "executables", "services",
+    "status", "architecture", "requested_packages_installed_by_run", "required_package_state",
+    "versions", "binary_versions", "archives", "executables", "services",
 }
 _POST_REBOOT_SUMMARY_KEYS = _PROVISION_SUMMARY_KEYS
 
@@ -196,10 +204,20 @@ def _validate_provision_summary(summary: Any) -> dict[str, Any]:
     if summary["status"] != "PASS" or machine not in {"x86_64", "aarch64"}:
         raise RuntimeError("remote provisioning summary status or architecture mismatch")
     specs = {product: artifact_for(product, machine) for product in ("trailbase", "litestream")}
-    packages = summary["installed_packages"]
-    if (not isinstance(packages, list) or any(not isinstance(item, str) for item in packages)
-            or packages != sorted(set(packages)) or packages != sorted(_REQUIRED_PACKAGES)):
-        raise RuntimeError("remote provisioning package summary mismatch")
+    requested = summary["requested_packages_installed_by_run"]
+    packages = summary["required_package_state"]
+    if (not isinstance(requested, list) or any(not isinstance(item, str) for item in requested)
+            or requested != sorted(set(requested)) or not set(requested) <= set(_REQUIRED_PACKAGES)):
+        raise RuntimeError("remote provisioning package request mismatch")
+    package_architecture = {"x86_64": "amd64", "aarch64": "arm64"}[machine]
+    if (not isinstance(packages, list) or len(packages) != len(_REQUIRED_PACKAGES)
+            or any(not isinstance(item, dict)
+                   or set(item) != {"name", "version", "architecture", "status"}
+                   or not all(isinstance(value, str) and value for value in item.values())
+                   or item["architecture"] not in {"all", package_architecture}
+                   or item["status"] != "install ok installed" for item in packages)
+            or [item["name"] for item in packages] != sorted(_REQUIRED_PACKAGES)):
+        raise RuntimeError("remote provisioning package state mismatch")
     if summary["versions"] != {product: spec.version for product, spec in specs.items()}:
         raise RuntimeError("remote provisioning version summary mismatch")
     if summary["archives"] != {product: spec.archive_sha256 for product, spec in specs.items()}:
@@ -236,7 +254,8 @@ def _validate_post_reboot_summary(summary: Any, initial: dict[str, Any]) -> None
     if not isinstance(summary, dict) or set(summary) != _POST_REBOOT_SUMMARY_KEYS:
         raise RuntimeError("post-reboot provisioning summary schema mismatch")
     _validate_provision_summary(summary)
-    for field in ("architecture", "installed_packages", "versions", "binary_versions", "archives", "executables", "services"):
+    for field in ("architecture", "requested_packages_installed_by_run", "required_package_state",
+                  "versions", "binary_versions", "archives", "executables", "services"):
         if summary[field] != initial[field]:
             raise RuntimeError(f"post-reboot {field} changed")
 
@@ -1163,9 +1182,9 @@ def _release_api(spec: Artifact) -> str:
     return f"https://api.github.com/repos/{repository}/releases/tags/v{spec.version}"
 
 
-def _install_required_packages() -> list[str]:
-    installed = set(_query_required_packages())
-    needed = missing_packages(installed)
+def _install_required_packages() -> tuple[list[dict[str, str]], list[str]]:
+    installed = _query_required_packages()
+    needed = missing_packages({item["name"] for item in installed})
     if needed:
         environment = {**os.environ, "DEBIAN_FRONTEND": "noninteractive"}
         subprocess.run(["apt-get", "update"], env=environment, capture_output=True, check=True, timeout=300)
@@ -1173,10 +1192,10 @@ def _install_required_packages() -> list[str]:
             ["apt-get", "install", "-y", "--no-install-recommends", *needed],
             env=environment, capture_output=True, check=True, timeout=300,
         )
-        installed = set(_query_required_packages())
-    if installed != set(_REQUIRED_PACKAGES):
+        installed = _query_required_packages()
+    if [item["name"] for item in installed] != sorted(_REQUIRED_PACKAGES):
         raise RuntimeError("required package installation did not complete")
-    return sorted(installed)
+    return installed, needed
 
 
 def _trusted_remote_root(root: Path) -> Path:
@@ -1220,9 +1239,16 @@ def _remote_verify(remote_root: Path) -> dict[str, Any]:
     versions, binary_versions = _binary_version_evidence(trail_output, litestream_output)
     services = {unit: _service_state(unit) for unit in _WRITER_UNITS}
     packages = _query_required_packages()
-    if packages != sorted(_REQUIRED_PACKAGES):
-        raise RuntimeError("required package state changed after reboot")
-    return {"status": "PASS", "architecture": machine, "installed_packages": packages, "versions": versions,
+    request_path = root / "requested-packages-installed-by-run.json"
+    if not request_path.is_file() or request_path.is_symlink():
+        raise RuntimeError("required package request evidence is missing")
+    try:
+        requested = json.loads(request_path.read_text(encoding="utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("required package request evidence is invalid") from exc
+    return {"status": "PASS", "architecture": machine,
+            "requested_packages_installed_by_run": requested, "required_package_state": packages,
+            "versions": versions,
             "binary_versions": binary_versions,
             "archives": {spec.product: _remote_hash(downloads / spec.filename) for spec in specs},
             "executables": {spec.product: _remote_hash(binaries / spec.executable) for spec in specs},
@@ -1238,7 +1264,14 @@ def remote_provision(remote_root: Path) -> dict[str, Any]:
 
     # Fence writers before package manager, release metadata, or archive work.
     mask_writer_services(Path("/etc/systemd/system"))
-    installed = _install_required_packages()
+    packages, requested = _install_required_packages()
+    request_path = root / "requested-packages-installed-by-run.json"
+    with request_path.open("x", encoding="utf-8") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        json.dump(requested, stream)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
 
     downloads = root / "downloads"
     downloads.mkdir(mode=0o700)
@@ -1278,7 +1311,8 @@ def remote_provision(remote_root: Path) -> dict[str, Any]:
     ).stdout
     versions, binary_versions = _binary_version_evidence(trail_output, litestream_output)
     summary = {
-        "status": "PASS", "architecture": machine, "installed_packages": sorted(installed),
+        "status": "PASS", "architecture": machine,
+        "requested_packages_installed_by_run": requested, "required_package_state": packages,
         "versions": versions, "binary_versions": binary_versions,
         "archives": {spec.product: spec.archive_sha256 for spec in specs},
         "executables": {spec.product: spec.executable_sha256 for spec in specs},
@@ -1350,6 +1384,23 @@ def _copy_m0_source(node: Node, context: RunContext, repository: Path) -> str:
     return remote_dir
 
 
+_M0_COMMON_LOGS = {
+    "trail-a-bootstrap.log", "trail-a.log", "follow-trail-a.log", "replicator-a.log",
+    "follower-b-main.log", "follower-b-session.log", "follower-b-aux.log",
+}
+_M0_EPOCH2_LOGS = {"replicator-b-e2.log", "follower-c-main.log", "follower-c-session.log", "follower-c-aux.log"}
+_M0_EXPECTED_LOGS = {
+    "follow": _M0_COMMON_LOGS,
+    "graceful": _M0_COMMON_LOGS | {"trail-b.log"} | _M0_EPOCH2_LOGS,
+    "lagged-crash": _M0_COMMON_LOGS | {"trail-a-lagged.log", "trail-b-lagged.log"} | _M0_EPOCH2_LOGS,
+    "crash": _M0_COMMON_LOGS | {
+        "trail-a-crash.log", "replicator-a-crash.log", "crash-follower-main.log",
+        "crash-follower-session.log", "crash-follower-aux.log", "trail-b-crash.log",
+    } | _M0_EPOCH2_LOGS,
+    "guards": _M0_COMMON_LOGS | {"guard-live.log", "guard-exited.log", "guard-stalled.log"},
+}
+
+
 _M0_COLLECT_SCRIPT = r'''import hashlib, json, pathlib, tarfile, sys
 root, output = map(pathlib.Path, sys.argv[1:])
 RESULT_MAX = 8 * 1024 * 1024
@@ -1405,16 +1456,18 @@ if len(runs) == 1:
         if path.is_symlink():
             raise RuntimeError("symlink in M0 logs")
         if path.is_file() and path.parent.name == "logs":
-            relative = safe_relative(path, run)
-            archive_path = relative if relative.startswith("logs/") else "logs/" + relative
-            logs.append({"path": archive_path, "sha256": bounded_hash(path, LOG_MAX)})
-    evidence["logs"] = logs
+            relative = path.relative_to(run)
+            if len(relative.parts) != 3 or relative.parts[1] != "logs":
+                raise RuntimeError("unexpected M0 log location")
+            namespace = "guards-1" if relative.parts[0] == "guards" else relative.parts[0]
+            archive_path = f"logs/{namespace}/{relative.name}"
+            logs.append({"path": archive_path, "source": safe_relative(path, run),
+                         "sha256": bounded_hash(path, LOG_MAX)})
+    evidence["logs"] = [{"path": item["path"], "sha256": item["sha256"]} for item in logs]
     evidence["log_count"] = len(logs)
 with tarfile.open(output / "m0-logs.tar.gz", "x:gz") as archive:
     for item in logs:
-        path = run / pathlib.PurePosixPath(item["path"])
-        if not path.is_file():
-            path = run / pathlib.PurePosixPath(item["path"][len("logs/"):])
+        path = run / pathlib.PurePosixPath(item["source"])
         info = archive.gettarinfo(str(path), arcname=item["path"])
         if not info.isfile():
             raise RuntimeError("non-regular M0 log")
@@ -1501,6 +1554,13 @@ def _validate_m0_aggregate(node: Node, expected_architecture: str, aggregate: An
     actual_matrix = {(item["scenario"], item["iteration"]) for item in results}
     log_paths = {item.get("path") for item in manifest.get("logs", []) if isinstance(item, dict)}
     expected_refs = {f"logs/{scenario}-{iteration}/" for scenario, iteration in expected_matrix}
+    expected_log_paths = {
+        f"logs/{scenario}-{iteration}/{name}"
+        for scenario, iteration in expected_matrix
+        for name in _M0_EXPECTED_LOGS[scenario]
+    }
+    if log_paths != expected_log_paths:
+        return False
     refs = []
     for item in results:
         evidence = item.get("evidence")
@@ -1510,12 +1570,7 @@ def _validate_m0_aggregate(node: Node, expected_architecture: str, aggregate: An
                 or not any(isinstance(path, str) and path.startswith(ref) for path in log_paths)):
             return False
         refs.append(ref)
-    if set(refs) != expected_refs or any(
-            not isinstance(path, str) or not any(path.startswith(ref) for ref in expected_refs)
-            for path in log_paths):
-        return False
-    if {path for path in log_paths if isinstance(path, str)} != {
-            path for ref in refs for path in log_paths if isinstance(path, str) and path.startswith(ref)}:
+    if set(refs) != expected_refs:
         return False
     return (
         len(actual_matrix) == len(expected_matrix)
@@ -1771,7 +1826,8 @@ def _provision_workflow(nodes: list[Node], context: RunContext, evidence: Path, 
                                            "status": "PASS", "old_boot_id": boot_ids[node.name],
                                            "new_boot_id": new_boot_id,
                                            "services": post_summary["services"],
-                                           "installed_packages": post_summary["installed_packages"],
+                                           "requested_packages_installed_by_run": post_summary["requested_packages_installed_by_run"],
+                                           "required_package_state": post_summary["required_package_state"],
                                            "versions": post_summary["versions"],
                                            "binary_versions": post_summary["binary_versions"],
                                            "archives": post_summary["archives"],

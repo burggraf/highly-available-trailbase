@@ -23,6 +23,7 @@ from run import (
     Artifact, artifact_for, confined_remote_path, extract_verified_artifact,
     mask_writer_services, missing_packages, published_checksum,
     validate_binary_version, validate_release_metadata, _install_required_packages,
+    _query_required_packages, _M0_EXPECTED_LOGS,
     _binary_version_evidence, _copy_from_node, _run_m0_linux_parity,
     _validate_m0_aggregate, _validate_m0_log_archive, _validate_provision_summary,
     _validate_post_reboot_summary, _provision_workflow, provision, REMOTE_PROVISION_TIMEOUT,
@@ -1092,14 +1093,22 @@ class ProvisionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             missing_packages(installed | {"unexpected"})
 
-    def test_installed_package_query_uses_dpkg_status_field_without_shell_expansion(self):
-        installed = subprocess.CompletedProcess([], 0, "install ok installed", "")
-        with mock.patch("run.subprocess.run", return_value=installed) as execute:
-            self.assertEqual(_install_required_packages(), ["ca-certificates", "curl", "python3", "sqlite3", "unzip"])
+    def test_required_package_query_records_exact_state_without_inventorying_os(self):
+        def query(argv, **kwargs):
+            package = argv[-1]
+            return subprocess.CompletedProcess(argv, 0,
+                f"{package}\t1.2-{len(package)}\tamd64\tinstall ok installed", "")
+        with mock.patch("run.subprocess.run", side_effect=query) as execute:
+            records = _query_required_packages()
+        self.assertEqual([record["name"] for record in records],
+                         ["ca-certificates", "curl", "python3", "sqlite3", "unzip"])
+        self.assertTrue(all(set(record) == {"name", "version", "architecture", "status"}
+                            and record["status"] == "install ok installed" for record in records))
         self.assertEqual(execute.call_count, 5)
-        self.assertTrue(all(call.args[0][2] == "-f=${Status}" for call in execute.call_args_list))
+        self.assertTrue(all(call.args[0][2] == "-f=${Package}\\t${Version}\\t${Architecture}\\t${Status}"
+                            for call in execute.call_args_list))
 
-    def test_newly_installed_packages_are_requeried_and_reported_completely(self):
+    def test_newly_installed_packages_are_requeried_and_exact_apt_argv_is_reported(self):
         calls = []
         def run(argv, **kwargs):
             calls.append(argv)
@@ -1107,12 +1116,24 @@ class ProvisionTests(unittest.TestCase):
                 package = argv[-1]
                 queried = len([call for call in calls if call[0] == "dpkg-query"])
                 installed = queried > 5 or package in {"ca-certificates", "curl", "python3"}
-                return subprocess.CompletedProcess(argv, 0 if installed else 1,
-                                                   "install ok installed" if installed else "", "")
+                stdout = f"{package}\t1.0\tamd64\tinstall ok installed" if installed else ""
+                return subprocess.CompletedProcess(argv, 0 if installed else 1, stdout, "")
             return subprocess.CompletedProcess(argv, 0, "", "")
         with mock.patch("run.subprocess.run", side_effect=run):
-            self.assertEqual(_install_required_packages(), ["ca-certificates", "curl", "python3", "sqlite3", "unzip"])
-        self.assertEqual([call[0] for call in calls].count("apt-get"), 2)
+            records, requested = _install_required_packages()
+        self.assertEqual(requested, ["sqlite3", "unzip"])
+        self.assertEqual(len(records), 5)
+        self.assertIn(["apt-get", "install", "-y", "--no-install-recommends", "sqlite3", "unzip"], calls)
+
+    def test_already_installed_packages_report_empty_request_and_skip_apt(self):
+        def run(argv, **kwargs):
+            package = argv[-1]
+            return subprocess.CompletedProcess(argv, 0,
+                f"{package}\t1.0\tamd64\tinstall ok installed", "")
+        with mock.patch("run.subprocess.run", side_effect=run) as execute:
+            records, requested = _install_required_packages()
+        self.assertEqual((len(records), requested), (5, []))
+        self.assertTrue(all(call.args[0][0] == "dpkg-query" for call in execute.call_args_list))
 
     def test_versions_are_exact(self):
         trail = "trail v0.33.11-0-gf24291b8 (2026-09-04)\nsqlite: 3.53.2\n"
@@ -1148,10 +1169,29 @@ class ProvisionTests(unittest.TestCase):
                      "platform": {"system": "Linux", "machine": machine},
                      "trail_sha256": trail, "litestream_sha256": litestream, "results": results}
         result_digest = hashlib.sha256(json.dumps(aggregate).encode()).hexdigest()
+        log_paths = sorted(
+            f"logs/{item['scenario']}-{item['iteration']}/{name}"
+            for item in results for name in _M0_EXPECTED_LOGS[item["scenario"]])
+        payload = b"log\n"
         manifest = {"run_count": 1, "result_present": True, "result_sha256": result_digest,
-                    "result_status": "PASS", "repeat": 3, "result_count": 13, "log_count": 13,
-                    "logs": [{"path": f"logs/{item['scenario']}-{item['iteration']}/log.txt", "sha256": "0" * 64} for item in results]}
+                    "result_status": "PASS", "repeat": 3, "result_count": 13, "log_count": len(log_paths),
+                    "logs": [{"path": path, "sha256": hashlib.sha256(payload).hexdigest()}
+                             for path in log_paths]}
         self.assertFalse(_validate_m0_aggregate(node("fm1"), machine, aggregate, manifest, result_digest))
+        with tempfile.TemporaryDirectory() as d:
+            archive_path = Path(d) / "logs.tar.gz"
+            with tarfile.open(archive_path, "w:gz") as archive:
+                for path in log_paths:
+                    info = tarfile.TarInfo(path); info.size = len(payload)
+                    archive.addfile(info, io.BytesIO(payload))
+            self.assertTrue(_validate_m0_aggregate(node("fm1"), machine, aggregate, manifest,
+                                                   result_digest, archive_path))
+            for logs in (manifest["logs"][:-1],
+                         [*manifest["logs"], {"path": "logs/follow-1/invented.log",
+                                              "sha256": hashlib.sha256(payload).hexdigest()}]):
+                changed = {**manifest, "logs": logs, "log_count": len(logs)}
+                self.assertFalse(_validate_m0_aggregate(node("fm1"), machine, aggregate, changed,
+                                                        result_digest, archive_path))
 
         mutations = []
         for field, value in (("scenario", "follow"), ("status", "FAIL"), ("repeat", 2),
@@ -1359,7 +1399,12 @@ class ProvisionTests(unittest.TestCase):
     def test_provision_summary_and_reboot_parity_are_exact(self):
         machine = "x86_64"
         trail = "trail v0.33.11-0-gf24291b8 (2026-09-04)\nsqlite: 3.53.2"
-        summary = {"status": "PASS", "architecture": machine, "installed_packages": ["ca-certificates", "curl", "python3", "sqlite3", "unzip"],
+        packages = [{"name": name, "version": "1.0", "architecture": "amd64",
+                     "status": "install ok installed"}
+                    for name in ("ca-certificates", "curl", "python3", "sqlite3", "unzip")]
+        summary = {"status": "PASS", "architecture": machine,
+                   "requested_packages_installed_by_run": ["sqlite3", "unzip"],
+                   "required_package_state": packages,
                    "versions": {"trailbase": "0.33.11", "litestream": "0.5.17"},
                    "binary_versions": {"trailbase": {"reported": trail, "build": "v0.33.11-0-gf24291b8",
                                                         "embedded_sqlite_version": "3.53.2"},
@@ -1369,14 +1414,22 @@ class ProvisionTests(unittest.TestCase):
                    "services": {"hat-trailbase.service": "masked-and-inactive",
                                 "hat-litestream.service": "masked-and-inactive"}}
         _validate_provision_summary(summary)
-        for packages in (summary["installed_packages"][:-1], [*summary["installed_packages"], "unexpected"]):
+        for changed in (packages[:-1], [*packages, {**packages[0], "name": "unexpected"}],
+                        [{**packages[0]}, {**packages[0]}, *packages[2:]],
+                        [{key: value for key, value in packages[0].items() if key != "version"}, *packages[1:]],
+                        [{**packages[0], "unknown": "field"}, *packages[1:]],
+                        [{**packages[0], "architecture": "arm64"}, *packages[1:]]):
             with self.assertRaises(RuntimeError):
-                _validate_provision_summary({**summary, "installed_packages": packages})
+                _validate_provision_summary({**summary, "required_package_state": changed})
+        for requested in (["unexpected"], ["sqlite3", "sqlite3"], ["unzip", "sqlite3"]):
+            with self.assertRaises(RuntimeError):
+                _validate_provision_summary({**summary, "requested_packages_installed_by_run": requested})
         post = dict(summary)
         _validate_post_reboot_summary(post, summary)
-        for packages in (summary["installed_packages"][:-1], [*summary["installed_packages"], "unexpected"]):
+        for field, value in (("version", "2.0"), ("architecture", "arm64")):
+            changed = [{**packages[0], field: value}, *packages[1:]]
             with self.assertRaises(RuntimeError):
-                _validate_post_reboot_summary({**post, "installed_packages": packages}, summary)
+                _validate_post_reboot_summary({**post, "required_package_state": changed}, summary)
         for field in ("archives", "executables", "versions", "binary_versions", "services"):
             changed = dict(post)
             changed[field] = dict(post[field])
@@ -1387,7 +1440,12 @@ class ProvisionTests(unittest.TestCase):
     def test_three_node_provision_fixture_records_reboot_parity_and_mutation_no_go(self):
         machine = "x86_64"
         trail = "trail v0.33.11-0-gf24291b8 (2026-09-04)\nsqlite: 3.53.2"
-        summary = {"status": "PASS", "architecture": machine, "installed_packages": ["ca-certificates", "curl", "python3", "sqlite3", "unzip"],
+        packages = [{"name": name, "version": "1.0", "architecture": "amd64",
+                     "status": "install ok installed"}
+                    for name in ("ca-certificates", "curl", "python3", "sqlite3", "unzip")]
+        summary = {"status": "PASS", "architecture": machine,
+                   "requested_packages_installed_by_run": ["sqlite3", "unzip"],
+                   "required_package_state": packages,
                    "versions": {"trailbase": "0.33.11", "litestream": "0.5.17"},
                    "binary_versions": {"trailbase": {"reported": trail, "build": "v0.33.11-0-gf24291b8",
                                                         "embedded_sqlite_version": "3.53.2"},
@@ -1454,9 +1512,21 @@ class ProvisionTests(unittest.TestCase):
             result = subprocess.run(["python3", "-c", _M0_COLLECT_SCRIPT, str(root), str(output)], capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr.decode())
             evidence = json.loads((output / "m0-evidence.json").read_text())
-            self.assertEqual(evidence["logs"][0]["path"], "logs/follow-1/logs/worker.log")
+            self.assertEqual(evidence["logs"][0]["path"], "logs/follow-1/worker.log")
             with tarfile.open(output / "m0-logs.tar.gz", "r:gz") as archive:
-                self.assertEqual(archive.getnames(), ["logs/follow-1/logs/worker.log"])
+                self.assertEqual(archive.getnames(), ["logs/follow-1/worker.log"])
+
+    def test_m0_collector_normalizes_guards_namespace(self):
+        with tempfile.TemporaryDirectory() as d:
+            root, output = Path(d) / "root", Path(d) / "out"
+            logs = root / "run-1" / "guards" / "logs"
+            logs.mkdir(parents=True); output.mkdir()
+            (logs / "guard-live.log").write_text("ok\\n")
+            result = subprocess.run(["python3", "-c", _M0_COLLECT_SCRIPT, str(root), str(output)],
+                                    capture_output=True)
+            self.assertEqual(result.returncode, 0, result.stderr.decode())
+            evidence = json.loads((output / "m0-evidence.json").read_text())
+            self.assertEqual(evidence["logs"][0]["path"], "logs/guards-1/guard-live.log")
 
     def test_m0_collector_rejects_symlinked_run_root(self):
         with tempfile.TemporaryDirectory() as d:
