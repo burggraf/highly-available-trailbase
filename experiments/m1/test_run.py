@@ -1906,8 +1906,9 @@ class LitestreamTask5Tests(unittest.TestCase):
         self.assertEqual(len(_task5_validate_log_text(text)), 23)
         start = _TASK5_REMOTE_SCRIPT.index('LOG_FIELDS = {')
         end = _TASK5_REMOTE_SCRIPT.index('\ndef remove_confined', start)
-        namespace = {'__name__': 'remote_test', '__builtins__': __builtins__, 'json': json, 're': __import__('re'), 'shlex': __import__('shlex'), '_json_object_without_duplicates': _json_object_without_duplicates}
+        namespace = {'__name__': 'remote_test', '__builtins__': __builtins__, 'json': json, 're': __import__('re'), 'shlex': __import__('shlex')}
         exec(_TASK5_REMOTE_SCRIPT[start:end], namespace)
+        self.assertIn('_json_object_without_duplicates', namespace)
         self.assertEqual(len(namespace['parse_log'](text)), 23)
         for bad in ('{"level":"INFO","level":"WARN","msg":"x"}',
                     '{"level":1,"msg":"ordinary"}', '{"level":"ERROR","msg":"x"}',

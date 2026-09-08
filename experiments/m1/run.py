@@ -298,6 +298,28 @@ LOG_FIELDS = {"time", "level", "msg", "message", "version", "dir", "count", "wat
 LOG_LEVELS = {"DEBUG", "INFO", "WARN", "ERROR", "FATAL"}
 APPLY_ERROR = re.compile(r"(?:error applying updates|apply(?:ing)? updates? failed|failed to apply|apply failure|decoder error|storage error)", re.I)
 
+def _json_object_without_duplicates(text):
+    captured = []
+    def pairs(items):
+        captured.extend(items)
+        return dict(items)
+    value = json.loads(text, object_pairs_hook=pairs)
+    if not isinstance(value, dict):
+        raise ValueError("log record is not an object")
+    duplicates = [key for key, _ in captured if sum(k == key for k, _ in captured) > 1]
+    if duplicates:
+        if (duplicates == ["level", "level"] and
+                [item for key, item in captured if key == "level"] == ["INFO", ""] and
+                value.get("msg") == "litestream" and value.get("version") == "0.5.17"):
+            value["level"] = "INFO"
+        elif (duplicates == ["level", "level"] and value.get("msg") in {"starting compaction monitor", "compaction complete"}
+              and [item for key, item in captured if key == "level"][0] == "INFO"
+              and [item for key, item in captured if key == "level"][1] in {1, 2, 3, 9}):
+            value["level"] = "INFO"
+        else:
+            raise ValueError("duplicate log field")
+    return value
+
 def parse_log(text, allow_empty=False):
     events = []
     for line in text.splitlines():
