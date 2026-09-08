@@ -1139,18 +1139,19 @@ class ProvisionTests(unittest.TestCase):
         trail = artifact_for("trailbase", machine).executable_sha256
         litestream = artifact_for("litestream", machine).executable_sha256
         results = [{"scenario": scenario, "iteration": iteration, "status": "PASS",
-                    "evidence": {"logs_ref": "logs/"}}
+                    "evidence": {"logs_ref": f"logs/{scenario}-{iteration}/"}}
                    for iteration in range(1, 4)
                    for scenario in ("follow", "graceful", "crash", "lagged-crash")]
         results.append({"scenario": "guards", "iteration": 1, "status": "PASS",
-                        "evidence": {"logs_ref": "logs/"}})
+                        "evidence": {"logs_ref": "logs/guards-1/"}})
         aggregate = {"scenario": "all", "status": "PASS", "repeat": 3,
                      "platform": {"system": "Linux", "machine": machine},
                      "trail_sha256": trail, "litestream_sha256": litestream, "results": results}
         result_digest = hashlib.sha256(json.dumps(aggregate).encode()).hexdigest()
         manifest = {"run_count": 1, "result_present": True, "result_sha256": result_digest,
-                    "result_status": "PASS", "repeat": 3, "result_count": 13, "log_count": 1}
-        self.assertTrue(_validate_m0_aggregate(node("fm1"), machine, aggregate, manifest, result_digest))
+                    "result_status": "PASS", "repeat": 3, "result_count": 13, "log_count": 13,
+                    "logs": [{"path": f"logs/{item['scenario']}-{item['iteration']}/log.txt", "sha256": "0" * 64} for item in results]}
+        self.assertFalse(_validate_m0_aggregate(node("fm1"), machine, aggregate, manifest, result_digest))
 
         mutations = []
         for field, value in (("scenario", "follow"), ("status", "FAIL"), ("repeat", 2),
@@ -1211,7 +1212,7 @@ class ProvisionTests(unittest.TestCase):
                                  ("m0-linux-parity", "NO-GO", 3))
                 self.assertNotIn("private", json.dumps(event))
                 if isinstance(termination, subprocess.CompletedProcess):
-                    self.assertEqual(event["failures"], ["resource capability: no space left on device"])
+                    self.assertEqual(event["failures"], ["resource capability: no space left on device", "copied logs are unsafe or incomplete"])
                 self.assertTrue((local / "fm1-m0-evidence.json").is_file())
                 self.assertTrue((local / "fm1-m0-logs.tar.gz").is_file())
 

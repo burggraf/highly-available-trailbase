@@ -1325,13 +1325,13 @@ def run_all(trail: Path, litestream: Path, root: Path, repeat: int) -> int:
             results.append({"iteration": iteration, **result, "evidence": {
                 "operations": operation_count, "commands": command_count,
                 "operations_ref": "operations.jsonl", "commands_ref": "commands.jsonl",
-                "logs_ref": "logs/", "log_isolation": "private run directory",
+                "logs_ref": f"logs/{name}-{iteration}/", "log_isolation": "private run directory",
             }})
     guards_root = root / "guards"
     guards_root.mkdir(mode=0o700)
     run_guards(trail, litestream, guards_root)
     results.append({"iteration": 1, **json.loads((guards_root / "result.json").read_text()),
-                    "evidence": {"commands_ref": "commands.jsonl", "logs_ref": "logs/", "log_isolation": "private run directory"}})
+                    "evidence": {"commands_ref": "commands.jsonl", "logs_ref": "logs/guards-1/", "log_isolation": "private run directory"}})
     summary = {
         "scenario": "all", "status": "PASS", "repeat": repeat,
         "platform": {"system": __import__("platform").system(), "machine": __import__("platform").machine()},

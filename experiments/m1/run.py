@@ -1406,12 +1406,12 @@ if len(runs) == 1:
             raise RuntimeError("symlink in M0 logs")
         if path.is_file() and path.parent.name == "logs":
             relative = safe_relative(path, run)
-            logs.append({"path": relative, "sha256": bounded_hash(path, LOG_MAX)})
+            logs.append({"path": "logs/" + relative, "sha256": bounded_hash(path, LOG_MAX)})
     evidence["logs"] = logs
     evidence["log_count"] = len(logs)
 with tarfile.open(output / "m0-logs.tar.gz", "x:gz") as archive:
     for item in logs:
-        path = run / pathlib.PurePosixPath(item["path"])
+        path = run / pathlib.PurePosixPath(item["path"][len("logs/"):])
         info = archive.gettarinfo(str(path), arcname=item["path"])
         if not info.isfile():
             raise RuntimeError("non-regular M0 log")
@@ -1496,6 +1496,19 @@ def _validate_m0_aggregate(node: Node, expected_architecture: str, aggregate: An
            or type(item.get("iteration")) is not int for item in results):
         return False
     actual_matrix = {(item["scenario"], item["iteration"]) for item in results}
+    log_paths = {item.get("path") for item in manifest.get("logs", []) if isinstance(item, dict)}
+    refs = []
+    for item in results:
+        evidence = item.get("evidence")
+        ref = evidence.get("logs_ref") if isinstance(evidence, dict) else None
+        if (not isinstance(ref, str) or not ref.startswith("logs/") or not ref.endswith("/")
+                or not _safe_archive_member(ref[:-1]) or ref in refs
+                or not any(isinstance(path, str) and path.startswith(ref) for path in log_paths)):
+            return False
+        refs.append(ref)
+    if {path for path in log_paths if isinstance(path, str)} != {
+            path for ref in refs for path in log_paths if isinstance(path, str) and path.startswith(ref)}:
+        return False
     return (
         len(actual_matrix) == len(expected_matrix)
         and actual_matrix == expected_matrix
@@ -1517,9 +1530,8 @@ def _validate_m0_aggregate(node: Node, expected_architecture: str, aggregate: An
         and manifest.get("result_count") == 13
         and type(manifest.get("log_count")) is int
         and manifest.get("log_count") > 0
-        and all(isinstance(item.get("evidence"), dict)
-                and item["evidence"].get("logs_ref") == "logs/" for item in results)
-        and (logs_archive is None or _validate_m0_log_archive(logs_archive, manifest))
+        and logs_archive is not None
+        and _validate_m0_log_archive(logs_archive, manifest)
     )
 
 
@@ -1585,7 +1597,7 @@ def _run_m0_linux_parity(node: Node, context: RunContext, evidence: Path, local_
 
     aggregate: dict[str, Any] = {}
     result_sha256 = ""
-    if manifest.get("logs") and not _validate_m0_log_archive(local_logs, manifest):
+    if not _validate_m0_log_archive(local_logs, manifest):
         failures.append("copied logs are unsafe or incomplete")
     if local_result.is_file():
         try:
