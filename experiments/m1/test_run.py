@@ -1919,6 +1919,10 @@ class LitestreamTask5Tests(unittest.TestCase):
 
     def test_task5_stat_parser_preserves_multiword_file_kind(self):
         self.assertEqual(_parse_task5_log_stat("regular file\t600\t42\n"), ("regular file", "600", 42))
+        self.assertEqual(_parse_task5_log_stat("regular empty file\t600\t0\n"), ("regular empty file", "600", 0))
+        for value in ("regular empty file\t600\t1\n", "regular file\t600\t0\n", "directory\t600\t0\n"):
+            with self.subTest(value=value):
+                with self.assertRaises(RuntimeError): _parse_task5_log_stat(value)
         with self.assertRaises(RuntimeError): _parse_task5_log_stat("regular  file 600 42\\n")
 
     def test_task5_remote_failure_includes_bounded_safe_stderr(self):
@@ -1961,6 +1965,27 @@ class LitestreamTask5Tests(unittest.TestCase):
             self.assertLessEqual(len(detail.encode()), 2048)
             self.assertNotIn(secret, detail)
 
+    def test_task5_stop_accepts_collected_unit_after_stop_failure(self):
+        unit = "hat-task5-0123456789-e1-uploader"
+        stdout_path = "/var/lib/hat-qualification/run/logs/u.stdout"
+        stderr_path = "/var/lib/hat-qualification/run/logs/u.stderr"
+        line = b'{"level":"INFO","msg":"ready"}\n'
+        def remote(_node, argv, **_kwargs):
+            if argv[:2] == ["systemctl", "stop"]:
+                return subprocess.CompletedProcess([], 5, b"", b"already collected")
+            if argv[:2] == ["systemctl", "show"] and "LoadState" in argv:
+                return subprocess.CompletedProcess([], 0, b"not-found\n", b"")
+            if argv[0] == "stat":
+                data = line if argv[-1] == stdout_path else b""
+                kind = "regular file" if data else "regular empty file"
+                return subprocess.CompletedProcess([], 0, f"{kind}\t600\t{len(data)}\n".encode(), b"")
+            if argv[0] == "head":
+                return subprocess.CompletedProcess([], 0, line if argv[-1] == stdout_path else b"", b"")
+            raise AssertionError(argv)
+        with mock.patch("run.ssh", side_effect=remote):
+            result = _task5_stop_unit(node(), unit, "/var/lib/hat-qualification/run/e1.yml", stdout_path, stderr_path)
+        self.assertEqual(result["state"], "inactive")
+
     def test_task5_collected_unit_is_stopped_but_logs_remain_validated(self):
         unit = "hat-task5-0123456789-e1-uploader"
         stdout_path = "/var/lib/hat-qualification/run/logs/u.stdout"
@@ -1973,7 +1998,8 @@ class LitestreamTask5Tests(unittest.TestCase):
                 return subprocess.CompletedProcess([], 0, b"not-found\n", b"")
             if argv[0] == "stat":
                 data = line if argv[-1] == stdout_path else b""
-                return subprocess.CompletedProcess([], 0, f"regular file\t600\t{len(data)}\n".encode(), b"")
+                kind = "regular file" if data else "regular empty file"
+                return subprocess.CompletedProcess([], 0, f"{kind}\t600\t{len(data)}\n".encode(), b"")
             if argv[0] == "head":
                 return subprocess.CompletedProcess([], 0, line if argv[-1] == stdout_path else b"", b"")
             raise AssertionError(argv)
@@ -2040,7 +2066,8 @@ class LitestreamTask5Tests(unittest.TestCase):
         prepare = source.index("_task5_prepare_runtime_root")
         start = source.index("_task5_start_unit")
         self.assertLess(prepare, start)
-        self.assertLess(source.index('register_cleanup_candidate(node.name, runtime_root)'), prepare)
+        self.assertLess(prepare, source.index('runtime_roots[node.name].append(runtime_root)'))
+        self.assertLess(source.index('runtime_roots[node.name].append(runtime_root)'), start)
 
     def test_remote_config_paths_and_replica_prefixes_are_exact_and_distinct(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -2129,6 +2156,21 @@ class LitestreamTask5Tests(unittest.TestCase):
         for candidate in ("promoted + \"/config.textproto\"", "promoted + \"/secrets\""):
             self.assertLess(source.index(candidate), transfer)
 
+    def test_task5_cleanup_attempts_every_sensitive_candidate_after_one_failure(self):
+        tree = ast.parse(_TASK5_REMOTE_SCRIPT)
+        function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "cleanup_candidates")
+        namespace = {"RuntimeError": RuntimeError, "os": os}
+        exec(compile(ast.Module(body=[function], type_ignores=[]), "task5-remote.py", "exec"), namespace)
+        calls = []
+        def remove(_root, candidate):
+            calls.append(candidate)
+            if candidate == "/run/socket":
+                raise RuntimeError("special file")
+        namespace["remove_confined"] = remove
+        result = namespace["cleanup_candidates"]("/run", ["/run/socket", "/run/secret.env", "/run/config.yml"])
+        self.assertEqual(calls, ["/run/socket", "/run/secret.env", "/run/config.yml"])
+        self.assertEqual([item["result"] for item in result["results"]], ["NO-GO", "PASS", "PASS"])
+
     def test_task5_cleanup_accepts_executable_descendant_but_rejects_writable(self):
         tree = ast.parse(_TASK5_REMOTE_SCRIPT)
         functions = [node for node in tree.body if isinstance(node, ast.FunctionDef)
@@ -2172,9 +2214,9 @@ class LitestreamTask5Tests(unittest.TestCase):
                         source.index("_task5_prepare_source_directory(by_name[node_name], source_dir)"))
         self.assertNotIn('register_cleanup_candidate("fm1", context.remote_root + "/logs")', source)
         self.assertNotIn('register_cleanup_candidate("fm2", context.remote_root + "/logs")', source)
-        self.assertIn('if not primary_flow_failed and log_paths_by_node[node.name]:', source)
-        self.assertIn('remote_files[node.name].append(remote_config)', source)
-        self.assertIn('remote_files[node.name].append(remote_env)', source)
+        self.assertIn('if not primary_flow_failed:', source)
+        self.assertIn('register_sensitive_candidate(node.name, remote_config)', source)
+        self.assertIn('register_sensitive_candidate(node.name, remote_env)', source)
         self.assertIn('_task5_attest_preserved_logs(node, paths)', source)
         self.assertIn("if os.path.lexists(candidate):", _TASK5_REMOTE_SCRIPT)
 
@@ -2224,16 +2266,19 @@ class LitestreamTask5Tests(unittest.TestCase):
                 result = _cross_host_flow(nodes, context, evidence, Path(__file__).resolve().parents[2],
                                           s3_env=Path("/private/s3.env"))
             self.assertEqual(result, StorageStatus.NO_GO)
-            self.assertEqual(cleanup.call_count, 3)
-            for call in cleanup.call_args_list:
+            self.assertEqual(cleanup.call_count, 6)
+            for index, call in enumerate(cleanup.call_args_list):
                 self.assertEqual(call.args[1].remote_root, context.remote_root)
-                expected = [context.remote_root + "/task5-remote.py"]
-                if call.args[0].name == "fm1":
-                    fixture = context.remote_root + "/fixture"
-                    expected += [fixture + "/fixture-private.json"]
-                    for depot in ("a", "b", "c"):
-                        expected += [fixture + f"/{depot}/traildepot/config.textproto", fixture + f"/{depot}/traildepot/secrets"]
-                self.assertEqual(call.args[3], expected)
+                if index % 2 == 0:
+                    expected = []
+                    if call.args[0].name == "fm1":
+                        fixture = context.remote_root + "/fixture"
+                        expected = [fixture + "/fixture-private.json"]
+                        for depot in ("a", "b", "c"):
+                            expected += [fixture + f"/{depot}/traildepot/config.textproto", fixture + f"/{depot}/traildepot/secrets"]
+                    self.assertEqual(call.args[3], expected)
+                else:
+                    self.assertEqual(call.args[3], [context.remote_root + "/task5-remote.py"])
             events = [json.loads(line) for line in evidence.read_text().splitlines()
                       if json.loads(line).get("operation") == "task5-cleanup-node"]
             self.assertEqual(len(events), 3)
@@ -2301,13 +2346,26 @@ class LitestreamTask5Tests(unittest.TestCase):
                 result = _cross_host_flow(nodes, context, evidence, Path(__file__).resolve().parents[2],
                                           s3_env=Path("/private/s3.env"))
             self.assertEqual(result, StorageStatus.NO_GO)
-            self.assertEqual(cleanup.call_count, 1)
+            self.assertEqual(cleanup.call_count, 2)
             events = [json.loads(line) for line in evidence.read_text().splitlines()
                       if json.loads(line).get("operation") == "task5-cleanup-node"]
             self.assertEqual(len(events), 3)
             self.assertEqual(events[0]["result"], "PASS")
             self.assertTrue(events[0]["attempted"] and events[0]["prepared"])
             self.assertTrue(all(not event["attempted"] and not event["prepared"] for event in events[1:]))
+
+    def test_task5_position_records_preserve_session_txid_through_evidence_redaction(self):
+        from run import _task5_position_records
+        positions = {"main": "0000000000000001", "session": "0000000000000002", "aux": "0000000000000003"}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "evidence.jsonl"
+            append_evidence(path, {"selected": _task5_position_records(positions)})
+            event = json.loads(path.read_text())
+        self.assertEqual(event["selected"], [
+            {"database": "main", "txid": "0000000000000001"},
+            {"database": "session", "txid": "0000000000000002"},
+            {"database": "aux", "txid": "0000000000000003"},
+        ])
 
     def test_remote_runner_contains_executable_required_stages(self):
         for stage in ('action == "bootstrap"', 'action == "write"', 'action == "sync"',
