@@ -34,6 +34,7 @@ from run import (
     assert_inventory_unchanged, scrub_private_path, scrub_private_tree, compare_database_summaries,
     task5_unit_argv, task5_replica_uri, read_strict_txid_sidecar, require_strict_position_advancement,
     reconcile_epoch_ledger, validate_litestream_task5_help, _parse_task5_list_keys, _validate_support_archive_members, _parse_task5_log_stat, _task5_validate_log_text, _TASK5_REMOTE_SCRIPT, _task5_prepare_runtime_root, _json_object_without_duplicates,
+    _task5_bounded_failure_detail, _task5_remote_json, _task5_stop_unit, _task5_attest_preserved_logs,
 )
 
 FP = "SHA256:" + "A" * 43
@@ -1861,6 +1862,57 @@ class LitestreamTask5Tests(unittest.TestCase):
         self.assertEqual(_parse_task5_log_stat("regular file\t600\t42\n"), ("regular file", "600", 42))
         with self.assertRaises(RuntimeError): _parse_task5_log_stat("regular  file 600 42\\n")
 
+    def test_task5_remote_failure_includes_bounded_safe_stderr(self):
+        context = RunContext("20260907T010203Z-0123456789", Path("/tmp/local"),
+                             "/var/lib/hat-qualification/20260907T010203Z-0123456789")
+        failed = subprocess.CompletedProcess([], 17, b"", "remote failed\n")
+        with mock.patch("run.ssh", return_value=failed):
+            with self.assertRaisesRegex(RuntimeError, r"remote failed"):
+                _task5_remote_json(node(), context, "/m0", "write")
+
+    def test_task5_remote_failure_detail_rejects_malformed_or_oversize_stderr(self):
+        for stderr in (b"\xff", b"bad\x00control"):
+            with self.subTest(stderr=stderr):
+                detail = _task5_bounded_failure_detail(stderr)
+                self.assertIsNone(detail)
+        self.assertEqual(_task5_bounded_failure_detail(b"x" * 2049), "x" * 2048)
+        self.assertEqual(_task5_bounded_failure_detail(b"x" * 2048), "x" * 2048)
+
+    def test_task5_collected_unit_is_stopped_but_logs_remain_validated(self):
+        unit = "hat-task5-0123456789-e1-uploader"
+        stdout_path = "/var/lib/hat-qualification/run/logs/u.stdout"
+        stderr_path = "/var/lib/hat-qualification/run/logs/u.stderr"
+        line = b'{"level":"INFO","msg":"ready"}\n'
+        def remote(_node, argv, **_kwargs):
+            if argv[:2] == ["systemctl", "stop"]:
+                return subprocess.CompletedProcess([], 0, b"", b"")
+            if argv[:2] == ["systemctl", "show"] and "LoadState" in argv:
+                return subprocess.CompletedProcess([], 0, b"not-found\n", b"")
+            if argv[0] == "stat":
+                data = line if argv[-1] == stdout_path else b""
+                return subprocess.CompletedProcess([], 0, f"regular file\t600\t{len(data)}\n".encode(), b"")
+            if argv[0] == "head":
+                return subprocess.CompletedProcess([], 0, line if argv[-1] == stdout_path else b"", b"")
+            raise AssertionError(argv)
+        with mock.patch("run.ssh", side_effect=remote):
+            result = _task5_stop_unit(node(), unit, "/var/lib/hat-qualification/run/e1.yml", stdout_path, stderr_path)
+        self.assertEqual(result["state"], "inactive")
+        self.assertEqual(result["main_pid"], 0)
+        self.assertEqual(result["logs"], [stdout_path, stderr_path])
+
+    def test_task5_preserved_log_attestation_is_bounded_and_hashed(self):
+        path = "/var/lib/hat-qualification/run/logs/u.stdout"
+        data = b'{"level":"INFO","msg":"ready"}\n'
+        def remote(_node, argv, **_kwargs):
+            if argv[0] == "stat":
+                return subprocess.CompletedProcess([], 0, f"regular file\t600\t{len(data)}\n".encode(), b"")
+            if argv[0] == "head":
+                return subprocess.CompletedProcess([], 0, data, b"")
+            raise AssertionError(argv)
+        with mock.patch("run.ssh", side_effect=remote):
+            result = _task5_attest_preserved_logs(node(), [path])
+        self.assertEqual(result, [{"path": path, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}])
+
     def test_pinned_litestream_help_contract_is_explicit(self):
         sync_help = ("Usage: litestream sync [options] PATH\n\n"
                      "Options:\n  -wait duration\n  -timeout duration\n  -socket path\n  -json\n")
@@ -2035,8 +2087,12 @@ class LitestreamTask5Tests(unittest.TestCase):
         self.assertIn("register_cleanup_candidate(node_name, source_dir)", source)
         self.assertLess(source.index("register_cleanup_candidate(node_name, source_dir)"),
                         source.index("_task5_prepare_source_directory(by_name[node_name], source_dir)"))
-        for node_name in ("fm1", "fm2"):
-            self.assertIn(f"register_cleanup_candidate(\"{node_name}\", context.remote_root + \"/logs\")", source)
+        self.assertNotIn('register_cleanup_candidate("fm1", context.remote_root + "/logs")', source)
+        self.assertNotIn('register_cleanup_candidate("fm2", context.remote_root + "/logs")', source)
+        self.assertIn('if not primary_flow_failed and log_paths_by_node[node.name]:', source)
+        self.assertIn('remote_files[node.name].append(remote_config)', source)
+        self.assertIn('remote_files[node.name].append(remote_env)', source)
+        self.assertIn('_task5_attest_preserved_logs(node, paths)', source)
         self.assertIn("if os.path.lexists(candidate):", _TASK5_REMOTE_SCRIPT)
 
     def test_cross_host_early_failure_records_each_node_without_unbound_state(self):

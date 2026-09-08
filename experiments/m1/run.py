@@ -124,6 +124,7 @@ _LITESTREAM_DATABASES = ("main", "session", "aux")
 _STRICT_TXID = re.compile(r"^[0-9a-f]{16}$")
 _TASK5_LOG_MAX_BYTES = 1024 * 1024
 _TASK5_LOG_MAX_LINES = 10_000
+_TASK5_FAILURE_DETAIL_MAX_BYTES = 2048
 _TASK5_S3_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 _TASK5_S3_MAX_KEYS = 1000
 _TASK5_SUPPORT_ARCHIVE_MAX_BYTES = 8 * 1024 * 1024
@@ -2616,12 +2617,41 @@ def provision(nodes: list[Node], context: RunContext, evidence: Path, repository
         return StorageStatus.NO_GO
 
 
+def _task5_bounded_failure_detail(stderr: bytes | str | None) -> str | None:
+    """Return only a strict, printable tail from a failed remote command."""
+    if stderr is None:
+        return None
+    if isinstance(stderr, str):
+        try:
+            raw = stderr.encode("utf-8", "strict")
+        except UnicodeEncodeError:
+            return None
+    elif isinstance(stderr, bytes):
+        raw = stderr
+    else:
+        return None
+    raw = raw[-_TASK5_FAILURE_DETAIL_MAX_BYTES:]
+    try:
+        detail = raw.decode("utf-8", "strict")
+    except UnicodeDecodeError:
+        return None
+    if len(raw) > _TASK5_FAILURE_DETAIL_MAX_BYTES or len(detail) > _TASK5_FAILURE_DETAIL_MAX_BYTES:
+        return None
+    if any((ord(char) < 32 and char not in "\t\r\n") or 127 <= ord(char) <= 159 for char in detail):
+        return None
+    return detail.strip() or None
+
+
 def _task5_remote_json(node: Node, context: RunContext, m0_dir: str, action: str,
                        *args: str, timeout: float = 240) -> dict[str, Any]:
     result = ssh(node, ["python3", context.remote_root + "/task5-remote.py", m0_dir, action, *args],
                  check=False, timeout=timeout)
     if result.returncode:
-        raise RuntimeError(f"Task5 remote {action} failed on {node.name}")
+        detail = _task5_bounded_failure_detail(getattr(result, "stderr", None))
+        message = f"Task5 remote {action} failed on {node.name}"
+        if detail:
+            message += f": {detail}"
+        raise RuntimeError(message)
     output = _stdout(result).strip()
     try:
         value = json.loads(output)
@@ -2827,6 +2857,26 @@ def _task5_read_log(node: Node, path: str) -> str:
         raise RuntimeError("Task5 process log is not UTF-8") from exc
 
 
+def _task5_attest_preserved_logs(node: Node, paths: list[str]) -> list[dict[str, Any]]:
+    """Describe logs before failure cleanup; callers must retain them on error."""
+    if not paths or len(paths) != len(set(paths)):
+        raise RuntimeError("Task5 preserved log inventory is ambiguous")
+    records = []
+    for path in paths:
+        metadata = ssh(node, ["stat", "-c", "%F\\t%a\\t%s", "--", path], check=False)
+        if metadata.returncode:
+            raise RuntimeError(f"cannot attest preserved Task5 log for {node.name}")
+        _, _, size = _parse_task5_log_stat(_stdout(metadata))
+        if size < 0 or size > _TASK5_LOG_MAX_BYTES:
+            raise RuntimeError(f"invalid preserved Task5 log size for {node.name}")
+        text = _task5_read_log(node, path)
+        raw = text.encode("utf-8")
+        if len(raw) != size:
+            raise RuntimeError(f"Task5 log changed during preservation for {node.name}")
+        records.append({"path": path, "size": size, "sha256": hashlib.sha256(raw).hexdigest()})
+    return records
+
+
 def _task5_start_unit(node: Node, argv: list[str]) -> None:
     result = ssh(node, argv, check=False)
     if result.returncode:
@@ -2851,14 +2901,14 @@ def _task5_wait_socket(node: Node, socket_path: str, unit: str) -> None:
 
 def _task5_cleanup_started_unit(node: Node, unit: str) -> None:
     stopped = ssh(node, ["systemctl", "stop", unit], check=False, timeout=30)
+    if stopped.returncode:
+        raise RuntimeError(f"Task5 cleanup stop failed for {unit}")
     load = ssh(node, ["systemctl", "show", unit, "-p", "LoadState", "--value"], check=False)
     if load.returncode:
         raise RuntimeError(f"Task5 cleanup LoadState query failed for {unit}")
     load_state = _stdout(load).strip()
     if load_state == "not-found":
         return
-    if stopped.returncode:
-        raise RuntimeError(f"Task5 cleanup stop failed for {unit}")
     if load_state != "loaded":
         raise RuntimeError(f"Task5 cleanup found unexpected LoadState {load_state!r} for {unit}")
     active = ssh(node, ["systemctl", "show", unit, "-p", "ActiveState", "--value"], check=False)
@@ -2873,7 +2923,17 @@ def _task5_stop_unit(node: Node, unit: str, config: str, stdout_path: str | None
     stopped = ssh(node, ["systemctl", "stop", unit], check=False, timeout=30)
     if stopped.returncode:
         raise RuntimeError(f"Task5 stop query failed for {unit}")
+    collected = False
     for _ in range(40):
+        load = ssh(node, ["systemctl", "show", unit, "-p", "LoadState", "--value"], check=False)
+        if load.returncode:
+            raise RuntimeError(f"Task5 status query failed for {unit}")
+        load_state = _stdout(load).strip()
+        if load_state == "not-found":
+            collected = True
+            break
+        if load_state != "loaded":
+            raise RuntimeError(f"Task5 process {unit} has unexpected LoadState {load_state!r}")
         status = ssh(node, ["systemctl", "show", unit, "-p", "ActiveState", "--value"], check=False)
         if status.returncode:
             raise RuntimeError(f"Task5 status query failed for {unit}")
@@ -2885,9 +2945,10 @@ def _task5_stop_unit(node: Node, unit: str, config: str, stdout_path: str | None
         time.sleep(0.25)
     else:
         raise RuntimeError(f"Task5 process {unit} did not stop")
-    main = ssh(node, ["systemctl", "show", unit, "-p", "MainPID", "--value"], check=False)
-    if main.returncode or _stdout(main).strip() != "0":
-        raise RuntimeError(f"Task5 process {unit} retained a main pid")
+    if not collected:
+        main = ssh(node, ["systemctl", "show", unit, "-p", "MainPID", "--value"], check=False)
+        if main.returncode or _stdout(main).strip() != "0":
+            raise RuntimeError(f"Task5 process {unit} retained a main pid")
     if not stdout_path or not stderr_path:
         raise RuntimeError(f"Task5 process {unit} has no protected log paths")
     log_events = []
@@ -3211,6 +3272,8 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
     unit_configs: list[tuple[Node, str, str]] = []
     started_units: set[tuple[str, str]] = set()
     unit_logs: dict[str, tuple[str, str]] = {}
+    log_paths_by_node: dict[str, list[str]] = {node.name: [] for node in nodes}
+    primary_flow_failed = True
     support_archive: Path | None = None
     stage = "initialize"
     pins_path = context.local_root / "ssh-pins"
@@ -3286,10 +3349,9 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
                 if mode != ["600", "600"]: raise RuntimeError("remote Task5 config/env mode mismatch")
 
             stage = "epoch-e1"
-            register_cleanup_candidate("fm1", context.remote_root + "/logs")
             upload1_logs = _task5_prepare_log_paths(fm1, context.remote_root, units["e1-uploader"])
             unit_logs[units["e1-uploader"]] = upload1_logs
-            remote_files["fm1"].extend(upload1_logs)
+            log_paths_by_node["fm1"].extend(upload1_logs)
             uploader1 = task5_unit_argv(units["e1-uploader"], envs["fm1-e1"],
                 [lite1, "replicate", "-config", configs["fm1-e1"]], stdout_path=upload1_logs[0], stderr_path=upload1_logs[1])
             started_units.add((fm1.name, units["e1-uploader"])); _task5_start_unit(fm1, uploader1); unit_configs.append((fm1, units["e1-uploader"], configs["fm1-e1"]))
@@ -3300,10 +3362,9 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
             follower_units = []
             for name in _LITESTREAM_DATABASES:
                 unit = units[f"e1-follower-{name}"]; follower_units.append(unit)
-                register_cleanup_candidate("fm2", context.remote_root + "/logs")
                 stdout_path, stderr_path = _task5_prepare_log_paths(fm2, context.remote_root, unit)
                 unit_logs[unit] = (stdout_path, stderr_path)
-                remote_files["fm2"].extend((stdout_path, stderr_path))
+                log_paths_by_node["fm2"].extend((stdout_path, stderr_path))
                 argv = task5_unit_argv(unit, envs["fm2-e1"], [lite2, "restore", "-config", configs["fm2-e1"],
                     "-f", "-follow-interval", "1s", "-o", promoted_data + f"/{name}.db",
                     source_dirs["fm2"] + f"/{name}.db"],
@@ -3351,10 +3412,9 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
 
             stage = "epoch-e2"
             trail2, _ = binaries["fm2"]
-            register_cleanup_candidate("fm2", context.remote_root + "/logs")
             upload2_logs = _task5_prepare_log_paths(fm2, context.remote_root, units["e2-uploader"])
             unit_logs[units["e2-uploader"]] = upload2_logs
-            remote_files["fm2"].extend(upload2_logs)
+            log_paths_by_node["fm2"].extend(upload2_logs)
             uploader2 = task5_unit_argv(units["e2-uploader"], envs["fm2-e2"],
                 [lite2, "replicate", "-config", configs["fm2-e2"]], stdout_path=upload2_logs[0], stderr_path=upload2_logs[1])
             started_units.add((fm2.name, units["e2-uploader"])); _task5_start_unit(fm2, uploader2); unit_configs.append((fm2, units["e2-uploader"], configs["fm2-e2"]))
@@ -3385,6 +3445,7 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
             append_evidence(evidence, {"operation": "task5-e1-inventory-after-e2", "objects": e1_after,
                                        "digest": after_digest, "unchanged": True}, repository)
             append_evidence(evidence, {"operation": "task5-result", "result": "PASS", "databases": list(_LITESTREAM_DATABASES)}, repository)
+            primary_flow_failed = False
             return StorageStatus.PASS
     except Exception as exc:
         try:
@@ -3408,8 +3469,21 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
                         _task5_cleanup_started_unit(node, unit)
                     except Exception as exc:
                         cleanup_failures.append(f"stop:{node.name}:{unit}:{type(exc).__name__}")
+        if primary_flow_failed:
+            for node in nodes:
+                paths = log_paths_by_node[node.name]
+                if not paths:
+                    continue
+                try:
+                    preserved = _task5_attest_preserved_logs(node, paths)
+                    append_evidence(evidence, {"operation": "task5-preserved-logs", "node": node.name,
+                                               "logs": preserved}, repository)
+                except Exception as exc:
+                    cleanup_failures.append(f"preserve-logs:{node.name}:{type(exc).__name__}")
         for node in nodes:
             paths = list(remote_files[node.name])
+            if not primary_flow_failed and log_paths_by_node[node.name]:
+                paths.append(context.remote_root + "/logs")
             if depot1 is not None and node.name == "fm1":
                 paths.append(context.remote_root + "/fixture/fixture-private.json")
                 paths.extend(context.remote_root + f"/fixture/{depot}/traildepot/config.textproto" for depot in ("a", "b", "c"))
