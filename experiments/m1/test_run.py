@@ -24,7 +24,8 @@ from run import (
     mask_writer_services, missing_packages, published_checksum,
     validate_binary_version, validate_release_metadata, _install_required_packages,
     _binary_version_evidence, _copy_from_node, _run_m0_linux_parity,
-    _validate_m0_aggregate, provision, REMOTE_PROVISION_TIMEOUT,
+    _validate_m0_aggregate, _validate_m0_log_archive, _validate_provision_summary,
+    _validate_post_reboot_summary, _provision_workflow, provision, REMOTE_PROVISION_TIMEOUT,
 )
 
 FP = "SHA256:" + "A" * 43
@@ -1303,6 +1304,104 @@ class ProvisionTests(unittest.TestCase):
                 return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
             with self.assertRaises(RuntimeError):
                 mask_writer_services(Path(d), run=broken)
+
+    def test_writer_containment_attempts_sibling_after_first_stop_failure(self):
+        calls = []
+        def run(argv, **kwargs):
+            calls.append(argv)
+            if argv[1:3] == ["stop", "hat-trailbase.service"]:
+                return subprocess.CompletedProcess(argv, 1, stdout="", stderr="failed")
+            if argv[1:2] == ["is-active"]:
+                return subprocess.CompletedProcess(argv, 3, stdout="inactive\n", stderr="")
+            if argv[1:2] == ["is-enabled"]:
+                return subprocess.CompletedProcess(argv, 0, stdout="masked\n", stderr="")
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(RuntimeError):
+                mask_writer_services(Path(d), run=run)
+        self.assertIn(["systemctl", "stop", "hat-litestream.service"], calls)
+        self.assertIn(["systemctl", "is-active", "hat-litestream.service"], calls)
+        self.assertIn(["systemctl", "daemon-reload"], calls)
+
+    def test_provision_summary_and_reboot_parity_are_exact(self):
+        machine = "x86_64"
+        trail = "trail v0.33.11-0-gf24291b8 (2026-09-04)\nsqlite: 3.53.2"
+        summary = {"status": "PASS", "architecture": machine, "installed_packages": [],
+                   "versions": {"trailbase": "0.33.11", "litestream": "0.5.17"},
+                   "binary_versions": {"trailbase": {"reported": trail, "build": "v0.33.11-0-gf24291b8",
+                                                        "embedded_sqlite_version": "3.53.2"},
+                                       "litestream": {"reported": "0.5.17"}},
+                   "archives": {p: artifact_for(p, machine).archive_sha256 for p in ("trailbase", "litestream")},
+                   "executables": {p: artifact_for(p, machine).executable_sha256 for p in ("trailbase", "litestream")},
+                   "services": {"hat-trailbase.service": "masked-and-inactive",
+                                "hat-litestream.service": "masked-and-inactive"}}
+        _validate_provision_summary(summary)
+        post = {key: summary[key] for key in summary if key != "installed_packages"}
+        _validate_post_reboot_summary(post, summary)
+        for field in ("archives", "executables", "versions", "binary_versions", "services"):
+            changed = dict(post)
+            changed[field] = dict(post[field])
+            changed[field][next(iter(changed[field]))] = "mutated"
+            with self.assertRaises(RuntimeError):
+                _validate_post_reboot_summary(changed, summary)
+
+    def test_three_node_provision_fixture_records_reboot_parity_and_mutation_no_go(self):
+        machine = "x86_64"
+        trail = "trail v0.33.11-0-gf24291b8 (2026-09-04)\nsqlite: 3.53.2"
+        summary = {"status": "PASS", "architecture": machine, "installed_packages": [],
+                   "versions": {"trailbase": "0.33.11", "litestream": "0.5.17"},
+                   "binary_versions": {"trailbase": {"reported": trail, "build": "v0.33.11-0-gf24291b8",
+                                                        "embedded_sqlite_version": "3.53.2"},
+                                       "litestream": {"reported": "0.5.17"}},
+                   "archives": {p: artifact_for(p, machine).archive_sha256 for p in ("trailbase", "litestream")},
+                   "executables": {p: artifact_for(p, machine).executable_sha256 for p in ("trailbase", "litestream")},
+                   "services": {"hat-trailbase.service": "masked-and-inactive",
+                                "hat-litestream.service": "masked-and-inactive"}}
+        nodes = [node(name) for name in ("fm1", "fm2", "fm3")]
+        context = RunContext("20260907T010203Z-0123456789", Path("."),
+                             "/var/lib/hat-qualification/20260907T010203Z-0123456789")
+        for mutate in (False, True):
+            with self.subTest(mutate=mutate), tempfile.TemporaryDirectory() as d:
+                root = Path(d); evidence = root / "evidence.jsonl"
+                post = {key: summary[key] for key in summary if key != "installed_packages"}
+                if mutate:
+                    post["executables"] = dict(post["executables"])
+                    post["executables"]["trailbase"] = "0" * 64
+                def ssh_fixture(current, argv, **kwargs):
+                    if "__remote-provision" in argv:
+                        return subprocess.CompletedProcess([], 0, json.dumps(summary), "")
+                    if "__remote-verify" in argv:
+                        return subprocess.CompletedProcess([], 0, json.dumps(post), "")
+                    raise AssertionError(argv)
+                with mock.patch("run._validate_prerequisites"), mock.patch("run._validate_local_context", return_value=root), \
+                     mock.patch("run._validate_evidence_path", return_value=evidence), mock.patch("run.build_pinned_known_hosts", return_value=root / "pins"), \
+                     mock.patch("run._verify_remote_directory"), mock.patch("run.scp_to"), mock.patch("run.ssh", side_effect=ssh_fixture), \
+                     mock.patch("run.invoke_fence", return_value={"valid": True, "evidence": {"state": "running"}}), \
+                     mock.patch("run._preflight_boot_ids", return_value={n.name: "01234567-89ab-cdef-0123-456789abcdef" for n in nodes}), \
+                     mock.patch("run._require_live_identity"), mock.patch("run._verify_reboot"), \
+                     mock.patch("run._run_m0_linux_parity", return_value=StorageStatus.PASS):
+                    result = _provision_workflow(nodes, context, evidence, Path.cwd(),
+                                                 inventory_path=root / "inventory", linode_env=root / "env",
+                                                 fence_command=root / "fence")
+                self.assertIs(result, StorageStatus.NO_GO if mutate else StorageStatus.PASS)
+                events = [json.loads(line) for line in evidence.read_text().splitlines()]
+                self.assertEqual(sum(event.get("event") == "provision" and "node" in event for event in events), 3)
+                if not mutate:
+                    self.assertEqual(sum(event.get("event") == "reboot-mask-check" for event in events), 3)
+
+    def test_m0_log_archive_requires_exact_safe_manifest_hashes(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); archive_path = root / "logs.tar.gz"
+            data = b"partial log\\n"
+            with tarfile.open(archive_path, "w:gz") as archive:
+                info = tarfile.TarInfo("logs/worker.log"); info.size = len(data)
+                archive.addfile(info, io.BytesIO(data))
+            manifest = {"log_count": 1, "logs": [{"path": "logs/worker.log",
+                                                   "sha256": hashlib.sha256(data).hexdigest()}]}
+            self.assertTrue(_validate_m0_log_archive(archive_path, manifest))
+            for mutation in ({**manifest, "logs": [{"path": "../escape", "sha256": manifest["logs"][0]["sha256"]}]},
+                             {**manifest, "logs": [{"path": "logs/worker.log", "sha256": "0" * 64}]}):
+                self.assertFalse(_validate_m0_log_archive(archive_path, mutation))
 
 
 if __name__ == "__main__": unittest.main()

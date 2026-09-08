@@ -169,6 +169,66 @@ def _binary_version_evidence(trail_output: str, litestream_output: str) -> tuple
     }
 
 
+_PROVISION_SUMMARY_KEYS = {
+    "status", "architecture", "installed_packages", "versions", "binary_versions",
+    "archives", "executables", "services",
+}
+_POST_REBOOT_SUMMARY_KEYS = _PROVISION_SUMMARY_KEYS - {"installed_packages"}
+
+
+def _validate_provision_summary(summary: Any) -> dict[str, Any]:
+    """Validate the complete, pinned remote provisioning contract."""
+    if not isinstance(summary, dict) or set(summary) != _PROVISION_SUMMARY_KEYS:
+        raise RuntimeError("remote provisioning summary schema mismatch")
+    machine = summary["architecture"]
+    if summary["status"] != "PASS" or machine not in {"x86_64", "aarch64"}:
+        raise RuntimeError("remote provisioning summary status or architecture mismatch")
+    specs = {product: artifact_for(product, machine) for product in ("trailbase", "litestream")}
+    packages = summary["installed_packages"]
+    if (not isinstance(packages, list) or any(not isinstance(item, str) for item in packages)
+            or packages != sorted(set(packages)) or not set(packages) <= set(_REQUIRED_PACKAGES)):
+        raise RuntimeError("remote provisioning package summary mismatch")
+    if summary["versions"] != {product: spec.version for product, spec in specs.items()}:
+        raise RuntimeError("remote provisioning version summary mismatch")
+    if summary["archives"] != {product: spec.archive_sha256 for product, spec in specs.items()}:
+        raise RuntimeError("remote provisioning archive summary mismatch")
+    if summary["executables"] != {product: spec.executable_sha256 for product, spec in specs.items()}:
+        raise RuntimeError("remote provisioning executable summary mismatch")
+    reports = summary["binary_versions"]
+    trail_report = reports.get("trailbase") if isinstance(reports, dict) else None
+    trail_reported = trail_report.get("reported") if isinstance(trail_report, dict) else None
+    trail_build = trail_report.get("build") if isinstance(trail_report, dict) else None
+    sqlite_version = trail_report.get("embedded_sqlite_version") if isinstance(trail_report, dict) else None
+    first_line = trail_reported.split("\n", 1)[0] if isinstance(trail_reported, str) else ""
+    first_fields = first_line.split()
+    reported_build = first_fields[1] if len(first_fields) == 3 and first_fields[0] == "trail" else ""
+    if (not isinstance(reports, dict) or set(reports) != set(specs)
+            or not isinstance(trail_report, dict)
+            or set(trail_report) != {"reported", "build", "embedded_sqlite_version"}
+            or trail_build != reported_build
+            or not isinstance(trail_build, str)
+            or not re.fullmatch(r"v0\.33\.11-[0-9]+-g[0-9a-f]{8}", trail_build)
+            or not isinstance(sqlite_version, str)
+            or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", sqlite_version)
+            or not isinstance(trail_reported, str)
+            or validate_binary_version("trailbase", trail_reported + "\n") != "0.33.11"
+            or reports.get("litestream") != {"reported": "0.5.17"}):
+        raise RuntimeError("remote provisioning binary version summary mismatch")
+    services = summary["services"]
+    if services != {unit: "masked-and-inactive" for unit in _WRITER_UNITS}:
+        raise RuntimeError("remote provisioning service summary mismatch")
+    return summary
+
+
+def _validate_post_reboot_summary(summary: Any, initial: dict[str, Any]) -> None:
+    if not isinstance(summary, dict) or set(summary) != _POST_REBOOT_SUMMARY_KEYS:
+        raise RuntimeError("post-reboot provisioning summary schema mismatch")
+    _validate_provision_summary({**summary, "installed_packages": initial["installed_packages"]})
+    for field in ("architecture", "versions", "binary_versions", "archives", "executables", "services"):
+        if summary[field] != initial[field]:
+            raise RuntimeError(f"post-reboot {field} changed")
+
+
 def validate_release_metadata(spec: Artifact, metadata: Any) -> None:
     expected_tag = "v" + spec.version
     if (not isinstance(metadata, dict) or metadata.get("tag_name") != expected_tag
@@ -264,31 +324,68 @@ def extract_verified_artifact(archive: Path, spec: Artifact, destination: Path) 
         temporary.unlink(missing_ok=True)
 
 
+def _service_state(unit: str, *, run=subprocess.run) -> str:
+    enabled = run(["systemctl", "is-enabled", unit], capture_output=True, text=True, check=False, timeout=30)
+    active = run(["systemctl", "is-active", unit], capture_output=True, text=True, check=False, timeout=30)
+    if enabled.returncode not in (0, 1) or enabled.stdout.strip() != "masked":
+        raise RuntimeError(f"{unit} is not masked")
+    if active.returncode != 3 or active.stdout.strip() != "inactive":
+        raise RuntimeError(f"{unit} is not inactive")
+    return "masked-and-inactive"
+
+
 def mask_writer_services(service_dir: Path, *, run=subprocess.run) -> None:
+    """Contain every writer before doing any package or network work.
+
+    All commands are attempted even when a sibling fails so a partial stop or
+    mask cannot leave an uncontained writer running.
+    """
     service_dir = Path(service_dir)
+    failures: list[str] = []
+    for unit in _WRITER_UNITS:
+        try:
+            result = run(["systemctl", "stop", unit], capture_output=True, text=True, check=False, timeout=30)
+            if result.returncode not in (0, 5):
+                raise RuntimeError(f"returncode {result.returncode}")
+        except Exception as exc:
+            failures.append(f"stop:{unit}:{type(exc).__name__}")
+    # Verify each stop before touching unit files, including units whose stop failed.
+    for unit in _WRITER_UNITS:
+        try:
+            active = run(["systemctl", "is-active", unit], capture_output=True, text=True, check=False, timeout=30)
+            if active.returncode != 3 or active.stdout.strip() != "inactive":
+                raise RuntimeError("not inactive")
+        except Exception as exc:
+            failures.append(f"inactive:{unit}:{type(exc).__name__}")
     if not service_dir.is_dir() or service_dir.is_symlink():
-        raise RuntimeError("unsafe systemd directory")
+        failures.append("mask:unsafe-systemd-directory")
+    else:
+        for unit in _WRITER_UNITS:
+            try:
+                path = service_dir / unit
+                if path.is_symlink():
+                    if os.readlink(path) != "/dev/null":
+                        raise RuntimeError("unexpected symlink")
+                elif path.exists():
+                    raise RuntimeError("unit file already exists")
+                else:
+                    os.symlink("/dev/null", path)
+            except Exception as exc:
+                failures.append(f"mask:{unit}:{type(exc).__name__}")
+    # Exactly one reload follows the complete mask attempt.
+    try:
+        result = run(["systemctl", "daemon-reload"], capture_output=True, text=True, check=False, timeout=30)
+        if result.returncode:
+            raise RuntimeError(f"returncode {result.returncode}")
+    except Exception as exc:
+        failures.append(f"reload:{type(exc).__name__}")
     for unit in _WRITER_UNITS:
-        result = run(["systemctl", "stop", unit], capture_output=True, text=True, check=False, timeout=30)
-        if result.returncode not in (0, 5):
-            raise RuntimeError("could not stop writer service")
-        path = service_dir / unit
-        if path.is_symlink():
-            if os.readlink(path) != "/dev/null":
-                raise RuntimeError("unexpected writer service symlink")
-        elif path.exists():
-            raise RuntimeError("writer service file already exists")
-        else:
-            os.symlink("/dev/null", path)
-    result = run(["systemctl", "daemon-reload"], capture_output=True, text=True, check=False, timeout=30)
-    if result.returncode:
-        raise RuntimeError("could not reload systemd")
-    for unit in _WRITER_UNITS:
-        enabled = run(["systemctl", "is-enabled", unit], capture_output=True, text=True, check=False, timeout=30)
-        active = run(["systemctl", "is-active", unit], capture_output=True, text=True, check=False, timeout=30)
-        if (enabled.returncode not in (0, 1) or enabled.stdout.strip() != "masked"
-                or active.returncode != 3 or active.stdout.strip() != "inactive"):
-            raise RuntimeError("writer service is not persistently masked and stopped")
+        try:
+            _service_state(unit, run=run)
+        except Exception as exc:
+            failures.append(f"verify:{unit}:{type(exc).__name__}")
+    if failures:
+        raise RuntimeError("writer containment failed: " + ", ".join(failures[:16]))
 
 
 def _absolute_no_symlinks(path: Path) -> Path:
@@ -1102,6 +1199,31 @@ def _checksums_asset(metadata: dict[str, Any]) -> tuple[str, str]:
     return url, _LITESTREAM_CHECKSUMS_SHA256
 
 
+def _remote_hash(path: Path) -> str:
+    if not path.is_file() or path.is_symlink():
+        raise RuntimeError("remote artifact is not a regular file")
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _remote_verify(remote_root: Path) -> dict[str, Any]:
+    root = _trusted_remote_root(remote_root)
+    machine = platform.machine()
+    specs = [artifact_for("trailbase", machine), artifact_for("litestream", machine)]
+    binaries = root / "bin"
+    downloads = root / "downloads"
+    trail_output = subprocess.run([str(binaries / "trail"), "--version"], capture_output=True, text=True,
+                                  check=True, timeout=30).stdout
+    litestream_output = subprocess.run([str(binaries / "litestream"), "version"], capture_output=True,
+                                       text=True, check=True, timeout=30).stdout
+    versions, binary_versions = _binary_version_evidence(trail_output, litestream_output)
+    services = {unit: _service_state(unit) for unit in _WRITER_UNITS}
+    return {"status": "PASS", "architecture": machine, "versions": versions,
+            "binary_versions": binary_versions,
+            "archives": {spec.product: _remote_hash(downloads / spec.filename) for spec in specs},
+            "executables": {spec.product: _remote_hash(binaries / spec.executable) for spec in specs},
+            "services": services}
+
+
 def remote_provision(remote_root: Path) -> dict[str, Any]:
     if os.geteuid() != 0 or platform.system() != "Linux":
         raise RuntimeError("remote provisioning requires Linux root")
@@ -1109,8 +1231,9 @@ def remote_provision(remote_root: Path) -> dict[str, Any]:
     machine = platform.machine()
     specs = [artifact_for("trailbase", machine), artifact_for("litestream", machine)]
 
-    installed = _install_required_packages()
+    # Fence writers before package manager, release metadata, or archive work.
     mask_writer_services(Path("/etc/systemd/system"))
+    installed = _install_required_packages()
 
     downloads = root / "downloads"
     downloads.mkdir(mode=0o700)
@@ -1149,13 +1272,14 @@ def remote_provision(remote_root: Path) -> dict[str, Any]:
         [str(binaries / "litestream"), "version"], capture_output=True, text=True, check=True, timeout=30,
     ).stdout
     versions, binary_versions = _binary_version_evidence(trail_output, litestream_output)
-    return {
-        "status": "PASS", "architecture": machine, "installed_packages": installed,
+    summary = {
+        "status": "PASS", "architecture": machine, "installed_packages": sorted(installed),
         "versions": versions, "binary_versions": binary_versions,
         "archives": {spec.product: spec.archive_sha256 for spec in specs},
         "executables": {spec.product: spec.executable_sha256 for spec in specs},
-        "services": {unit: "masked" for unit in _WRITER_UNITS},
+        "services": {unit: "masked-and-inactive" for unit in _WRITER_UNITS},
     }
+    return _validate_provision_summary(summary)
 
 
 _BOUNDED_READ_SCRIPT = r'''import os, sys
@@ -1224,12 +1348,17 @@ def _copy_m0_source(node: Node, context: RunContext, repository: Path) -> str:
 _M0_COLLECT_SCRIPT = r'''import hashlib, json, pathlib, tarfile, sys
 root, output = map(pathlib.Path, sys.argv[1:])
 runs = [path for path in root.iterdir() if path.is_dir() and path.name.startswith("run-")]
-evidence = {"run_count": len(runs), "result_present": False, "log_count": 0}
+evidence = {"run_count": len(runs), "result_present": False, "log_count": 0, "logs": []}
 logs = []
+def safe_relative(path, base):
+    relative = path.relative_to(base)
+    if not relative.parts or any(part in ("", ".", "..") for part in relative.parts):
+        raise RuntimeError("unsafe log path")
+    return pathlib.PurePosixPath(*relative.parts).as_posix()
 if len(runs) == 1:
     run = runs[0]
     result_path = run / "result.json"
-    if result_path.is_file():
+    if result_path.is_file() and not result_path.is_symlink():
         result_bytes = result_path.read_bytes()
         (output / "m0-result.json").write_bytes(result_bytes)
         evidence.update({"result_present": True, "result_sha256": hashlib.sha256(result_bytes).hexdigest()})
@@ -1241,17 +1370,72 @@ if len(runs) == 1:
                              "result_count": len(result.get("results", []))})
         except (UnicodeError, json.JSONDecodeError, TypeError):
             evidence["result_valid_json"] = False
-    logs = sorted(path for path in run.rglob("*") if path.is_file() and path.parent.name == "logs")
+    for path in sorted(run.rglob("*")):
+        if path.is_symlink():
+            raise RuntimeError("symlink in M0 logs")
+        if path.is_file() and path.parent.name == "logs":
+            relative = safe_relative(path, run)
+            data = path.read_bytes()
+            logs.append({"path": relative, "sha256": hashlib.sha256(data).hexdigest()})
+    evidence["logs"] = logs
     evidence["log_count"] = len(logs)
 with tarfile.open(output / "m0-logs.tar.gz", "x:gz") as archive:
-    for path in logs:
-        archive.add(path, arcname=path.relative_to(runs[0]), recursive=False)
+    for item in logs:
+        path = run / pathlib.PurePosixPath(item["path"])
+        info = archive.gettarinfo(str(path), arcname=item["path"])
+        if not info.isfile():
+            raise RuntimeError("non-regular M0 log")
+        with path.open("rb") as source:
+            archive.addfile(info, source)
 (output / "m0-evidence.json").write_text(json.dumps(evidence, sort_keys=True) + "\n")
 '''
 
 
+def _safe_archive_member(name: Any) -> bool:
+    if not isinstance(name, str) or "\\\\" in name:
+        return False
+    path = __import__("pathlib").PurePosixPath(name)
+    return (path.as_posix() == name and bool(path.parts) and not path.is_absolute()
+            and all(part not in ("", ".", "..") for part in path.parts))
+
+
+def _validate_m0_log_archive(archive_path: Path, manifest: Any) -> bool:
+    """Require a link-free archive whose members exactly match manifest hashes."""
+    if not isinstance(manifest, dict) or not isinstance(manifest.get("logs"), list):
+        return False
+    expected: dict[str, str] = {}
+    for item in manifest["logs"]:
+        if (not isinstance(item, dict) or set(item) != {"path", "sha256"}
+                or not _safe_archive_member(item["path"])
+                or not isinstance(item["sha256"], str)
+                or re.fullmatch(r"[0-9a-f]{64}", item["sha256"]) is None
+                or item["path"] in expected):
+            return False
+        expected[item["path"]] = item["sha256"]
+    if (type(manifest.get("log_count")) is not int or manifest.get("log_count") != len(expected)
+            or not expected or not Path(archive_path).is_file() or Path(archive_path).is_symlink()):
+        return False
+    try:
+        with tarfile.open(archive_path, "r:gz") as source:
+            members = source.getmembers()
+            names = [member.name for member in members]
+            if (len(names) != len(set(names)) or set(names) != set(expected)
+                    or any(not _safe_archive_member(member.name) or not member.isfile()
+                           or member.issym() or member.islnk() or member.size < 0
+                           or member.size > 128 * 1024 * 1024
+                           for member in members)):
+                return False
+            for member in members:
+                stream = source.extractfile(member)
+                if stream is None or hashlib.sha256(stream.read(128 * 1024 * 1024 + 1)).hexdigest() != expected[member.name]:
+                    return False
+    except (OSError, tarfile.TarError):
+        return False
+    return True
+
+
 def _validate_m0_aggregate(node: Node, expected_architecture: str, aggregate: Any,
-                           manifest: Any, result_sha256: str) -> bool:
+                           manifest: Any, result_sha256: str, logs_archive: Path | None = None) -> bool:
     if node.name != "fm1" or not isinstance(aggregate, dict) or not isinstance(manifest, dict):
         return False
     try:
@@ -1290,6 +1474,11 @@ def _validate_m0_aggregate(node: Node, expected_architecture: str, aggregate: An
         and manifest.get("result_count") == 13
         and type(manifest.get("log_count")) is int
         and manifest.get("log_count") > 0
+        and (logs_archive is None or (
+            _validate_m0_log_archive(logs_archive, manifest)
+            and all(isinstance(item.get("evidence"), dict)
+                    and item["evidence"].get("logs_ref") == "logs/" for item in results)
+        ))
     )
 
 
@@ -1355,6 +1544,8 @@ def _run_m0_linux_parity(node: Node, context: RunContext, evidence: Path, local_
 
     aggregate: dict[str, Any] = {}
     result_sha256 = ""
+    if manifest.get("logs") and not _validate_m0_log_archive(local_logs, manifest):
+        failures.append("copied logs are unsafe or incomplete")
     if local_result.is_file():
         try:
             result_bytes = local_result.read_bytes()
@@ -1363,13 +1554,15 @@ def _run_m0_linux_parity(node: Node, context: RunContext, evidence: Path, local_
         except (OSError, UnicodeError, json.JSONDecodeError):
             failures.append("copied aggregate is invalid")
     complete = not failures and _validate_m0_aggregate(
-        node, expected_architecture, aggregate, manifest, result_sha256,
+        node, expected_architecture, aggregate, manifest, result_sha256, local_logs,
     )
     if not complete and not failures:
         failures.append("copied aggregate or logs are incomplete")
     status = StorageStatus.PASS if complete else StorageStatus.NO_GO
     event = {"event": "m0-linux-parity", "node": "fm1", "status": status.value, "repeat": 3,
              "termination": termination, "exit_code": exit_code, "failures": failures}
+    if complete:
+        event["coverage"] = {"results": 13, "logs": manifest["log_count"]}
     for name, path in (("partial_evidence_sha256", local_manifest), ("logs_sha256", local_logs),
                        ("result_sha256", local_result)):
         if path.is_file():
@@ -1471,6 +1664,7 @@ def _provision_workflow(nodes: list[Node], context: RunContext, evidence: Path, 
             _REMOTE_ROOT = context.remote_root
             coordinator = Path(__file__).resolve()
             architectures = {}
+            summaries: dict[str, dict[str, Any]] = {}
             for node in nodes:
                 stage = "provision:" + node.name
                 _verify_remote_directory(node, context.remote_root, mode=0o700)
@@ -1484,9 +1678,9 @@ def _provision_workflow(nodes: list[Node], context: RunContext, evidence: Path, 
                     summary = json.loads(_stdout(result))
                 except (UnicodeError, json.JSONDecodeError) as exc:
                     raise RuntimeError("invalid remote provisioning result") from exc
-                if summary.get("status") != "PASS" or not isinstance(summary.get("architecture"), str):
-                    raise RuntimeError("remote provisioning did not pass")
+                summary = _validate_provision_summary(summary)
                 architectures[node.name] = summary["architecture"]
+                summaries[node.name] = summary
                 append_evidence(evidence, {"event": "provision", "node": node.name, **summary}, repository)
 
             stage = "reboot-preflight"
@@ -1502,8 +1696,21 @@ def _provision_workflow(nodes: list[Node], context: RunContext, evidence: Path, 
                     raise RuntimeError("provider identity/state is not confirmed before reboot")
                 _require_live_identity(node, boot_ids[node.name])
                 _verify_reboot(node, boot_ids[node.name])
+                post = ssh(node, ["python3", remote_coordinator, "__remote-verify", context.remote_root],
+                           check=False, timeout=REMOTE_PROVISION_TIMEOUT)
+                if post.returncode:
+                    raise RuntimeError(f"post-reboot verification failed for {node.name}")
+                try:
+                    post_summary = json.loads(_stdout(post))
+                except (UnicodeError, json.JSONDecodeError) as exc:
+                    raise RuntimeError("invalid post-reboot verification result") from exc
+                _validate_post_reboot_summary(post_summary, summaries[node.name])
                 append_evidence(evidence, {"event": "reboot-mask-check", "node": node.name,
-                                           "status": "PASS", "services": "masked-and-inactive"}, repository)
+                                           "status": "PASS", "services": post_summary["services"],
+                                           "versions": post_summary["versions"],
+                                           "binary_versions": post_summary["binary_versions"],
+                                           "archives": post_summary["archives"],
+                                           "executables": post_summary["executables"]}, repository)
 
             stage = "m0-linux-parity"
             fm1 = next(node for node in nodes if node.name == "fm1")
@@ -1860,10 +2067,11 @@ def storage(nodes=None, context=None, evidence=None, repository=None, *, s3_env=
 
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    if argv and argv[0] == "__remote-provision":
+    if argv and argv[0] in {"__remote-provision", "__remote-verify"}:
         if len(argv) != 2:
-            raise ValueError("remote provision requires one root")
-        print(json.dumps(remote_provision(Path(argv[1])), sort_keys=True))
+            raise ValueError("remote provisioning requires one root")
+        result = remote_provision(Path(argv[1])) if argv[0] == "__remote-provision" else _remote_verify(Path(argv[1]))
+        print(json.dumps(result, sort_keys=True))
         return 0
     parser = argparse.ArgumentParser()
     parser.add_argument("scenario", choices=["preflight", "init-remote", "provision", "storage", "fence-inspect"])
