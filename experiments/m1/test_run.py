@@ -1108,6 +1108,16 @@ class ProvisionTests(unittest.TestCase):
         self.assertTrue(all(call.args[0][2] == "-f=${Package}\\t${Version}\\t${Architecture}\\t${Status}"
                             for call in execute.call_args_list))
 
+    def test_required_package_query_treats_config_files_as_absent(self):
+        def query(argv, **kwargs):
+            package = argv[-1]
+            status = "deinstall ok config-files" if package == "sqlite3" else "install ok installed"
+            return subprocess.CompletedProcess(argv, 0, f"{package}\t1.2\tamd64\t{status}", "")
+        with mock.patch("run.subprocess.run", side_effect=query):
+            records = _query_required_packages()
+        self.assertEqual([record["name"] for record in records],
+                         ["ca-certificates", "curl", "python3", "unzip"])
+
     def test_newly_installed_packages_are_requeried_and_exact_apt_argv_is_reported(self):
         calls = []
         def run(argv, **kwargs):

@@ -153,10 +153,10 @@ def _query_required_packages() -> list[dict[str, str]]:
                 continue
             raise RuntimeError("required package query failed")
         fields = result.stdout.strip().split("\t")
-        if (len(fields) != 4 or fields[0] != package or not fields[1] or not fields[2]
-                or fields[3] != "install ok installed"):
+        if len(fields) != 4 or fields[0] != package or not fields[1] or not fields[2] or not fields[3]:
             raise RuntimeError("required package state is malformed")
-        records.append(dict(zip(("name", "version", "architecture", "status"), fields)))
+        if fields[3] == "install ok installed":
+            records.append(dict(zip(("name", "version", "architecture", "status"), fields)))
     return records
 
 
