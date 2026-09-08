@@ -29,6 +29,9 @@ _NODE_KEYS = {"name", "ssh", "instance_id", "provider_label", "address", "host_k
 _SAFE = re.compile(r"^[A-Za-z0-9._-]+$")
 _DNS = re.compile(r"^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$")
 _RUN_ID = re.compile(r"^[0-9]{8}T[0-9]{6}Z-[0-9a-f]{10}$")
+_M0_ROOT = re.compile(r"^/var/lib/hat-qualification/m0-[0-9a-f]{10}$")
+_M0_SOCKET_NAMES = ("e1.sock", "e2.sock", "crash-e1.sock")
+_M0_SCENARIO_NAMES = ("follow", "graceful", "crash", "lagged-crash", "guards")
 _FINGERPRINT = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
 _SECRET = re.compile(
     r"(password|passwd|secret|token|authorization|private.?key|credential|access.?key|session|cookie)", re.I
@@ -1702,10 +1705,27 @@ def _stop_m0_scope(node: Node, unit: str) -> None:
         raise RuntimeError("could not stop M0 scope")
 
 
+def _preflight_m0_socket_paths(work: str) -> tuple[str, ...]:
+    if not _M0_ROOT.fullmatch(work):
+        raise ValueError("unsafe M0 work root")
+    # M0 creates run-<time.time_ns()> for each all-run invocation. Check every
+    # socket spelling against a 20-digit timestamp and the longest repeat label.
+    run_root = f"{work}/run-{'9' * 20}"
+    paths = tuple(
+        f"{run_root}/{scenario}-9/{socket_name}"
+        for scenario in _M0_SCENARIO_NAMES[:-1]
+        for socket_name in _M0_SOCKET_NAMES
+    ) + tuple(f"{run_root}/guards/{socket_name}" for socket_name in _M0_SOCKET_NAMES)
+    if any(len(path.encode("utf-8")) >= 100 for path in paths):
+        raise RuntimeError("Litestream socket path is too long")
+    return paths
+
+
 def _run_m0_linux_parity(node: Node, context: RunContext, evidence: Path, local_root: Path,
                          repository: Path, expected_architecture: str) -> StorageStatus:
     m0 = _copy_m0_source(node, context, repository)
     work = _create_runtime_root(node, context)
+    socket_paths = _preflight_m0_socket_paths(work)
     unit = _m0_scope_unit(context)
     workload = ["python3", m0 + "/run.py", "--trail", context.remote_root + "/bin/trail",
                 "--litestream", context.remote_root + "/bin/litestream", "--work-root", work,
@@ -1769,7 +1789,10 @@ def _run_m0_linux_parity(node: Node, context: RunContext, evidence: Path, local_
         failures.append("copied aggregate or logs are incomplete")
     status = StorageStatus.PASS if complete else StorageStatus.NO_GO
     event = {"event": "m0-linux-parity", "node": "fm1", "status": status.value, "repeat": 3,
-             "termination": termination, "exit_code": exit_code, "failures": failures}
+             "termination": termination, "exit_code": exit_code, "failures": failures,
+             "run_id": context.run_id, "local_root": str(local_root),
+             "remote_root": context.remote_root, "m0_work_root": work,
+             "socket_paths": list(socket_paths)}
     if complete:
         event["coverage"] = {"results": 13, "logs": manifest["log_count"]}
     for name, path in (("partial_evidence_sha256", local_manifest), ("logs_sha256", local_logs),
@@ -1781,9 +1804,13 @@ def _run_m0_linux_parity(node: Node, context: RunContext, evidence: Path, local_
 
 
 def _create_runtime_root(node: Node, context: RunContext) -> str:
-    base = context.remote_root
+    _context_root(context)
+    base = "/var/lib/hat-qualification"
     _verify_remote_directory(node, base, mode=0o700)
-    root = confined_remote_path(base, base + "/w")
+    suffix = context.run_id.rsplit("-", 1)[1]
+    root = f"{base}/m0-{suffix}"
+    if not _M0_ROOT.fullmatch(root) or confined_remote_path(base, root) != root:
+        raise ValueError("unsafe M0 work root")
     available = ssh(node, ["df", "--output=avail", "-B1", "--", base], check=False)
     fields = _stdout(available).split()
     if available.returncode or len(fields) != 2 or fields[0] != "Avail" or not fields[1].isdigit():

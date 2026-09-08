@@ -8,7 +8,7 @@ An early-stage project for a single-writer [TrailBase](https://github.com/trailb
 
 - [Master plan](docs/plans/2026-09-07-master-plan.md): goals, decisions, alternatives, milestones, and questions.
 - [M0 local experiment](experiments/m0/README.md) and [result report](docs/reports/m0-local-failover.md): runnable local follow-to-writer qualification and sanitized results.
-- [M1 Ubuntu provisioning and Linux parity report](docs/reports/m1-linux-parity.md): sanitized Task 4 result and bounded NO-GO.
+- [M1 Ubuntu provisioning and Linux parity report](docs/reports/m1-linux-parity.md): sanitized Task 4 result; the fresh short-root acceptance remains NO-GO because M0 did not produce the exact 13-result aggregate.
 - [M0 execution plan](docs/plans/2026-09-07-m0-local-failover-execution-plan.md): the implemented task/check specification.
 - [Upstream findings](docs/upstream-findings.md): version-pinned evidence and important limitations.
 - [Architecture and failover protocol](docs/architecture.md): roles, fencing, replication history, promotion, and recovery.

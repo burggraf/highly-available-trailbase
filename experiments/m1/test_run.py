@@ -24,7 +24,7 @@ from run import (
     mask_writer_services, missing_packages, published_checksum,
     validate_binary_version, validate_release_metadata, _install_required_packages,
     _query_required_packages, _M0_EXPECTED_LOGS,
-    _binary_version_evidence, _copy_from_node, _create_runtime_root, _run_m0_linux_parity,
+    _binary_version_evidence, _copy_from_node, _create_runtime_root, _preflight_m0_socket_paths, _run_m0_linux_parity,
     _validate_m0_aggregate, _validate_m0_log_archive, _validate_provision_summary,
     _validate_post_reboot_summary, _provision_workflow, provision, REMOTE_PROVISION_TIMEOUT,
     _M0_COLLECT_SCRIPT, _download_public, _safe_archive_member,
@@ -1248,7 +1248,7 @@ class ProvisionTests(unittest.TestCase):
                     subprocess.CompletedProcess([], 0, b"", b""),
                 ])
                 with mock.patch("run._copy_m0_source", return_value=context.remote_root + "/source/experiments/m0"), \
-                     mock.patch("run._create_runtime_root", return_value="/run/hat/work"), \
+                     mock.patch("run._create_runtime_root", return_value="/var/lib/hat-qualification/m0-0123456789"), \
                      mock.patch("run.ssh", command), mock.patch("run._copy_from_node", side_effect=copy), \
                      mock.patch("run._LOADED_SECRET_VALUES", set()):
                     status = _run_m0_linux_parity(node("fm1"), context, local / "evidence.jsonl", local, Path.cwd(), "x86_64")
@@ -1527,10 +1527,10 @@ class ProvisionTests(unittest.TestCase):
             return subprocess.CompletedProcess(argv, 0, b"", b"")
         with mock.patch("run._verify_remote_directory") as verify, mock.patch("run.ssh", side_effect=execute):
             work = _create_runtime_root(current, context)
-        self.assertEqual(work, context.remote_root + "/w")
-        verify.assert_any_call(current, context.remote_root, mode=0o700)
+        self.assertEqual(work, "/var/lib/hat-qualification/m0-0123456789")
+        verify.assert_any_call(current, "/var/lib/hat-qualification", mode=0o700)
         verify.assert_any_call(current, work, mode=0o700)
-        self.assertIn(["df", "--output=avail", "-B1", "--", context.remote_root], calls)
+        self.assertIn(["df", "--output=avail", "-B1", "--", "/var/lib/hat-qualification"], calls)
         self.assertIn(["test", "!", "-e", work], calls)
         self.assertIn(["mkdir", "-m", "700", "--", work], calls)
 
@@ -1542,6 +1542,16 @@ class ProvisionTests(unittest.TestCase):
         with mock.patch("run._verify_remote_directory"), mock.patch("run.ssh", return_value=result), \
                 self.assertRaisesRegex(RuntimeError, "insufficient M0 work-root capacity"):
             _create_runtime_root(current, context)
+
+    def test_m0_socket_preflight_checks_all_generated_paths(self):
+        paths = _preflight_m0_socket_paths("/var/lib/hat-qualification/m0-0123456789")
+        self.assertEqual(len(paths), 15)
+        self.assertEqual(paths[-1], "/var/lib/hat-qualification/m0-0123456789/run-99999999999999999999/guards/crash-e1.sock")
+        self.assertTrue(all(len(path.encode()) < 100 for path in paths))
+        for unsafe in ("/run/hat/work", "/var/lib/hat-qualification/m0-012345678",
+                       "/var/lib/hat-qualification/m0-0123456789-extra"):
+            with self.subTest(unsafe=unsafe), self.assertRaises(ValueError):
+                _preflight_m0_socket_paths(unsafe)
 
     def test_m0_collector_writes_archive_for_real_logs(self):
         with tempfile.TemporaryDirectory() as d:
