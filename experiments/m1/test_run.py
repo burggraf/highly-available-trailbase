@@ -28,6 +28,8 @@ from run import (
     _validate_m0_aggregate, _validate_m0_log_archive, _validate_provision_summary,
     _validate_post_reboot_summary, _provision_workflow, provision, REMOTE_PROVISION_TIMEOUT,
     _M0_COLLECT_SCRIPT, _download_public, _safe_archive_member,
+    write_litestream_s3_config, validate_litestream_s3_config, inventory_digest,
+    assert_inventory_unchanged,
 )
 
 FP = "SHA256:" + "A" * 43
@@ -1606,3 +1608,45 @@ class ProvisionTests(unittest.TestCase):
 
 
 if __name__ == "__main__": unittest.main()
+
+class LitestreamTask5Tests(unittest.TestCase):
+    def test_s3_config_is_private_explicit_and_three_database_singular_replica(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "run"
+            config = write_litestream_s3_config(
+                root, "20260907T120000Z-0123456789", "e1",
+                endpoint="https://s3.us-east-1.idrivee2.com", region="us-east-1", bucket="hat-private",
+            )
+            self.assertEqual(config.stat().st_mode & 0o777, 0o600)
+            text = config.read_text()
+            self.assertEqual(text.count("    replica:"), 3)
+            self.assertNotIn("replicas:", text)
+            for value in ("https://s3.us-east-1.idrivee2.com", "us-east-1", "hat-private",
+                          "main", "session", "aux", "${IDRIVE_ACCESS_KEY_ID}", "${IDRIVE_SECRET_ACCESS_KEY}"):
+                self.assertIn(value, text)
+            self.assertNotIn("AKIA", text)
+            self.assertEqual(validate_litestream_s3_config(config), ("main", "session", "aux"))
+            self.assertEqual(config.parent.stat().st_mode & 0o777, 0o700)
+
+    def test_s3_config_rejects_collisions_and_secret_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "run"
+            kwargs = dict(endpoint="https://s3.example", region="r1", bucket="b1")
+            write_litestream_s3_config(root, "20260907T120000Z-0123456789", "e1", **kwargs)
+            with self.assertRaises(FileExistsError):
+                write_litestream_s3_config(root, "20260907T120000Z-0123456789", "e1", **kwargs)
+            with self.assertRaises(ValueError):
+                write_litestream_s3_config(Path(directory) / "other", "20260907T120000Z-0123456789", "e2",
+                                           endpoint="https://s3.example?secret=oops", region="r1", bucket="b1")
+            with self.assertRaises(ValueError):
+                write_litestream_s3_config(Path(directory) / "other2", "20260907T120000Z-0123456789", "e1",
+                                           endpoint="https://s3.example", region="r1", bucket="b1",
+                                           access_key="real-secret")
+
+    def test_e1_inventory_digest_is_immutable_across_e2(self):
+        e1 = [{"key": "p/e1/main/1", "etag": '"a"', "sha256": "a" * 64},
+              {"key": "p/e1/session/1", "etag": '"b"', "sha256": "b" * 64}]
+        before = inventory_digest(e1)
+        e2 = e1 + [{"key": "p/e2/main/1", "etag": '"c"', "sha256": "c" * 64}]
+        self.assertTrue(assert_inventory_unchanged(before, inventory_digest(e1)))
+        self.assertFalse(assert_inventory_unchanged(before, inventory_digest(e2)))

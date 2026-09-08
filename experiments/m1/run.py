@@ -116,6 +116,87 @@ _ARTIFACTS = {
 }
 _LITESTREAM_CHECKSUMS_SHA256 = "f5c30b11a19ef14fc64581be19aa50ee81dcc7f53eb429737c151630f5129d6f"
 _WRITER_UNITS = ("hat-trailbase.service", "hat-litestream.service")
+_LITESTREAM_DATABASES = ("main", "session", "aux")
+
+
+def _safe_config_component(value: str, label: str) -> str:
+    if not isinstance(value, str) or not value or not _SAFE.fullmatch(value):
+        raise ValueError(f"invalid {label}")
+    return value
+
+
+def write_litestream_s3_config(root: Path, run_id: str, epoch: str, *, endpoint: str,
+                               region: str, bucket: str, access_key: str | None = None,
+                               secret_key: str | None = None) -> Path:
+    """Write one private, fresh Litestream config; credentials remain environment placeholders."""
+    _safe_config_component(run_id, "run id")
+    _safe_config_component(epoch, "epoch")
+    if access_key is not None or secret_key is not None:
+        raise ValueError("credentials must be supplied through the process environment")
+    parsed = urllib.parse.urlsplit(endpoint)
+    if parsed.scheme != "https" or parsed.username or parsed.password or parsed.query or parsed.fragment or not parsed.netloc:
+        raise ValueError("IDrive endpoint must be a private HTTPS URL without credentials or query data")
+    _safe_config_component(region, "region")
+    _safe_config_component(bucket, "bucket")
+    root = Path(root)
+    target = root / run_id / epoch
+    if target.exists():
+        raise FileExistsError("run/epoch config path already exists")
+    target.mkdir(parents=True, mode=0o700)
+    try:
+        source = target / "source"
+        lines = ["logging:", "  type: json", "dbs:"]
+        for name in _LITESTREAM_DATABASES:
+            database = source / f"{name}.db"
+            meta = target / "meta" / name
+            replica = target / "replica" / name
+            lines.extend([
+                f"  - path: {json.dumps(str(database))}",
+                f"    meta-path: {json.dumps(str(meta))}",
+                "    replica:", "      type: s3",
+                f"      endpoint: {json.dumps(endpoint)}", f"      region: {region}",
+                f"      bucket: {bucket}", f"      path: qualification/{run_id}/{epoch}/{name}",
+                "      access-key-id: ${IDRIVE_ACCESS_KEY_ID}",
+                "      secret-access-key: ${IDRIVE_SECRET_ACCESS_KEY}",
+            ])
+        config = target / "litestream.yml"
+        config.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        config.chmod(0o600)
+        return config
+    except Exception:
+        import shutil
+        shutil.rmtree(target, ignore_errors=True)
+        raise
+
+
+def validate_litestream_s3_config(config: Path) -> tuple[str, ...]:
+    path = Path(config)
+    if path.stat().st_mode & 0o777 != 0o600:
+        raise ValueError("Litestream config must be mode 0600")
+    text = path.read_text(encoding="utf-8")
+    if text.count("    replica:\n") != 3 or "replicas:" in text:
+        raise ValueError("config must contain exactly three singular replicas")
+    if "${IDRIVE_ACCESS_KEY_ID}" not in text or "${IDRIVE_SECRET_ACCESS_KEY}" not in text:
+        raise ValueError("config must use environment credential placeholders")
+    names = tuple(name for name in _LITESTREAM_DATABASES if f'path: "{path.parent / "source" / (name + ".db")}"' in text)
+    if names != _LITESTREAM_DATABASES:
+        raise ValueError("database paths are incomplete")
+    return names
+
+
+def inventory_digest(objects: list[dict[str, str]]) -> str:
+    if not isinstance(objects, list) or any(not isinstance(item, dict) for item in objects):
+        raise ValueError("object inventory must be a list of objects")
+    canonical = []
+    for item in objects:
+        if set(item) != {"key", "etag", "sha256"} or any(not isinstance(v, str) or not v for v in item.values()):
+            raise ValueError("object inventory entry is incomplete")
+        canonical.append(item)
+    return hashlib.sha256(json.dumps(sorted(canonical, key=lambda item: item["key"]), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def assert_inventory_unchanged(before: str, after: str) -> bool:
+    return isinstance(before, str) and isinstance(after, str) and bool(re.fullmatch(r"[0-9a-f]{64}", before)) and before == after
 
 
 def artifact_for(product: str, machine: str) -> Artifact:
