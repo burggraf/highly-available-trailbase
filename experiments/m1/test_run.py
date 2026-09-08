@@ -1143,6 +1143,7 @@ class ProvisionTests(unittest.TestCase):
             ({**aggregate, "platform": {"system": "Darwin", "machine": machine}}, manifest, result_digest),
             ({**aggregate, "platform": {"system": "Linux", "machine": "aarch64"}}, manifest, result_digest),
             ({**aggregate, "results": results[:-1] + [{**results[-1], "scenario": "follow"}]}, manifest, result_digest),
+            ({**aggregate, "results": [{**results[0], "untrusted": True}, *results[1:]]}, manifest, result_digest),
             ({**aggregate, "results": [{**results[0], "status": "FAIL"}, *results[1:]]}, manifest, result_digest),
         ])
         for field, value in (("run_count", 2), ("result_present", False), ("result_sha256", "0" * 64),

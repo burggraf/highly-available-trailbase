@@ -1347,6 +1347,30 @@ def _copy_m0_source(node: Node, context: RunContext, repository: Path) -> str:
 
 _M0_COLLECT_SCRIPT = r'''import hashlib, json, pathlib, tarfile, sys
 root, output = map(pathlib.Path, sys.argv[1:])
+RESULT_MAX = 8 * 1024 * 1024
+LOG_MAX = 8 * 1024 * 1024
+ARCHIVE_MAX = 128 * 1024 * 1024
+def bounded_bytes(path, limit):
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > limit:
+        raise RuntimeError("M0 evidence file exceeds bound")
+    chunks = []
+    with path.open("rb") as source:
+        remaining = limit
+        while remaining:
+            chunk = source.read(min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+    return b"".join(chunks)
+def bounded_hash(path, limit):
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > limit:
+        raise RuntimeError("M0 log exceeds bound")
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 runs = [path for path in root.iterdir() if path.name.startswith("run-")]
 if any(path.is_symlink() or not path.is_dir() for path in runs):
     raise RuntimeError("unsafe M0 run root")
@@ -1361,7 +1385,7 @@ if len(runs) == 1:
     run = runs[0]
     result_path = run / "result.json"
     if result_path.is_file() and not result_path.is_symlink():
-        result_bytes = result_path.read_bytes()
+        result_bytes = bounded_bytes(result_path, RESULT_MAX)
         (output / "m0-result.json").write_bytes(result_bytes)
         evidence.update({"result_present": True, "result_sha256": hashlib.sha256(result_bytes).hexdigest()})
         try:
@@ -1377,8 +1401,7 @@ if len(runs) == 1:
             raise RuntimeError("symlink in M0 logs")
         if path.is_file() and path.parent.name == "logs":
             relative = safe_relative(path, run)
-            data = path.read_bytes()
-            logs.append({"path": relative, "sha256": hashlib.sha256(data).hexdigest()})
+            logs.append({"path": relative, "sha256": bounded_hash(path, LOG_MAX)})
     evidence["logs"] = logs
     evidence["log_count"] = len(logs)
 with tarfile.open(output / "m0-logs.tar.gz", "x:gz") as archive:
@@ -1387,8 +1410,12 @@ with tarfile.open(output / "m0-logs.tar.gz", "x:gz") as archive:
         info = archive.gettarinfo(str(path), arcname=item["path"])
         if not info.isfile():
             raise RuntimeError("non-regular M0 log")
+        if archive.tell() + path.stat().st_size > ARCHIVE_MAX:
+            raise RuntimeError("M0 log archive exceeds bound")
         with path.open("rb") as source:
             archive.addfile(info, source)
+if (output / "m0-logs.tar.gz").stat().st_size > ARCHIVE_MAX:
+    raise RuntimeError("M0 log archive exceeds bound")
 (output / "m0-evidence.json").write_text(json.dumps(evidence, sort_keys=True) + "\n")
 '''
 
@@ -1451,7 +1478,16 @@ def _validate_m0_aggregate(node: Node, expected_architecture: str, aggregate: An
     results = aggregate.get("results")
     if not isinstance(results, list) or len(results) != len(expected_matrix):
         return False
-    if any(not isinstance(item, dict) or not isinstance(item.get("scenario"), str)
+    allowed_result_keys = {
+        "scenario", "status", "iteration", "evidence", "initial_txid", "final_sync_txid", "selected_txid",
+        "logical_comparison", "rows_per_business_db", "payload_bytes", "structural_check", "quiesce_wall_ns",
+        "stop_evidence", "follow", "promotion_start_to_functional_ms", "quiesce_to_functional_ms",
+        "baseline_auth", "promoted_writes", "logs_db", "epoch2", "normalized_follower_errors",
+        "trail_signal_ns", "trail_exit_ns", "replicator_signal_ns", "replicator_exit_ns", "outcomes",
+        "in_flight", "baseline", "signal_sent_ns", "exit_observed_ns", "auth", "controls",
+    }
+    if any(not isinstance(item, dict) or set(item) - allowed_result_keys
+           or not isinstance(item.get("scenario"), str)
            or type(item.get("iteration")) is not int for item in results):
         return False
     actual_matrix = {(item["scenario"], item["iteration"]) for item in results}
