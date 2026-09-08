@@ -434,9 +434,10 @@ def cleanup_candidates(root, candidates):
             if os.path.lexists(candidate):
                 raise RuntimeError("cleanup candidate remains")
         except Exception as exc:
-            results.append({"path": candidate, "result": "NO-GO", "error": type(exc).__name__})
+            results.append({"path": candidate, "result": "NO-GO", "proof": "removal-failed",
+                            "error": type(exc).__name__})
         else:
-            results.append({"path": candidate, "result": "PASS"})
+            results.append({"path": candidate, "result": "PASS", "proof": "absent", "error": None})
     return {"status": "PASS" if all(item["result"] == "PASS" for item in results) else "NO-GO", "results": results}
 
 if action == "cleanup":
@@ -1593,14 +1594,17 @@ def redact(value: Any) -> Any:
             value = value.replace(secret, "[REDACTED]")
         return value
     if isinstance(value, dict):
-        def safe_position_field(key: Any, item: Any) -> Any:
-            # Fixed database labels and strict TXIDs are evidence identifiers, not credentials.
+        def redact_field(key: Any, item: Any) -> Any:
+            # Replace loaded secret values before preserving position identifiers.
+            redacted = redact(item)
+            if redacted != item:
+                return redacted
             if key == "database" and item in _LITESTREAM_DATABASES:
                 return item
             if key == "txid" and isinstance(item, str) and _STRICT_TXID.fullmatch(item):
                 return item
-            return redact(item)
-        return {key: "[REDACTED]" if _SECRET.search(str(key)) else safe_position_field(key, item)
+            return redacted
+        return {key: "[REDACTED]" if _SECRET.search(str(key)) else redact_field(key, item)
                 for key, item in value.items()}
     if isinstance(value, list):
         return [redact(item) for item in value]
@@ -2715,6 +2719,32 @@ def _task5_bounded_failure_detail(stderr: bytes | str | None) -> str | None:
     return detail.strip() or None
 
 
+def _validate_task5_cleanup_response(value: Any, requested_paths: list[str]) -> dict[str, Any]:
+    if (not isinstance(value, dict) or set(value) != {"status", "results"}
+            or value["status"] not in {"PASS", "NO-GO"}
+            or not isinstance(value["results"], list)
+            or len(value["results"]) != len(requested_paths)
+            or len(requested_paths) != len(set(requested_paths))):
+        raise RuntimeError("incomplete or unknown Task5 cleanup output")
+    seen = set()
+    for item in value["results"]:
+        if (not isinstance(item, dict) or set(item) != {"path", "result", "proof", "error"}
+                or not isinstance(item["path"], str) or item["path"] in seen
+                or item["path"] not in requested_paths
+                or item["result"] not in {"PASS", "NO-GO"}
+                or item["proof"] not in {"absent", "removal-failed"}):
+            raise RuntimeError("malformed Task5 cleanup result")
+        if item["result"] == "PASS" and (item["proof"] != "absent" or item["error"] is not None):
+            raise RuntimeError("invalid Task5 cleanup absence proof")
+        if item["result"] == "NO-GO" and (item["proof"] != "removal-failed"
+                                              or not isinstance(item["error"], str) or not item["error"]):
+            raise RuntimeError("invalid Task5 cleanup removal proof")
+        seen.add(item["path"])
+    if seen != set(requested_paths):
+        raise RuntimeError("Task5 cleanup result does not cover requested paths")
+    return value
+
+
 def _task5_remote_json(node: Node, context: RunContext, m0_dir: str, action: str,
                        *args: str, timeout: float = 240) -> dict[str, Any]:
     result = ssh(node, ["python3", context.remote_root + "/task5-remote.py", m0_dir, action, *args],
@@ -2739,7 +2769,10 @@ def _task5_remote_json(node: Node, context: RunContext, m0_dir: str, action: str
     }
     valid = (action in schemas and isinstance(value, dict) and set(value) == schemas[action])
     if valid and action == "cleanup":
-        valid = value.get("status") in {"PASS", "NO-GO"} and isinstance(value.get("results"), list)
+        try:
+            _validate_task5_cleanup_response(value, list(args[1:]))
+        except RuntimeError:
+            valid = False
     else:
         valid = valid and value.get("status") == "PASS"
     if not valid:
@@ -2953,6 +2986,8 @@ def _task5_read_log(node: Node, path: str) -> str:
 
 def _task5_attest_preserved_runtime(node: Node, roots: list[str]) -> list[dict[str, Any]]:
     """Attest runtime trees before failure cleanup; sockets must remain available for review."""
+    if not roots or len(roots) != len(set(roots)):
+        raise RuntimeError("Task5 preserved runtime inventory is ambiguous")
     records = []
     for root in roots:
         result = ssh(node, ["find", root, "-mindepth", "0", "-maxdepth", "2", "-printf", "%y\\t%m\\t%p\\n"], check=False)
@@ -2961,11 +2996,32 @@ def _task5_attest_preserved_runtime(node: Node, roots: list[str]) -> list[dict[s
         raw = result.stdout if isinstance(result.stdout, bytes) else _stdout(result).encode()
         if len(raw) > _TASK5_LOG_MAX_BYTES:
             raise RuntimeError(f"Task5 preserved runtime inventory exceeds bound for {node.name}")
-        text = raw.decode("utf-8", "strict")
-        lines = [line for line in text.splitlines() if line]
-        if not lines or any(len(line.split("\\t")) != 3 or not line.endswith("\\t" + root) and "\\t" + root + "/" not in line for line in lines):
+        try:
+            text = raw.decode("utf-8", "strict")
+        except UnicodeDecodeError as exc:
+            raise RuntimeError(f"invalid preserved Task5 runtime inventory for {node.name}") from exc
+        if not text.endswith("\n"):
             raise RuntimeError(f"invalid preserved Task5 runtime inventory for {node.name}")
-        records.append({"path": root, "entries": len(lines), "sha256": hashlib.sha256(raw).hexdigest()})
+        paths = set()
+        for line in text.split("\n")[:-1]:
+            fields = line.split("\t")
+            if len(fields) != 3:
+                raise RuntimeError(f"invalid preserved Task5 runtime inventory for {node.name}")
+            kind, mode, path = fields
+            if kind not in {"d", "f", "s"} or re.fullmatch(r"[0-7]{3,4}", mode) is None:
+                raise RuntimeError(f"invalid preserved Task5 runtime inventory for {node.name}")
+            mode_value = int(mode, 8)
+            if mode_value > 0o777 or mode_value & 0o077:
+                raise RuntimeError(f"invalid preserved Task5 runtime inventory for {node.name}")
+            if path != root and (not path.startswith(root + "/") or "\t" in path or "\n" in path
+                                    or any(part in {"", ".", ".."} for part in path[len(root) + 1:].split("/"))):
+                raise RuntimeError(f"invalid preserved Task5 runtime inventory for {node.name}")
+            if path in paths:
+                raise RuntimeError(f"invalid preserved Task5 runtime inventory for {node.name}")
+            paths.add(path)
+        if not paths:
+            raise RuntimeError(f"invalid preserved Task5 runtime inventory for {node.name}")
+        records.append({"path": root, "entries": len(paths), "sha256": hashlib.sha256(raw).hexdigest()})
     return records
 
 
@@ -3625,9 +3681,8 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
                     sensitive_paths = sorted(sensitive_files[node.name],
                                              key=lambda path: 0 if path.endswith((".env", ".yml")) else 1)
                     sensitive_result = _task5_remote_cleanup(node, context, m0_dirs[node.name], sensitive_paths)
-                    if not isinstance(sensitive_result, dict):
-                        sensitive_result = {"status": "PASS", "results": []}
-                    if sensitive_result.get("status") != "PASS":
+                    sensitive_result = _validate_task5_cleanup_response(sensitive_result, sensitive_paths)
+                    if sensitive_result["status"] != "PASS":
                         cleanup_failures.append(f"sensitive:{node.name}:failed")
                 except Exception as exc:
                     cleanup_failures.append(f"sensitive:{node.name}:{type(exc).__name__}")
@@ -3638,9 +3693,8 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
                         general_paths.append(context.remote_root + "/logs")
                 try:
                     general_result = _task5_remote_cleanup(node, context, m0_dirs[node.name], general_paths)
-                    if not isinstance(general_result, dict):
-                        general_result = {"status": "PASS", "results": []}
-                    if general_result.get("status") != "PASS":
+                    general_result = _validate_task5_cleanup_response(general_result, general_paths)
+                    if general_result["status"] != "PASS":
                         cleanup_failures.append(f"general:{node.name}:failed")
                 except Exception as exc:
                     cleanup_failures.append(f"general:{node.name}:{type(exc).__name__}")

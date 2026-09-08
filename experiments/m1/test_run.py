@@ -35,6 +35,7 @@ from run import (
     task5_unit_argv, task5_replica_uri, read_strict_txid_sidecar, require_strict_position_advancement,
     reconcile_epoch_ledger, validate_litestream_task5_help, _parse_task5_list_keys, _validate_support_archive_members, _parse_task5_log_stat, _task5_validate_log_text, _TASK5_REMOTE_SCRIPT, _task5_prepare_runtime_root, _json_object_without_duplicates,
     _task5_bounded_failure_detail, _task5_remote_json, _task5_stop_unit, _task5_attest_preserved_logs,
+    _task5_attest_preserved_runtime,
     _raise_scp_failure,
 )
 
@@ -2145,10 +2146,51 @@ class LitestreamTask5Tests(unittest.TestCase):
     def test_remote_cleanup_confines_candidates_to_context_root(self):
         context = RunContext("20260907T010203Z-0123456789", Path("/tmp/local"),
                              "/var/lib/hat-qualification/20260907T010203Z-0123456789")
-        with mock.patch("run._task5_remote_json", return_value={"status": "PASS"}) as remote:
-            _task5_remote_cleanup(node(), context, "/m0", [context.remote_root + "/private"])
+        path = context.remote_root + "/private"
+        response = {"status": "PASS", "results": [{"path": path, "result": "PASS",
+                                                      "proof": "absent", "error": None}]}
+        with mock.patch("run._task5_remote_json", return_value=response) as remote:
+            _task5_remote_cleanup(node(), context, "/m0", [path])
         self.assertEqual(remote.call_args.args[4], context.remote_root)
-        self.assertEqual(remote.call_args.args[5], context.remote_root + "/private")
+        self.assertEqual(remote.call_args.args[5], path)
+
+    def test_task5_runtime_attestation_parses_real_tabs_and_validates_fields(self):
+        root = "/var/lib/hat-qualification/run/fm1-e1"
+        output = (f"d\\t700\\t{root}\\n".encode().decode("unicode_escape") +
+                  f"s\\t600\\t{root}/litestream.sock\\n".encode().decode("unicode_escape"))
+        result = subprocess.CompletedProcess([], 0, output.encode(), b"")
+        with mock.patch("run.ssh", return_value=result):
+            records = _task5_attest_preserved_runtime(node(), [root])
+        self.assertEqual(records[0]["entries"], 2)
+        self.assertEqual(records[0]["sha256"], hashlib.sha256(output.encode()).hexdigest())
+
+    def test_task5_runtime_attestation_rejects_bad_type_mode_or_path(self):
+        root = "/var/lib/hat-qualification/run/fm1-e1"
+        for line in (f"x\\t700\\t{root}\\n", f"d\\t7777\\t{root}\\n",
+                     f"d\\t700\\t{root}/../escape\\n", f"d\\t700\\t{root}\\textra\\n"):
+            output = line.encode().decode("unicode_escape").encode()
+            with self.subTest(line=line), mock.patch("run.ssh", return_value=subprocess.CompletedProcess([], 0, output, b"")):
+                with self.assertRaises(RuntimeError): _task5_attest_preserved_runtime(node(), [root])
+
+    def test_task5_cleanup_response_requires_exact_complete_unique_proofs(self):
+        from run import _validate_task5_cleanup_response
+        paths = ["/run/a", "/run/b"]
+        valid = {"status": "PASS", "results": [
+            {"path": paths[0], "result": "PASS", "proof": "absent", "error": None},
+            {"path": paths[1], "result": "PASS", "proof": "absent", "error": None},
+        ]}
+        self.assertIs(_validate_task5_cleanup_response(valid, paths), valid)
+        for bad in (None, {}, {"status": "PASS", "results": []},
+                     {"status": "MAYBE", "results": valid["results"]},
+                     {"status": "PASS", "results": [valid["results"][0], valid["results"][0]]},
+                     {"status": "PASS", "results": [{"path": paths[0], "result": "PASS"}, valid["results"][1]]}):
+            with self.subTest(bad=bad), self.assertRaises(RuntimeError):
+                _validate_task5_cleanup_response(bad, paths)
+
+    def test_loaded_secret_collision_redacts_position_labels(self):
+        with mock.patch("run._LOADED_SECRET_VALUES", {"session", "0000000000000002"}):
+            value = redact({"database": "session", "txid": "0000000000000002"})
+        self.assertEqual(value, {"database": "[REDACTED]", "txid": "[REDACTED]"})
 
     def test_task5_partial_transfer_registers_all_promoted_support_before_transfer(self):
         source = inspect.getsource(_cross_host_flow)
@@ -2252,6 +2294,9 @@ class LitestreamTask5Tests(unittest.TestCase):
             def remote(_node, argv, **_kwargs):
                 output = b"masked\n" if argv[0] == "systemctl" and argv[1] == "is-enabled" else b"inactive\n"
                 return subprocess.CompletedProcess([], 0, output, b"")
+            def cleanup_response(_node, _context, _m0, paths):
+                return {"status": "PASS", "results": [{"path": path, "result": "PASS",
+                                                          "proof": "absent", "error": None} for path in paths]}
             with mock.patch("s3._read_s3_values", return_value={}), \
                  mock.patch("s3.client_from_env", return_value=object()), \
                  mock.patch("run.build_pinned_known_hosts", return_value=local_root / "pins"), \
@@ -2262,7 +2307,7 @@ class LitestreamTask5Tests(unittest.TestCase):
                  mock.patch("run._copy_m0_source", return_value="/var/lib/hat-qualification/run/m0"), \
                  mock.patch("run.scp_to"), \
                  mock.patch("run._task5_remote_json", side_effect=RuntimeError("bootstrap failed")), \
-                 mock.patch("run._task5_remote_cleanup") as cleanup:
+                 mock.patch("run._task5_remote_cleanup", side_effect=cleanup_response) as cleanup:
                 result = _cross_host_flow(nodes, context, evidence, Path(__file__).resolve().parents[2],
                                           s3_env=Path("/private/s3.env"))
             self.assertEqual(result, StorageStatus.NO_GO)
@@ -2333,6 +2378,9 @@ class LitestreamTask5Tests(unittest.TestCase):
             def ensure_prepared(node_value, _context):
                 if node_value.name == "fm2":
                     raise RuntimeError("node preparation failed")
+            def cleanup_response(_node, _context, _m0, paths):
+                return {"status": "PASS", "results": [{"path": path, "result": "PASS",
+                                                          "proof": "absent", "error": None} for path in paths]}
             with mock.patch("s3._read_s3_values", return_value={}), \
                  mock.patch("s3.client_from_env", return_value=object()), \
                  mock.patch("run.build_pinned_known_hosts", return_value=local_root / "pins"), \
@@ -2342,7 +2390,7 @@ class LitestreamTask5Tests(unittest.TestCase):
                  mock.patch("run._task5_install_binaries", return_value=binaries), \
                  mock.patch("run._copy_m0_source", return_value="/var/lib/hat-qualification/run/m0"), \
                  mock.patch("run.scp_to"), \
-                 mock.patch("run._task5_remote_cleanup") as cleanup:
+                 mock.patch("run._task5_remote_cleanup", side_effect=cleanup_response) as cleanup:
                 result = _cross_host_flow(nodes, context, evidence, Path(__file__).resolve().parents[2],
                                           s3_env=Path("/private/s3.env"))
             self.assertEqual(result, StorageStatus.NO_GO)
@@ -2357,7 +2405,7 @@ class LitestreamTask5Tests(unittest.TestCase):
     def test_task5_position_records_preserve_session_txid_through_evidence_redaction(self):
         from run import _task5_position_records
         positions = {"main": "0000000000000001", "session": "0000000000000002", "aux": "0000000000000003"}
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, mock.patch("run._LOADED_SECRET_VALUES", set()):
             path = Path(directory) / "evidence.jsonl"
             append_evidence(path, {"selected": _task5_position_records(positions)})
             event = json.loads(path.read_text())
