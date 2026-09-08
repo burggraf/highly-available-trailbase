@@ -34,6 +34,7 @@ _SECRET = re.compile(
     r"(password|passwd|secret|token|authorization|private.?key|credential|access.?key|session|cookie)", re.I
 )
 SSH_TIMEOUT = 60
+REMOTE_PROVISION_TIMEOUT = 1200
 FENCE_MAX_AGE = 300
 _SSH_KNOWN_HOSTS: Path | None = None
 _REMOTE_ROOT: str | None = None
@@ -1156,9 +1157,18 @@ def remote_provision(remote_root: Path) -> dict[str, Any]:
     }
 
 
+_BOUNDED_READ_SCRIPT = r'''import os, sys
+fd = os.open(sys.argv[1], os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+with os.fdopen(fd, "rb") as source:
+    sys.stdout.buffer.write(source.read(int(sys.argv[2])))
+'''
+
+
 def _copy_from_node(node: Node, source: str, destination: Path, *, max_bytes: int) -> None:
     if _REMOTE_ROOT is None:
         raise RuntimeError("remote copy context is not initialized")
+    if not isinstance(max_bytes, int) or isinstance(max_bytes, bool) or max_bytes < 1:
+        raise ValueError("remote copy bound must be positive")
     confined_remote_path(_REMOTE_ROOT, source)
     kind, uid, gid, mode, name = _remote_stat(node, source)
     if kind != "regular file" or uid != 0 or gid != 0 or name != source or (mode & 0o022):
@@ -1166,15 +1176,29 @@ def _copy_from_node(node: Node, source: str, destination: Path, *, max_bytes: in
     real = ssh(node, ["realpath", "-e", "--", source], check=False)
     if real.returncode or _stdout(real).strip() != source:
         raise RuntimeError("remote evidence file is not canonical")
-    result = ssh(node, ["cat", "--", source], check=False)
+    result = ssh(node, ["python3", "-c", _BOUNDED_READ_SCRIPT, source, str(max_bytes + 1)], check=False)
     if result.returncode or len(result.stdout) > max_bytes:
         raise RuntimeError("could not copy bounded remote evidence")
-    destination = Path(destination)
-    with destination.open("xb") as stream:
-        stream.write(result.stdout)
-        stream.flush()
-        os.fsync(stream.fileno())
-    destination.chmod(0o600)
+    destination = _absolute_no_symlinks(destination)
+    _require_private_directory(destination.parent, "evidence destination parent")
+    if destination.exists() or destination.is_symlink():
+        raise RuntimeError("evidence destination already exists")
+    temporary = destination.parent / ("." + destination.name + ".tmp-" + uuid.uuid4().hex)
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with os.fdopen(fd, "wb") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(result.stdout)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.link(temporary, destination, follow_symlinks=False)
+        parent_fd = os.open(destination.parent, os.O_RDONLY)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _copy_m0_source(node: Node, context: RunContext, repository: Path) -> str:
@@ -1225,8 +1249,51 @@ with tarfile.open(output / "m0-logs.tar.gz", "x:gz") as archive:
 '''
 
 
+def _validate_m0_aggregate(node: Node, expected_architecture: str, aggregate: Any,
+                           manifest: Any, result_sha256: str) -> bool:
+    if node.name != "fm1" or not isinstance(aggregate, dict) or not isinstance(manifest, dict):
+        return False
+    try:
+        trail_hash = artifact_for("trailbase", expected_architecture).executable_sha256
+        litestream_hash = artifact_for("litestream", expected_architecture).executable_sha256
+    except ValueError:
+        return False
+    expected_matrix = {(scenario, iteration) for iteration in range(1, 4)
+                       for scenario in ("follow", "graceful", "crash", "lagged-crash")}
+    expected_matrix.add(("guards", 1))
+    results = aggregate.get("results")
+    if not isinstance(results, list) or len(results) != len(expected_matrix):
+        return False
+    if any(not isinstance(item, dict) or not isinstance(item.get("scenario"), str)
+           or type(item.get("iteration")) is not int for item in results):
+        return False
+    actual_matrix = {(item["scenario"], item["iteration"]) for item in results}
+    return (
+        len(actual_matrix) == len(expected_matrix)
+        and actual_matrix == expected_matrix
+        and all(item.get("status") == "PASS" for item in results)
+        and aggregate.get("scenario") == "all"
+        and aggregate.get("status") == "PASS"
+        and type(aggregate.get("repeat")) is int
+        and aggregate.get("repeat") == 3
+        and aggregate.get("platform") == {"system": "Linux", "machine": expected_architecture}
+        and aggregate.get("trail_sha256") == trail_hash
+        and aggregate.get("litestream_sha256") == litestream_hash
+        and manifest.get("run_count") == 1
+        and manifest.get("result_present") is True
+        and manifest.get("result_sha256") == result_sha256
+        and manifest.get("result_status") == "PASS"
+        and type(manifest.get("repeat")) is int
+        and manifest.get("repeat") == 3
+        and type(manifest.get("result_count")) is int
+        and manifest.get("result_count") == 13
+        and type(manifest.get("log_count")) is int
+        and manifest.get("log_count") > 0
+    )
+
+
 def _run_m0_linux_parity(node: Node, context: RunContext, evidence: Path, local_root: Path,
-                         repository: Path) -> StorageStatus:
+                         repository: Path, expected_architecture: str) -> StorageStatus:
     m0 = _copy_m0_source(node, context, repository)
     work = _create_runtime_root(node, context)
     command = ["python3", m0 + "/run.py", "--trail", context.remote_root + "/bin/trail",
@@ -1268,13 +1335,17 @@ def _run_m0_linux_parity(node: Node, context: RunContext, evidence: Path, local_
         failures.append("evidence collection failed: " + type(exc).__name__)
 
     aggregate: dict[str, Any] = {}
+    result_sha256 = ""
     if local_result.is_file():
         try:
-            aggregate = json.loads(local_result.read_text(encoding="utf-8"))
+            result_bytes = local_result.read_bytes()
+            result_sha256 = hashlib.sha256(result_bytes).hexdigest()
+            aggregate = json.loads(result_bytes)
         except (OSError, UnicodeError, json.JSONDecodeError):
             failures.append("copied aggregate is invalid")
-    complete = (not failures and aggregate.get("status") == "PASS" and aggregate.get("repeat") == 3
-                and len(aggregate.get("results", [])) == 13 and manifest.get("log_count", 0) > 0)
+    complete = not failures and _validate_m0_aggregate(
+        node, expected_architecture, aggregate, manifest, result_sha256,
+    )
     if not complete and not failures:
         failures.append("copied aggregate or logs are incomplete")
     status = StorageStatus.PASS if complete else StorageStatus.NO_GO
@@ -1363,28 +1434,35 @@ def provision(nodes: list[Node], context: RunContext, evidence: Path, repository
     _validate_prerequisites(nodes, inventory_path, linode_env, repository)
     local_root = _validate_local_context(context, repository)
     evidence = _validate_evidence_path(evidence, local_root, repository)
+    stage = "transport-setup"
     try:
         with tempfile.TemporaryDirectory(prefix="hat-known-hosts-") as directory:
             _SSH_KNOWN_HOSTS = build_pinned_known_hosts(nodes, Path(directory) / "pins")
             _REMOTE_ROOT = context.remote_root
             coordinator = Path(__file__).resolve()
+            architectures = {}
             for node in nodes:
+                stage = "provision:" + node.name
                 _verify_remote_directory(node, context.remote_root, mode=0o700)
                 remote_coordinator = context.remote_root + "/m1-run.py"
                 scp_to(node, coordinator, remote_coordinator)
-                result = ssh(node, ["python3", remote_coordinator, "__remote-provision", context.remote_root], check=False)
+                result = ssh(node, ["python3", remote_coordinator, "__remote-provision", context.remote_root],
+                             check=False, timeout=REMOTE_PROVISION_TIMEOUT)
                 if result.returncode:
                     raise RuntimeError(f"provisioning failed for {node.name}")
                 try:
                     summary = json.loads(_stdout(result))
                 except (UnicodeError, json.JSONDecodeError) as exc:
                     raise RuntimeError("invalid remote provisioning result") from exc
-                if summary.get("status") != "PASS":
+                if summary.get("status") != "PASS" or not isinstance(summary.get("architecture"), str):
                     raise RuntimeError("remote provisioning did not pass")
+                architectures[node.name] = summary["architecture"]
                 append_evidence(evidence, {"event": "provision", "node": node.name, **summary}, repository)
 
+            stage = "reboot-preflight"
             boot_ids = _preflight_boot_ids(evidence, nodes)
             for node in nodes:
+                stage = "reboot:" + node.name
                 target = {"node": node.name, "instance_id": node.instance_id,
                           "provider_label": node.provider_label, "address": node.address,
                           "host_key": node.host_key}
@@ -1397,8 +1475,13 @@ def provision(nodes: list[Node], context: RunContext, evidence: Path, repository
                 append_evidence(evidence, {"event": "reboot-mask-check", "node": node.name,
                                            "status": "PASS", "services": "masked-and-inactive"}, repository)
 
+            stage = "m0-linux-parity"
             fm1 = next(node for node in nodes if node.name == "fm1")
-            return _run_m0_linux_parity(fm1, context, evidence, local_root, repository)
+            return _run_m0_linux_parity(fm1, context, evidence, local_root, repository, architectures["fm1"])
+    except Exception as exc:
+        append_evidence(evidence, {"event": "provision", "status": "NO-GO", "stage": stage,
+                                   "exception_type": type(exc).__name__}, repository)
+        return StorageStatus.NO_GO
     finally:
         _SSH_KNOWN_HOSTS = None
         _REMOTE_ROOT = None

@@ -23,7 +23,8 @@ from run import (
     Artifact, artifact_for, confined_remote_path, extract_verified_artifact,
     mask_writer_services, missing_packages, published_checksum,
     validate_binary_version, validate_release_metadata, _install_required_packages,
-    _binary_version_evidence, _run_m0_linux_parity,
+    _binary_version_evidence, _copy_from_node, _run_m0_linux_parity,
+    _validate_m0_aggregate, provision, REMOTE_PROVISION_TIMEOUT,
 )
 
 FP = "SHA256:" + "A" * 43
@@ -1091,6 +1092,42 @@ class ProvisionTests(unittest.TestCase):
         })
         self.assertEqual(reports["litestream"], {"reported": "0.5.17"})
 
+    def test_m0_acceptance_requires_exact_matrix_platform_hashes_and_manifest(self):
+        machine = "x86_64"
+        trail = artifact_for("trailbase", machine).executable_sha256
+        litestream = artifact_for("litestream", machine).executable_sha256
+        results = [{"scenario": scenario, "iteration": iteration, "status": "PASS"}
+                   for iteration in range(1, 4)
+                   for scenario in ("follow", "graceful", "crash", "lagged-crash")]
+        results.append({"scenario": "guards", "iteration": 1, "status": "PASS"})
+        aggregate = {"scenario": "all", "status": "PASS", "repeat": 3,
+                     "platform": {"system": "Linux", "machine": machine},
+                     "trail_sha256": trail, "litestream_sha256": litestream, "results": results}
+        result_digest = hashlib.sha256(json.dumps(aggregate).encode()).hexdigest()
+        manifest = {"run_count": 1, "result_present": True, "result_sha256": result_digest,
+                    "result_status": "PASS", "repeat": 3, "result_count": 13, "log_count": 1}
+        self.assertTrue(_validate_m0_aggregate(node("fm1"), machine, aggregate, manifest, result_digest))
+
+        mutations = []
+        for field, value in (("scenario", "follow"), ("status", "FAIL"), ("repeat", 2),
+                             ("trail_sha256", "0" * 64), ("litestream_sha256", "0" * 64)):
+            mutations.append(({**aggregate, field: value}, manifest, result_digest))
+        mutations.extend([
+            ({**aggregate, "platform": {"system": "Darwin", "machine": machine}}, manifest, result_digest),
+            ({**aggregate, "platform": {"system": "Linux", "machine": "aarch64"}}, manifest, result_digest),
+            ({**aggregate, "results": results[:-1] + [{**results[-1], "scenario": "follow"}]}, manifest, result_digest),
+            ({**aggregate, "results": [{**results[0], "status": "FAIL"}, *results[1:]]}, manifest, result_digest),
+        ])
+        for field, value in (("run_count", 2), ("result_present", False), ("result_sha256", "0" * 64),
+                             ("result_status", "FAIL"), ("repeat", 2), ("result_count", 12), ("log_count", 0)):
+            mutations.append((aggregate, {**manifest, field: value}, result_digest))
+        for changed_aggregate, changed_manifest, changed_digest in mutations:
+            with self.subTest(aggregate=changed_aggregate, manifest=changed_manifest):
+                self.assertFalse(_validate_m0_aggregate(node("fm1"), machine, changed_aggregate,
+                                                        changed_manifest, changed_digest))
+        self.assertFalse(_validate_m0_aggregate(node("fm2"), machine, aggregate, manifest, result_digest))
+        self.assertFalse(_validate_m0_aggregate(node("fm1"), "aarch64", aggregate, manifest, result_digest))
+
     def test_m0_failure_and_timeout_collect_partial_evidence_and_return_no_go(self):
         for termination in (subprocess.CompletedProcess([], 2, b"", b"private: No space left on device"),
                             subprocess.TimeoutExpired([], 1200, output=b"", stderr=b"private timeout")):
@@ -1109,7 +1146,7 @@ class ProvisionTests(unittest.TestCase):
                      mock.patch("run._create_runtime_root", return_value="/run/hat/work"), \
                      mock.patch("run.ssh", command), mock.patch("run._copy_from_node", side_effect=copy), \
                      mock.patch("run._LOADED_SECRET_VALUES", set()):
-                    status = _run_m0_linux_parity(node("fm1"), context, local / "evidence.jsonl", local, Path.cwd())
+                    status = _run_m0_linux_parity(node("fm1"), context, local / "evidence.jsonl", local, Path.cwd(), "x86_64")
 
                 self.assertIs(status, StorageStatus.NO_GO)
                 self.assertEqual(command.call_args_list[0].args[1][-4:], ["--scenario", "all", "--repeat", "3"])
@@ -1122,6 +1159,51 @@ class ProvisionTests(unittest.TestCase):
                     self.assertEqual(event["failures"], ["resource capability: no space left on device"])
                 self.assertTrue((local / "fm1-m0-evidence.json").is_file())
                 self.assertTrue((local / "fm1-m0-logs.tar.gz").is_file())
+
+    def test_copy_from_node_hard_bounds_and_atomically_publishes(self):
+        realpath = subprocess.CompletedProcess([], 0, b"/safe/file\n", b"")
+        for payload, succeeds in ((b"1234", True), (b"12345", False)):
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as d:
+                destination = Path(d) / "copy"
+                copied = subprocess.CompletedProcess([], 0, payload, b"")
+                transport = mock.Mock(side_effect=[realpath, copied])
+                with mock.patch("run._REMOTE_ROOT", "/safe"), \
+                     mock.patch("run._SSH_KNOWN_HOSTS", Path("/pins")), \
+                     mock.patch("run._remote_stat", return_value=("regular file", 0, 0, 0o600, "/safe/file")), \
+                     mock.patch("run.ssh", transport):
+                    if succeeds:
+                        _copy_from_node(node(), "/safe/file", destination, max_bytes=4)
+                    else:
+                        with self.assertRaises(RuntimeError):
+                            _copy_from_node(node(), "/safe/file", destination, max_bytes=4)
+                self.assertEqual(destination.exists(), succeeds)
+                if succeeds:
+                    self.assertEqual(destination.read_bytes(), payload)
+                    self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o600)
+                bounded_command = transport.call_args_list[1].args[1]
+                self.assertEqual(bounded_command[:2], ["python3", "-c"])
+                self.assertEqual(bounded_command[-2:], ["/safe/file", "5"])
+
+    def test_provision_uses_long_timeout_and_records_sanitized_no_go(self):
+        timeout = subprocess.TimeoutExpired([], REMOTE_PROVISION_TIMEOUT, stderr=b"private detail")
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d); evidence = root / "evidence.jsonl"
+            context = RunContext("20260907T010203Z-0123456789", root,
+                                 "/var/lib/hat-qualification/20260907T010203Z-0123456789")
+            with mock.patch("run._validate_prerequisites"), mock.patch("run._validate_local_context", return_value=root), \
+                 mock.patch("run._validate_evidence_path", return_value=evidence), \
+                 mock.patch("run.build_pinned_known_hosts", return_value=root / "pins"), \
+                 mock.patch("run._verify_remote_directory"), mock.patch("run.scp_to"), \
+                 mock.patch("run.ssh", side_effect=timeout) as transport, \
+                 mock.patch("run._LOADED_SECRET_VALUES", set()):
+                status = provision([node("fm1")], context, evidence, Path.cwd(),
+                                   inventory_path=root / "inventory", linode_env=root / "env", fence_command=root / "fence")
+            self.assertIs(status, StorageStatus.NO_GO)
+            self.assertEqual(transport.call_args.kwargs["timeout"], REMOTE_PROVISION_TIMEOUT)
+            event = json.loads(evidence.read_text().splitlines()[-1])
+            self.assertEqual(event, {"event": "provision", "status": "NO-GO",
+                                     "stage": "provision:fm1", "exception_type": "TimeoutExpired"})
+            self.assertNotIn("private", json.dumps(event))
 
     def test_provision_cli_returns_two_for_bounded_m0_no_go(self):
         nodes = [node("fm1"), node("fm2"), node("fm3")]
