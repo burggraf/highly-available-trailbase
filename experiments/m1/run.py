@@ -2694,7 +2694,15 @@ def _parse_task5_list_keys(xml: bytes, *, prefix: str | None = None) -> list[str
     if any(children.count(tag) != 1 for tag in required) or any(children.count(tag) > 1 for tag in optional):
         raise RuntimeError("Task5 S3 inventory has an invalid shape")
     for child in root:
-        if local(child.tag) != "Contents" and (len(child) or child.text is None or not child.text.strip()):
+        tag = local(child.tag)
+        if tag == "Contents":
+            continue
+        # Some S3-compatible providers emit <Delimiter/> even when the
+        # request did not include a delimiter.  It is an optional scalar,
+        # unlike the required metadata above, so an empty value is valid.
+        if tag == "Delimiter" and not len(child) and (child.text is None or not child.text.strip()):
+            continue
+        if len(child) or child.text is None or not child.text.strip():
             raise RuntimeError("Task5 S3 inventory has malformed metadata")
     values = {tag: next(node for node in root if local(node.tag) == tag).text or "" for tag in required}
     if not values["Name"] or values["IsTruncated"] != "false" or values["MaxKeys"] != str(_TASK5_S3_MAX_KEYS):
@@ -2873,10 +2881,11 @@ def _safe_extract_support_archive(archive: Path, destination: Path) -> tuple[str
     return members
 
 
-def _task5_remote_cleanup(node: Node, context: RunContext, m0_dir: str, root: str, paths: list[str]) -> None:
+def _task5_remote_cleanup(node: Node, context: RunContext, m0_dir: str, paths: list[str]) -> None:
     if not paths:
         return
-    result = _task5_remote_json(node, context, m0_dir, "cleanup", root, *paths)
+    # The run context, not a caller-supplied path, is the cleanup confinement.
+    result = _task5_remote_json(node, context, m0_dir, "cleanup", context.remote_root, *paths)
     if result != {"status": "PASS"}:
         raise RuntimeError(f"remote cleanup returned incomplete evidence on {node.name}")
 
@@ -2948,6 +2957,13 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
         **{f"e1-follower-{name}": f"hat-task5-{suffix}-e1-follower-{name}" for name in _LITESTREAM_DATABASES},
     }
     remote_files: dict[str, list[str]] = {node.name: [] for node in nodes}
+    prepared_nodes: set[str] = set()
+    cleanup_ready_nodes: set[str] = set()
+    binaries: dict[str, tuple[str, str]] = {}
+    m0_dirs: dict[str, str] = {}
+    depot1: str | None = None
+    promoted: str | None = None
+    clean: str | None = None
     unit_configs: list[tuple[Node, str, str]] = []
     started_units: set[tuple[str, str]] = set()
     unit_logs: dict[str, tuple[str, str]] = {}
@@ -2955,18 +2971,17 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
     stage = "initialize"
     pins_path = context.local_root / "ssh-pins"
     try:
+        pins_path.mkdir(mode=0o700)
+        _SSH_KNOWN_HOSTS = build_pinned_known_hosts(nodes, pins_path / "pins")
+        if _task5_s3_inventory(client, f"qualification/{context.run_id}/"):
+            raise RuntimeError("Task5 S3 run prefix already exists")
+        script = context.local_root / "task5-remote.py"
         if True:
-            pins_path.mkdir(mode=0o700)
-            _SSH_KNOWN_HOSTS = build_pinned_known_hosts(nodes, pins_path / "pins")
-            if _task5_s3_inventory(client, f"qualification/{context.run_id}/"):
-                raise RuntimeError("Task5 S3 run prefix already exists")
-            binaries: dict[str, tuple[str, str]] = {}
-            m0_dirs: dict[str, str] = {}
-            script = context.local_root / "task5-remote.py"
             script.write_text(_TASK5_REMOTE_SCRIPT, encoding="utf-8"); script.chmod(0o700)
             for node in nodes:
                 stage = f"prepare-{node.name}"
                 ensure_remote_root(node, context)
+                prepared_nodes.add(node.name)
                 for service in _WRITER_UNITS:
                     enabled = _stdout(ssh(node, ["systemctl", "is-enabled", service], check=False)).strip()
                     active = _stdout(ssh(node, ["systemctl", "is-active", service], check=False)).strip()
@@ -2974,7 +2989,10 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
                         raise RuntimeError(f"writer service safety primitive failed on {node.name}")
                 binaries[node.name] = _task5_install_binaries(node, context)
                 m0_dirs[node.name] = _copy_m0_source(node, context, repository)
-                scp_to(node, script, context.remote_root + "/task5-remote.py")
+                remote_script = context.remote_root + "/task5-remote.py"
+                scp_to(node, script, remote_script)
+                remote_files[node.name].append(remote_script)
+                cleanup_ready_nodes.add(node.name)
             append_evidence(evidence, {"operation": "task5-init", "run_id": context.run_id,
                 "remote_root": context.remote_root, "nodes": sorted(by_name), "services": "masked-and-inactive",
                 "versions": {"trailbase": "0.33.11", "litestream": "0.5.17"}}, repository)
@@ -3073,6 +3091,7 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
 
             stage = "promote-e1"
             _task5_transfer_support(fm1, fm2, depot1, promoted, context)
+            remote_files["fm2"].extend((promoted + "/config.textproto", promoted + "/secrets"))
             e1_prefix = f"qualification/{context.run_id}/e1/"
             e1_before = _task5_s3_inventory(client, e1_prefix)
             if not e1_before or any(key["key"].split("/")[3] not in _LITESTREAM_DATABASES for key in e1_before):
@@ -3138,16 +3157,35 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
                         _task5_cleanup_started_unit(node, unit)
                     except Exception as exc:
                         cleanup_failures.append(f"stop:{node.name}:{unit}:{type(exc).__name__}")
-                private_files = [*remote_files[node.name], context.remote_root + "/fixture/fixture-private.json"]
-                private_files.extend(context.remote_root + f"/fixture/{depot}/traildepot/config.textproto" for depot in ("a", "b", "c"))
-                private_files.append(context.remote_root + "/promoted/config.textproto")
-                private_dirs = [context.remote_root + f"/fixture/{depot}/traildepot/secrets" for depot in ("a", "b", "c")]
-                private_dirs.extend((context.remote_root + "/promoted/secrets", context.remote_root + "/e1-source",
-                                     context.remote_root + "/e2-source", context.remote_root + "/logs"))
+        for node in nodes:
+            paths = list(remote_files[node.name])
+            if depot1 is not None and node.name == "fm1":
+                paths.append(context.remote_root + "/fixture/fixture-private.json")
+                paths.extend(context.remote_root + f"/fixture/{depot}/traildepot/config.textproto" for depot in ("a", "b", "c"))
+                paths.extend(context.remote_root + f"/fixture/{depot}/traildepot/secrets" for depot in ("a", "b", "c"))
+            cleanup_attempted = False
+            cleanup_result = "SKIPPED"
+            cleanup_reason = "node-not-prepared"
+            if node.name in prepared_nodes and node.name in cleanup_ready_nodes and _SSH_KNOWN_HOSTS is not None:
+                cleanup_attempted = True
+                cleanup_reason = ""
                 try:
-                    _task5_remote_cleanup(node, context, m0_dirs.get(node.name, context.remote_root), context.remote_root,
-                                          [*private_files, *private_dirs])
-                except Exception as exc: cleanup_failures.append(f"scrub:{node.name}:{type(exc).__name__}")
+                    _task5_remote_cleanup(node, context, m0_dirs[node.name], paths)
+                except Exception as exc:
+                    cleanup_result = "NO-GO"
+                    cleanup_reason = type(exc).__name__
+                    cleanup_failures.append(f"scrub:{node.name}:{type(exc).__name__}")
+                else:
+                    cleanup_result = "PASS"
+            elif node.name in prepared_nodes:
+                cleanup_reason = "cleanup-runner-not-prepared"
+            try:
+                append_evidence(evidence, {"operation": "task5-cleanup-node", "node": node.name,
+                                           "prepared": node.name in prepared_nodes,
+                                           "attempted": cleanup_attempted,
+                                           "result": cleanup_result, "reason": cleanup_reason}, repository)
+            except Exception as exc:
+                cleanup_failures.append(f"evidence:{node.name}:{type(exc).__name__}")
         for cleanup_action in (
             lambda: scrub_private_tree(context.local_root / "runtime", context.local_root),
             lambda: support_archive.unlink(missing_ok=True) if support_archive is not None else None,

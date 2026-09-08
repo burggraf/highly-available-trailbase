@@ -27,7 +27,7 @@ from run import (
     _binary_version_evidence, _copy_from_node, _create_runtime_root, _preflight_m0_socket_paths, _run_m0_linux_parity,
     _validate_m0_aggregate, _validate_m0_log_archive, _validate_provision_summary,
     _validate_post_reboot_summary, _provision_workflow, provision, REMOTE_PROVISION_TIMEOUT,
-    _M0_COLLECT_SCRIPT, _download_public, _safe_archive_member,
+    _M0_COLLECT_SCRIPT, _download_public, _safe_archive_member, _cross_host_flow, _task5_remote_cleanup,
     write_litestream_s3_config, validate_litestream_s3_config, inventory_digest,
     assert_inventory_unchanged, scrub_private_path, scrub_private_tree, compare_database_summaries,
     task5_unit_argv, task5_replica_uri, read_strict_txid_sidecar, require_strict_position_advancement,
@@ -1690,6 +1690,11 @@ class LitestreamTask5Tests(unittest.TestCase):
     def test_s3_inventory_requires_one_explicit_false_and_strict_contents(self):
         xml = b'<ListBucketResult><Name>b</Name><Prefix>p/</Prefix><KeyCount>1</KeyCount><MaxKeys>1000</MaxKeys><IsTruncated>false</IsTruncated><Contents><Key>p/a</Key></Contents></ListBucketResult>'
         self.assertEqual(_parse_task5_list_keys(xml), ["p/a"])
+        provider_xml = (b'<ListBucketResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+                        b'<Name>b</Name><Prefix>p/</Prefix><KeyCount>1</KeyCount><MaxKeys>1000</MaxKeys>'
+                        b'<IsTruncated>false</IsTruncated><Delimiter/><Contents><Key>p/a</Key></Contents>'
+                        b'</ListBucketResult>')
+        self.assertEqual(_parse_task5_list_keys(provider_xml, prefix="p/"), ["p/a"])
         metadata = (b'<Contents><Key>p/a</Key><LastModified>2026-09-07T00:00:00Z</LastModified>'
                     b'<ETag>&quot;x&quot;</ETag><Size>1</Size><StorageClass>STANDARD</StorageClass></Contents>')
         self.assertEqual(_parse_task5_list_keys(xml.replace(b'<Contents><Key>p/a</Key></Contents>', metadata)), ["p/a"])
@@ -1798,6 +1803,106 @@ class LitestreamTask5Tests(unittest.TestCase):
         self.assertEqual(result["lost_acknowledged"], [])
         mutated = json.loads(json.dumps(restored)); mutated["main"]["operations"].append({"key": "unexpected", "payload_sha256": digest})
         with self.assertRaises(Exception): reconcile_epoch_ledger(ledger, mutated)
+
+    def test_remote_cleanup_confines_candidates_to_context_root(self):
+        context = RunContext("20260907T010203Z-0123456789", Path("/tmp/local"),
+                             "/var/lib/hat-qualification/20260907T010203Z-0123456789")
+        with mock.patch("run._task5_remote_json", return_value={"status": "PASS"}) as remote:
+            _task5_remote_cleanup(node(), context, "/m0", [context.remote_root + "/private"])
+        self.assertEqual(remote.call_args.args[4], context.remote_root)
+        self.assertEqual(remote.call_args.args[5], context.remote_root + "/private")
+
+    def test_cross_host_early_failure_records_each_node_without_unbound_state(self):
+        nodes = [node(name) for name in ("fm1", "fm2", "fm3")]
+        with tempfile.TemporaryDirectory() as directory:
+            local_root = Path(directory) / "run"
+            local_root.mkdir(mode=0o700)
+            context = RunContext("20260907T010203Z-0123456789", local_root,
+                                 "/var/lib/hat-qualification/20260907T010203Z-0123456789")
+            evidence = local_root / "evidence.jsonl"
+            with mock.patch("s3._read_s3_values", return_value={}), \
+                 mock.patch("s3.client_from_env", return_value=object()), \
+                 mock.patch("run.build_pinned_known_hosts", return_value=local_root / "pins"), \
+                 mock.patch("run._task5_s3_inventory", side_effect=RuntimeError("bootstrap unavailable")):
+                result = _cross_host_flow(nodes, context, evidence, Path(__file__).resolve().parents[2],
+                                          s3_env=Path("/private/s3.env"))
+            self.assertEqual(result, StorageStatus.NO_GO)
+            cleanup = [json.loads(line) for line in evidence.read_text().splitlines()
+                       if json.loads(line).get("operation") == "task5-cleanup-node"]
+            self.assertEqual([event["node"] for event in cleanup], ["fm1", "fm2", "fm3"])
+            self.assertTrue(all(not event["attempted"] and not event["prepared"] for event in cleanup))
+
+    def test_cross_host_bootstrap_failure_cleans_only_prepared_nodes(self):
+        nodes = [node(name) for name in ("fm1", "fm2", "fm3")]
+        binaries = ("/var/lib/hat-qualification/run/bin/trail", "/var/lib/hat-qualification/run/bin/litestream")
+        with tempfile.TemporaryDirectory() as directory:
+            local_root = Path(directory) / "run"
+            local_root.mkdir(mode=0o700)
+            context = RunContext("20260907T010203Z-0123456789", local_root,
+                                 "/var/lib/hat-qualification/20260907T010203Z-0123456789")
+            evidence = local_root / "evidence.jsonl"
+            def remote(_node, argv, **_kwargs):
+                output = b"masked\n" if argv[0] == "systemctl" and argv[1] == "is-enabled" else b"inactive\n"
+                return subprocess.CompletedProcess([], 0, output, b"")
+            with mock.patch("s3._read_s3_values", return_value={}), \
+                 mock.patch("s3.client_from_env", return_value=object()), \
+                 mock.patch("run.build_pinned_known_hosts", return_value=local_root / "pins"), \
+                 mock.patch("run.ensure_remote_root"), \
+                 mock.patch("run.ssh", side_effect=remote), \
+                 mock.patch("run._task5_s3_inventory", return_value=[]), \
+                 mock.patch("run._task5_install_binaries", return_value=binaries), \
+                 mock.patch("run._copy_m0_source", return_value="/var/lib/hat-qualification/run/m0"), \
+                 mock.patch("run.scp_to"), \
+                 mock.patch("run._task5_remote_json", side_effect=RuntimeError("bootstrap failed")), \
+                 mock.patch("run._task5_remote_cleanup") as cleanup:
+                result = _cross_host_flow(nodes, context, evidence, Path(__file__).resolve().parents[2],
+                                          s3_env=Path("/private/s3.env"))
+            self.assertEqual(result, StorageStatus.NO_GO)
+            self.assertEqual(cleanup.call_count, 3)
+            for call in cleanup.call_args_list:
+                self.assertEqual(call.args[1].remote_root, context.remote_root)
+                self.assertEqual(call.args[3], [context.remote_root + "/task5-remote.py"])
+            events = [json.loads(line) for line in evidence.read_text().splitlines()
+                      if json.loads(line).get("operation") == "task5-cleanup-node"]
+            self.assertEqual(len(events), 3)
+            self.assertTrue(all(event["prepared"] and event["attempted"] and event["result"] == "PASS"
+                                for event in events))
+
+    def test_cross_host_prepare_failure_skips_unprepared_nodes(self):
+        nodes = [node(name) for name in ("fm1", "fm2", "fm3")]
+        binaries = ("/var/lib/hat-qualification/run/bin/trail", "/var/lib/hat-qualification/run/bin/litestream")
+        with tempfile.TemporaryDirectory() as directory:
+            local_root = Path(directory) / "run"
+            local_root.mkdir(mode=0o700)
+            context = RunContext("20260907T010203Z-0123456789", local_root,
+                                 "/var/lib/hat-qualification/20260907T010203Z-0123456789")
+            evidence = local_root / "evidence.jsonl"
+            def remote(_node, argv, **_kwargs):
+                output = b"masked\n" if argv[0] == "systemctl" and argv[1] == "is-enabled" else b"inactive\n"
+                return subprocess.CompletedProcess([], 0, output, b"")
+            def ensure_prepared(node_value, _context):
+                if node_value.name == "fm2":
+                    raise RuntimeError("node preparation failed")
+            with mock.patch("s3._read_s3_values", return_value={}), \
+                 mock.patch("s3.client_from_env", return_value=object()), \
+                 mock.patch("run.build_pinned_known_hosts", return_value=local_root / "pins"), \
+                 mock.patch("run.ensure_remote_root", side_effect=ensure_prepared), \
+                 mock.patch("run.ssh", side_effect=remote), \
+                 mock.patch("run._task5_s3_inventory", return_value=[]), \
+                 mock.patch("run._task5_install_binaries", return_value=binaries), \
+                 mock.patch("run._copy_m0_source", return_value="/var/lib/hat-qualification/run/m0"), \
+                 mock.patch("run.scp_to"), \
+                 mock.patch("run._task5_remote_cleanup") as cleanup:
+                result = _cross_host_flow(nodes, context, evidence, Path(__file__).resolve().parents[2],
+                                          s3_env=Path("/private/s3.env"))
+            self.assertEqual(result, StorageStatus.NO_GO)
+            self.assertEqual(cleanup.call_count, 1)
+            events = [json.loads(line) for line in evidence.read_text().splitlines()
+                      if json.loads(line).get("operation") == "task5-cleanup-node"]
+            self.assertEqual(len(events), 3)
+            self.assertEqual(events[0]["result"], "PASS")
+            self.assertTrue(events[0]["attempted"] and events[0]["prepared"])
+            self.assertTrue(all(not event["attempted"] and not event["prepared"] for event in events[1:]))
 
     def test_remote_runner_contains_executable_required_stages(self):
         for stage in ('action == "bootstrap"', 'action == "write"', 'action == "sync"',
