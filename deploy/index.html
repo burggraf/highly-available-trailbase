@@ -2,11 +2,11 @@
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>HAT · TrailBase demo</title>
 <style>body{font:16px system-ui;max-width:960px;margin:3rem auto;padding:0 1rem;background:#f5f6f8;color:#182431}h1{margin-bottom:.3rem}.cards{display:grid;grid-template-columns:1fr 1fr;gap:1rem}section{background:white;border:1px solid #dce2e8;border-radius:12px;padding:1.3rem;margin:1rem 0}label{display:block;margin:.6rem 0}input,button{font:inherit;padding:.55rem;border:1px solid #a9b7c5;border-radius:5px}button{cursor:pointer;background:#173f69;color:white}pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}.muted{color:#536575}@media(max-width:640px){.cards{grid-template-columns:1fr}}</style>
-<h1>HAT · TrailBase demo</h1><p class="muted">One writer. Three replicated databases. A visible standby.</p>
-<p>Operator-controlled D1 prototype — <strong>not failover or ingress HA</strong>. Backups are asynchronous; observed positions do not bound acknowledged-write loss.</p>
-<div class="cards"><section><h2>A · Writer</h2><pre id="a">Connecting…</pre></section><section><h2>B · Standby</h2><pre id="b">Connecting…</pre></section></div>
+<h1>HAT · TrailBase demo</h1><p class="muted">One writer. Three databases. Visible node status.</p>
+<p>Operator-controlled prototype — <strong>not failover or ingress HA</strong>. Backups are asynchronous; observed positions do not bound acknowledged-write loss.</p>
+<div class="cards"><section><h2>A · Node status</h2><pre id="a">Connecting…</pre></section><section><h2>B · Node status</h2><pre id="b">Connecting…</pre></section></div>
 <section><h2>Try real TrailBase authentication and records</h2><form id="login"><label>Username <input id="username" value="hatdemo" autocomplete="username" required></label><label>Password <input id="password" type="password" autocomplete="current-password" required></label><button>Log in</button></form><hr><form id="record"><label>Record payload <input id="payload" value="Hello from HAT" required maxlength="500"></label><button>Create and read in main + aux</button></form><pre id="result" role="status" aria-live="polite">Log in with the protected demo credentials.</pre></section>
-<p class="muted">C hosts the private proxy and is a single point of failure. B never runs TrailBase. No uploads, custom jobs, automatic promotion or gapless SSE guarantee.</p>
+<p class="muted">C hosts the private proxy and is a single point of failure. Only the activated writer runs TrailBase; a fenced node may be unavailable. No uploads, custom jobs, automatic promotion or gapless SSE guarantee.</p>
 <script>
 let token;
 const show=value=>document.getElementById('result').textContent=typeof value==='string'?value:JSON.stringify(value,null,2);

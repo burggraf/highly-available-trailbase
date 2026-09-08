@@ -9,10 +9,13 @@ import shutil
 import socket
 import sqlite3
 import subprocess
+import sys
 import time
 import uuid
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'hat'))
 from demo_smoke import request, verify_restore
+from transition import logical_signature
 
 
 def restore(root, config, positions, ledger, support, binaries):
@@ -42,6 +45,7 @@ def restore(root, config, positions, ledger, support, binaries):
             if name in ('main','aux'):
                 assert db.execute('SELECT count(*) FROM hat_ops').fetchone()[0] > 0
         evidence['databases'][name] = {'integrity':'ok', 'sha256':hashlib.sha256(target.read_bytes()).hexdigest()}
+    evidence['signature'] = logical_signature(data)
     with socket.socket() as s:
         s.bind(('127.0.0.1',0));port=s.getsockname()[1]
     base = f'http://127.0.0.1:{port}'
@@ -67,8 +71,12 @@ def restore(root, config, positions, ledger, support, binaries):
             except subprocess.TimeoutExpired:child.kill();child.wait()
     (work/'result.json').write_text(json.dumps(evidence,indent=2))
     print('PASS: independent finite three-DB restore, integrity and HTTP/auth oracle; isolated oracle stopped')
+    return dict(work=str(work), **evidence)
 
 if __name__ == '__main__':
     p=argparse.ArgumentParser(description=__doc__)
     for name in ('root','config','positions','ledger','support','binaries'):p.add_argument('--'+name,type=Path,required=True)
-    a=p.parse_args();restore(a.root,a.config,a.positions,a.ledger,a.support,a.binaries)
+    p.add_argument('--result', type=Path)
+    a=p.parse_args(); result=restore(a.root,a.config,a.positions,a.ledger,a.support,a.binaries)
+    if a.result:
+        with a.result.open('x') as f: json.dump(result,f,indent=2)

@@ -214,6 +214,27 @@ def activate(c):
     subprocess.run(['systemctl', 'start', 'hat-demo.service'], check=True)
 
 
+def graceful_stop(child, timeout=15):
+    if child.poll() is not None: raise RuntimeError('mutator exited before graceful stop')
+    child.terminate()
+    try: code = child.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        child.kill(); child.wait()
+        raise RuntimeError('forced stop cannot establish a planned cut')
+    if code not in (0, -signal.SIGTERM): raise RuntimeError('process failed during graceful stop')
+    return code
+
+
+def quiesce_owned(children, sync, verify_mutators_stopped):
+    trail_exit = graceful_stop(children['trail'])
+    verify_mutators_stopped()
+    cut = sync()
+    if set(cut) != set(DBS) or any(type(v) is not int or not 0 < v < 2**64 for v in cut.values()):
+        raise RuntimeError('incomplete planned cut')
+    uploader_exit = graceful_stop(children['replicate'])
+    return dict(cut=cut, trail_exit=trail_exit, uploader_exit=uploader_exit)
+
+
 def serve(c):
     RUN.mkdir(exist_ok=True)
     lock = (RUN / 'node.lock').open('a')
@@ -230,12 +251,15 @@ def serve(c):
     readers = {}
     streams = []
     stopped = threading.Event()
+    draining = threading.Event()
+    quiesced = False
     state = dict(role=c['role'], epoch=c['epoch'], sampled_at=0, positions={}, refusals=['starting'])
     sticky = set()
     identities = {}
     def stop(*_): stopped.set()
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
+    signal.signal(signal.SIGUSR1, lambda *_: draining.set())
     def spawn(name, args):
         path = BASE / 'logs' / (str(time.time_ns()) + '-' + name + '.log')
         stream = path.open('xb'); streams.append(stream)
@@ -280,6 +304,43 @@ def serve(c):
             for db in DBS:
                 spawn(db, [str(BIN/'litestream'), 'restore', '-config', '/etc/hat-demo/litestream.yml', '-f', '-follow-interval', '1s', '-o', str(data/(db+'.db')), str(data/(db+'.db'))])
         while not stopped.is_set():
+            if quiesced:
+                stopped.wait(1)
+                continue
+            if draining.is_set():
+                request_path = Path('/run/hat-node-quiesce.json')
+                s = regular_file(request_path)
+                request = json.loads(request_path.read_text())
+                if (not writer or not authority(c) or s.st_uid != 0 or s.st_mode & 0o022
+                        or set(request) != {'operation', 'epoch', 'boot_id'}
+                        or not re.fullmatch('[0-9a-f]{32}', request['operation'])
+                        or request['epoch'] != c['epoch'] or request['boot_id'] != boot_id() or sticky):
+                    raise RuntimeError('invalid quiesce authority or prior log refusal')
+                state = dict(state, refusals=['quiescing'], phase='quiescing')
+                def verify_mutators_stopped():
+                    group = Path('/sys/fs/cgroup/system.slice/hat-demo.service/cgroup.procs')
+                    if set(map(int, group.read_text().split())) != {os.getpid(), children['replicate'].pid}:
+                        raise RuntimeError('unexpected process remains in node cgroup')
+                def sync_cut():
+                    cut = {}
+                    for name in DBS:
+                        database = str(data/(name+'.db'))
+                        p = subprocess.run([str(BIN/'litestream'), 'sync', '-socket', str(RUN/'ls.sock'), '-wait', '-json', database], capture_output=True, timeout=30)
+                        if p.returncode:
+                            with (BASE/'logs/sync-errors.log').open('ab') as f: f.write(p.stderr)
+                            raise RuntimeError('quiesced sync failed')
+                        cut[name] = sync_position(json.loads(p.stdout), database)
+                    return cut
+                result = quiesce_owned(children, sync_cut, verify_mutators_stopped)
+                for reader in readers.values():
+                    tail = reader.read(4*1024*1024+1)
+                    if len(tail) > 4*1024*1024 or any(log_bad(line) for line in tail.splitlines() if line.strip()):
+                        raise RuntimeError('quiesce log refusal')
+                state = dict(role=c['role'], epoch=c['epoch'], sampled_at=time.time(), positions=result['cut'],
+                             refusals=['quiesced; no writer'], trailbase_running=False, processes={},
+                             phase='quiesced', operation=request['operation'], boot_id=boot_id(), **result)
+                quiesced = True
+                continue
             reasons = []
             positions = {}
             if writer and not authority(c):

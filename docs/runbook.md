@@ -1,8 +1,10 @@
-# D1 private demo runbook
+# Private manual demo runbook
 
-D1 is delivered as a persistent disposable demo, **not HA**. Real HTTP/auth, three-DB catch-up, independent finite restore/auth and the deployed review corrections have passed. Unchanged legacy regression tests have intermittent failures, documented below. No failover, rejoin, automatic recovery or production readiness is claimed.
+**Current state: B serves the unchanged private URL as the healthy sole writer in a fresh epoch; A remains fenced offline. The original D2 operation is complete after explicitly authorized recovery checkpoints, and fresh writes were independently restored. No standby/redundancy has yet been restored. See [status](status.md) for the failed attempts, completed evidence and limits. Do not reactivate A or start D3 without its separate approval.**
 
-## Use the running demo
+This is a persistent disposable demo, **not HA**. D1 and the reconciled D2 planned handover have real HTTP/auth and independent restore proof. A clean one-shot handover has not been demonstrated. Unchanged legacy tests have intermittent failures, retained below. No unplanned failover, rejoin, automatic recovery or production readiness is claimed.
+
+## Access the running demo
 
 Open **http://127.0.0.1:18080/** on the operator workstation. The current Pi-managed `d1-private-demo-access` process keeps an SSH tunnel to C's loopback HAProxy listener open. The UI shows A/B role, epoch, per-database positions, observation time and refusal reasons.
 
@@ -25,10 +27,10 @@ On A and B:
 - `/etc/hat-demo/node.json`: root-owned fixed role, epoch, hostname, binary and application-support fingerprints; bootstrap is now false.
 - `/etc/hat-demo/litestream.yml`: three independent DB prefixes in a new demo epoch, separate from qualification history; short socket `/run/hat-demo/ls.sock`.
 - `/etc/hat-demo/backup.env`: root-readable persistent backup credentials, loaded by systemd, not command arguments. The original backup credential's access scope is unchanged; no separate read-only standby key was provisioned. It is transport access, not election authority.
-- `/var/lib/hat-demo/depot`: live writer on A, continuously restored files on B. Both have the same new demo signing/config identity. Historical auth material was not reused.
+- `/var/lib/hat-demo/depot`: now the live writer on B; A is fenced. Before D2, A wrote and B followed. Both have the same new demo signing/config identity. Historical auth material was not reused.
 - `/var/lib/hat-demo/logs`: protected process logs, preserved across restarts. Retention is disabled in this short-lived demo; disk growth needs operator attention. This is not a production retention policy.
 
-Read status over existing pinned SSH access:
+Read status over existing pinned SSH access on B; A is intentionally offline:
 
 ```sh
 hat status
@@ -37,7 +39,7 @@ systemctl status hat-demo.service
 
 Node status is a transport observation, not a freshness/RPO guarantee. Compare A's published positions and B's applied positions only within the same epoch. A live process alone is never a promotion-readiness signal; `promotion_ready` is always false. Unknown/error logs latch a refusal for the process lifetime; inspect the protected logs rather than clearing the refusal blindly.
 
-`hat-demo.service` runs as an unprivileged dedicated user, owns its children through a systemd control group, has no automatic restart and is deliberately not enabled on boot. Writer startup additionally requires a root-owned activation record matching the current boot and fixed epoch in `/run/hat-demo-activation.json`. A reboot removes that record. `activate` can only authorize the configured writer; it cannot promote B.
+`hat-demo.service` runs as an unprivileged dedicated user, owns its children through a systemd control group, has no automatic restart and is deliberately not enabled on boot. Writer startup additionally requires a root-owned activation record matching the current boot and fixed epoch in `/run/hat-demo-activation.json`. A reboot removes that record. `activate` can only authorize the configured writer; it does not change a standby's role.
 
 Startup checks require real nonempty regular databases, valid SQLite headers/structure and the required fixture schema. Bootstrap only accepts an actually empty directory. Runtime checks refuse missing/replaced database objects. The support manifest must contain the fixed config, migrations and signing-key anchors; empty, escaping or symlinked manifests are rejected.
 
@@ -67,7 +69,7 @@ C's `/etc/hat-oracle`, `/opt/hat-oracle`, and `/var/lib/hat-oracle` contain the 
 
 Protected proof: `~/.config/hat/d1-deployment/finite-restore-result.json`, `resumed-url-smoke.jsonl`, and the raw command logs in that directory. This is a D1 baseline check, not crash recovery or a claim of atomic multi-DB recovery. Do not run the private one-time installation scripts again against existing state.
 
-## Final review corrections and validation
+## Historical D1 review corrections and validation
 
 Both independent reviews completed with concrete findings, which the parent verified and fixed. The installed program now uses explicit pinned log message/field/type schemas, enforces database object/schema and runtime identity checks, and requires the fixed support identity anchors. HAProxy matches exact main/aux collection boundaries rather than sibling-name prefixes. The 11 node regressions pass locally and on Ubuntu; the ingress boundary regression and live denial checks pass.
 
@@ -79,8 +81,24 @@ Publication validation: **242 passed, 1 failed**. The unchanged M0 SIGKILL-requi
 
 Earlier precommit tests: **all 243 passed** (`precommit-1788892357065034000` in the private deployment directory). The preceding final-delivery runs had **242 passed, 1 failed**. The unchanged M1 `test_cross_host_early_failure_records_each_node_without_unbound_state` compares an unredacted temporary path with evidence where a previously registered dummy secret `x` was scrubbed. One test-only rerun reproduced it. Both failed logs are preserved; the frozen experiment was not edited or weakened. This test-isolation residual does not invalidate the independent D1 live checks. That earlier full suite passed, but the intermittent defect remains unfixed.
 
+## D2 controller and interrupted-operation boundary
+
+C's `/usr/local/bin/hat` points to `/opt/hat-control/control.py`. The original `hat switchover B` operation is now complete; do not initiate another promotion or manually manipulate its journal. `/var/lib/hat-control/journal.db` retains committed phase intents/results. The dedicated controller SSH key permits only the node dispatcher, with boot/epoch/operation guards; arbitrary commands are rejected. C's private provider credential is root-only and its original provider permissions are unchanged. Actual completed fencing and provider-observed identity/DNS checks passed in the first attempt.
+
+The first command stopped after fencing A and freezing B: a private umask reduced the oracle parent to 0700. Explicit chmod and installed/unprivileged oracle checks verified the correction. The owner then authorized `hat reconcile-compare <operation>`, which accepts only the exact pending comparison boundary and does not replay earlier phases. It rechecks the fence and frozen state, reruns the oracle, preserves the original failure, and appends comparison completion in the existing journal/epoch.
+
+That continuation passed comparison, B activation, fresh-epoch baseline restore and routing, but failed on the first final HTTP request with connection refused. Ingress closed and work stopped at the two-attempt limit. The owner explicitly approved one additional bounded readiness diagnosis/fix and verification-only completion.
+
+An isolated real test proved the service's default `Type=simple` returned before HAProxy was listening. C now installs `deploy/hat-ingress-readiness.conf` at `/etc/systemd/system/hat-ingress.service.d/20-readiness.conf`: `Type=notify`, `NotifyAccess=all`, using the existing `haproxy -Ws` command. Keep the separate `10-maintenance.conf` gate; never replace it with a readiness workaround.
+
+The restricted `hat reconcile-verify <operation>` accepted only the original pending verification prefix, pre-write HTTP failure and absent new-write ledger. It revalidated fencing, B's boot/epoch/health, route hash and baseline, independently rechecked the baseline, archived the second failure and used native readiness before the original verification. All auth/records, new writes and independent fresh-write restore checks passed. The same journal now has all ten phases complete and maintenance removed. Both failures and continuation evidence are retained. Neither reconciliation command is a generic retry/force mechanism or applicable to arbitrary future failures.
+
+Ingress startup executes `hat ingress-check`: unfinished routing requires completed baseline evidence, route intent, exact config hash, and the original live controller PID/start time on the same boot. Maintenance remains durable until journal completion. Interrupted operations close ingress and refuse replay. An already-completed operation can reconcile only its exact matching maintenance marker and route hash, without starting a new promotion. Neither case provides automatic failover or general recovery.
+
+A/B's `transition.py` performs quiesce, freeze, finite-restore fallback, prepare and activate under root-only operation records. Rejected follower data and prior epoch data/metadata are retained. Preparation copies only the three validated databases, not follower sidecars. Do not invoke these phases manually or reactivate A. D3/rejoin still needs its separate disruptive-test approval.
+
 ## Evidence and limits
 
 Protected local commands, raw stdout/stderr, configuration and client ledgers: `~/.config/hat/d1-deployment/`. Original qualification roots/prefixes/logs are unchanged. A later decommission must explicitly identify only the new deployment's services, paths and credentials; there is no automatic cleanup command.
 
-No uploaded-file HA, custom jobs, gapless SSE, automatic election or cross-file atomic recovery promise. Asynchronous replication can lose acknowledged writes. D2/D3 and their safety checks remain separate future work. Do not use the working URL as proof that failover is safe.
+No uploaded-file HA, custom jobs, gapless SSE, automatic election or cross-file atomic recovery promise. Asynchronous replication can lose acknowledged writes. The D2 handover completed with explicit recovery checkpoints, not a clean one-shot run. D3/rejoin and redundancy restoration remain separate future work. URL availability is not proof that failover is safe.

@@ -7,6 +7,7 @@ import subprocess
 import sqlite3
 import hashlib
 import sys
+import signal
 import tempfile
 import unittest
 
@@ -129,6 +130,37 @@ class NodeTests(unittest.TestCase):
             keys = root / 'secrets/keys'; retained = root / 'retained-keys'; keys.rename(retained); keys.symlink_to(retained, target_is_directory=True)
             with self.assertRaises(ValueError): m.validate_support(root, manifest)
 
+    def test_quiesce_stops_writer_before_sync_and_uploader_after(self):
+        m = self.load()
+        self.assertTrue(hasattr(m, 'quiesce_owned'), 'missing graceful quiesce path')
+        children = {}
+        try:
+            for name in ('trail', 'replicate'):
+                children[name] = subprocess.Popen([sys.executable, __file__, '--signal-child', 'normal'], stdout=subprocess.PIPE, text=True)
+                self.assertEqual(children[name].stdout.readline().strip(), 'ready')
+            def sync():
+                self.assertIsNotNone(children['trail'].poll())
+                self.assertIsNone(children['replicate'].poll())
+                return dict(main=3, session=2, aux=4)
+            self.assertEqual(m.quiesce_owned(children, sync, lambda: None)['cut'], dict(main=3, session=2, aux=4))
+            self.assertTrue(all(p.poll() is not None for p in children.values()))
+        finally:
+            for p in children.values():
+                if p.poll() is None: p.kill(); p.wait()
+                p.stdout.close()
+
+    def test_forced_stop_cannot_produce_a_planned_cut(self):
+        m = self.load()
+        self.assertTrue(hasattr(m, 'graceful_stop'), 'missing strict stop primitive')
+        child = subprocess.Popen([sys.executable, __file__, '--signal-child', 'stubborn'], stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(child.stdout.readline().strip(), 'ready')
+            with self.assertRaises(RuntimeError): m.graceful_stop(child, timeout=.05)
+            self.assertIsNotNone(child.poll())
+        finally:
+            if child.poll() is None: child.kill(); child.wait()
+            child.stdout.close()
+
     def test_installed_cli_has_no_promote_or_force(self):
         self.load()
         p = subprocess.run([sys.executable, str(ENTRY), '--help'], capture_output=True, text=True)
@@ -138,4 +170,9 @@ class NodeTests(unittest.TestCase):
         p = subprocess.run([sys.executable, str(ENTRY), 'promote'], capture_output=True)
         self.assertNotEqual(p.returncode, 0)
 
-if __name__ == '__main__': unittest.main()
+if __name__ == '__main__':
+    if len(sys.argv) == 3 and sys.argv[1] == '--signal-child':
+        signal.signal(signal.SIGTERM, signal.SIG_IGN if sys.argv[2] == 'stubborn' else lambda *_: sys.exit(0))
+        print('ready', flush=True)
+        while True: signal.pause()
+    else: unittest.main()

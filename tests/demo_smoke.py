@@ -59,13 +59,19 @@ def smoke(base, credentials, ledger, register=False):
 def verify_restore(base, ledger):
     rows = [json.loads(line) for line in ledger.read_text().splitlines()]
     auth = rows[0]
-    code, _ = request(base, '/api/auth/v1/refresh', 'POST', {'refresh_token':auth['revoked_refresh']})
-    assert code in (400, 401, 403), ('restored revocation', code)
-    code, _ = request(base, '/api/auth/v1/refresh', 'POST', {'refresh_token':auth['retained_refresh']})
-    assert code == 200, ('restored retained refresh', code)
+    for case in [auth] + [row for row in rows if row.get('event') == 'historical_auth']:
+        code, _ = request(base, '/api/auth/v1/refresh', 'POST', {'refresh_token':case['revoked_refresh']})
+        assert code in (400, 401, 403), ('restored revocation', code)
+        code, refreshed = request(base, '/api/auth/v1/refresh', 'POST', {'refresh_token':case['retained_refresh']})
+        expected = case.get('retained_expected','accepted')
+        assert expected in ('accepted','denied'), 'missing historical auth expectation'
+        assert code == 200 if expected == 'accepted' else code in (400,401,403), ('restored retained refresh', code)
+        if case is auth:
+            token=refreshed['auth_token']
+            assert isinstance(token,str) and token, 'refresh did not return an access token'
     for row in rows:
         if row.get('event') != 'acknowledged': continue
-        code, got = request(base, '/api/records/v1/'+row['api']+'/'+str(row['id']), token=auth['auth_token'])
+        code, got = request(base, '/api/records/v1/'+row['api']+'/'+str(row['id']), token=token)
         assert code == 200 and all(got[k] == v for k,v in row['row'].items()), ('restored read', code)
     print('PASS: independently restored main+aux records, shared signing identity, retained+revoked refresh')
 
