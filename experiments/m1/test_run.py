@@ -26,7 +26,7 @@ from run import (
     _binary_version_evidence, _copy_from_node, _run_m0_linux_parity,
     _validate_m0_aggregate, _validate_m0_log_archive, _validate_provision_summary,
     _validate_post_reboot_summary, _provision_workflow, provision, REMOTE_PROVISION_TIMEOUT,
-    _M0_COLLECT_SCRIPT,
+    _M0_COLLECT_SCRIPT, _download_public, _safe_archive_member,
 )
 
 FP = "SHA256:" + "A" * 43
@@ -1401,6 +1401,22 @@ class ProvisionTests(unittest.TestCase):
                 self.assertEqual(sum(event.get("event") == "provision" and "node" in event for event in events), 3)
                 if not mutate:
                     self.assertEqual(sum(event.get("event") == "reboot-mask-check" for event in events), 3)
+
+    def test_download_rejects_http_and_credentialed_redirects(self):
+        for final_url in ("http://github.com/release", "https://user@github.com/release"):
+            with self.subTest(final_url=final_url), tempfile.TemporaryDirectory() as d:
+                response = mock.MagicMock()
+                response.__enter__.return_value = response
+                response.geturl.return_value = final_url
+                response.read.side_effect = [b"payload", b""]
+                with mock.patch("run.urllib.request.urlopen", return_value=response):
+                    with self.assertRaises(RuntimeError):
+                        _download_public("https://github.com/start", Path(d) / "artifact", max_bytes=1024)
+                self.assertFalse((Path(d) / "artifact").exists())
+
+    def test_archive_member_rejects_any_backslash(self):
+        for name in ("logs\\evil.log", "logs\\\\evil.log", "logs/../evil.log"):
+            self.assertFalse(_safe_archive_member(name))
 
     def test_m0_collector_rejects_symlinked_run_root(self):
         with tempfile.TemporaryDirectory() as d:

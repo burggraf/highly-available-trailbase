@@ -1128,9 +1128,10 @@ def _download_public(url: str, destination: Path, *, max_bytes: int) -> str:
     destination = Path(destination)
     try:
         with urllib.request.urlopen(request, timeout=60) as response, destination.open("xb") as stream:
-            host = urllib.parse.urlparse(response.geturl()).hostname
-            if host not in {"api.github.com", "github.com", "release-assets.githubusercontent.com"}:
-                raise RuntimeError("download redirected to an untrusted host")
+            final = urllib.parse.urlparse(response.geturl())
+            if (final.scheme != "https" or final.username is not None or final.password is not None
+                    or final.hostname not in {"api.github.com", "github.com", "release-assets.githubusercontent.com"}):
+                raise RuntimeError("download redirected to an untrusted URL")
             size = 0
             while chunk := response.read(1024 * 1024):
                 size += len(chunk)
@@ -1421,7 +1422,7 @@ if (output / "m0-logs.tar.gz").stat().st_size > ARCHIVE_MAX:
 
 
 def _safe_archive_member(name: Any) -> bool:
-    if not isinstance(name, str) or "\\\\" in name:
+    if not isinstance(name, str) or "\\" in name:
         return False
     path = __import__("pathlib").PurePosixPath(name)
     return (path.as_posix() == name and bool(path.parts) and not path.is_absolute()
