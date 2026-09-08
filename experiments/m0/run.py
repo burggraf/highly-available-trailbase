@@ -109,13 +109,32 @@ def require_files(paths: list[Path]) -> None:
         raise FileNotFoundError("required files missing: " + ", ".join(missing))
 
 
+def _parse_follower_json(text: str) -> dict[str, object]:
+    pairs_seen: list[tuple[str, object]] = []
+    def pairs(items: list[tuple[str, object]]) -> dict[str, object]:
+        pairs_seen.extend(items)
+        return dict(items)
+    value = json.loads(text, object_pairs_hook=pairs)
+    if not isinstance(value, dict):
+        raise ValueError("log record is not an object")
+    duplicates = [key for key, _ in pairs_seen if sum(k == key for k, _ in pairs_seen) > 1]
+    if duplicates:
+        if (duplicates == ["level", "level"] and
+                [item for key, item in pairs_seen if key == "level"] == ["INFO", ""] and
+                value.get("msg") == "litestream" and value.get("version") == "0.5.17"):
+            value["level"] = "INFO"
+        else:
+            raise ValueError("duplicate log field")
+    return value
+
+
 def parse_follower_line(line: str) -> dict[str, object]:
     stripped = line.strip()
     if not stripped:
         return {}
     try:
-        value = json.loads(stripped)
-    except json.JSONDecodeError:
+        value = _parse_follower_json(stripped)
+    except (json.JSONDecodeError, ValueError):
         try:
             fields = dict(part.split("=", 1) for part in shlex.split(stripped) if "=" in part)
         except ValueError:

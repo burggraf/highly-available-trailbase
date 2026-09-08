@@ -255,6 +255,18 @@ class FixtureTests(unittest.TestCase):
         self.assertEqual(event["level"], "INFO")
         self.assertFalse(event["error"])
 
+    def test_follower_parser_accepts_only_pinned_duplicate_banner(self):
+        banner = parse_follower_line('{"level":"INFO","level":"","msg":"litestream","version":"0.5.17"}')
+        self.assertEqual(banner["level"], "INFO")
+        for bad in (
+            '{"level":"","level":"INFO","msg":"litestream","version":"0.5.17"}',
+            '{"level":"INFO","level":"","msg":"other","version":"0.5.17"}',
+            '{"level":"INFO","level":"","msg":"litestream","version":"0.5.18"}',
+            '{"level":"INFO","level":"","msg":"litestream","version":"0.5.17","msg":"x"}',
+            '{"level":"INFO","level":"WARN","msg":"litestream","version":"0.5.17"}',
+        ):
+            self.assertTrue(parse_follower_line(bad).get("unrecognized"))
+
     def test_follower_parser_fails_closed_on_unknown_format(self):
         with self.assertRaises(RuntimeError):
             promotion_error_gate([parse_follower_line("unexpected follower output")])

@@ -302,15 +302,7 @@ def parse_log(text, allow_empty=False):
     for line in text.splitlines():
         if not line.strip(): continue
         try:
-            seen = set()
-            def pairs(items):
-                value = {}
-                for key, item in items:
-                    if key in seen: raise ValueError("duplicate log field")
-                    seen.add(key); value[key] = item
-                return value
-            event = json.loads(line, object_pairs_hook=pairs)
-            if not isinstance(event, dict): raise ValueError("log record is not an object")
+            event = _json_object_without_duplicates(line)
         except (json.JSONDecodeError, ValueError):
             try: fields = shlex.split(line)
             except ValueError as exc: raise RuntimeError("unrecognized Task5 follower log format") from exc
@@ -2743,16 +2735,21 @@ _TASK5_APPLY_ERROR = re.compile(
 
 
 def _json_object_without_duplicates(text: str) -> dict[str, Any]:
+    captured: list[tuple[str, Any]] = []
     def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
-        value: dict[str, Any] = {}
-        for key, item in items:
-            if key in value:
-                raise ValueError("duplicate log field")
-            value[key] = item
-        return value
+        captured.extend(items)
+        return dict(items)
     value = json.loads(text, object_pairs_hook=pairs)
     if not isinstance(value, dict):
         raise ValueError("log record is not an object")
+    duplicates = [key for key, _ in captured if sum(k == key for k, _ in captured) > 1]
+    if duplicates:
+        if (duplicates == ["level", "level"] and
+                [item for key, item in captured if key == "level"] == ["INFO", ""] and
+                value.get("msg") == "litestream" and value.get("version") == "0.5.17"):
+            value["level"] = "INFO"
+        else:
+            raise ValueError("duplicate log field")
     return value
 
 

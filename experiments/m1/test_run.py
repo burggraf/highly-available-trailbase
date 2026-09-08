@@ -1828,6 +1828,12 @@ class LitestreamTask5Tests(unittest.TestCase):
     def test_pinned_litestream_logs_require_message_but_allow_metadata(self):
         text = ('{"time":"2026-09-07T00:00:00Z","level":"info","msg":"replicating","db":"main"}\n'
                 'time=2026-09-07T00:00:01Z level=INFO msg="checkpoint complete" component=replicator\n')
+        banner = '{"level":"INFO","level":"","msg":"litestream","version":"0.5.17"}\n'
+        self.assertEqual(_task5_validate_log_text(banner)[0]["level"], "INFO")
+        with self.assertRaises(RuntimeError): _task5_validate_log_text('{"level":"","level":"INFO","msg":"litestream","version":"0.5.17"}\n')
+        with self.assertRaises(RuntimeError): _task5_validate_log_text('{"level":"INFO","level":"","msg":"litestream","version":"0.5.18"}\n')
+        with self.assertRaises(RuntimeError): _task5_validate_log_text('{"level":"INFO","level":"","msg":"litestream","version":"0.5.17","msg":"x"}\n')
+        with self.assertRaises(RuntimeError): _task5_validate_log_text('{"level":"INFO","level":"FATAL","msg":"litestream","version":"0.5.17"}\n')
         self.assertEqual(len(_task5_validate_log_text(text)), 2)
         for bad in ('{"level":"INFO"}\n', '{"level":"ERROR","message":"boom"}\n',
                     '{"level":"INFO","msg":"ok","msg":"duplicate"}\n',
