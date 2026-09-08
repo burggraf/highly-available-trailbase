@@ -1688,20 +1688,19 @@ def _run_m0_linux_parity(node: Node, context: RunContext, evidence: Path, local_
 
 
 def _create_runtime_root(node: Node, context: RunContext) -> str:
-    base = "/run/hat-qualification"
-    _verify_remote_directory(node, "/run")
-    status = ssh(node, ["stat", "-c", "%F %u %g %a %n", "--", base], check=False)
-    if status.returncode:
-        absent = ssh(node, ["test", "!", "-e", base], check=False)
-        dangling = ssh(node, ["test", "!", "-L", base], check=False)
-        if absent.returncode or dangling.returncode or ssh(node, ["mkdir", "-m", "700", "--", base], check=False).returncode:
-            raise RuntimeError("runtime qualification base is missing or unsafe")
+    base = context.remote_root
     _verify_remote_directory(node, base, mode=0o700)
-    root = base + "/" + context.run_id.rsplit("-", 1)[1]
+    root = confined_remote_path(base, base + "/m0-work")
+    available = ssh(node, ["df", "--output=avail", "-B1", "--", base], check=False)
+    fields = _stdout(available).split()
+    if available.returncode or len(fields) != 2 or fields[0] != "Avail" or not fields[1].isdigit():
+        raise RuntimeError("could not verify M0 work-root capacity")
+    if int(fields[1]) < 512 * 1024 * 1024:
+        raise RuntimeError("insufficient M0 work-root capacity")
     if ssh(node, ["test", "!", "-e", root], check=False).returncode or ssh(node, ["test", "!", "-L", root], check=False).returncode:
-        raise RuntimeError("runtime M0 root already exists")
+        raise RuntimeError("M0 work root already exists")
     if ssh(node, ["mkdir", "-m", "700", "--", root], check=False).returncode:
-        raise RuntimeError("could not create runtime M0 root")
+        raise RuntimeError("could not create M0 work root")
     _verify_remote_directory(node, root, mode=0o700)
     return root
 

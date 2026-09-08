@@ -24,7 +24,7 @@ from run import (
     mask_writer_services, missing_packages, published_checksum,
     validate_binary_version, validate_release_metadata, _install_required_packages,
     _query_required_packages, _M0_EXPECTED_LOGS,
-    _binary_version_evidence, _copy_from_node, _run_m0_linux_parity,
+    _binary_version_evidence, _copy_from_node, _create_runtime_root, _run_m0_linux_parity,
     _validate_m0_aggregate, _validate_m0_log_archive, _validate_provision_summary,
     _validate_post_reboot_summary, _provision_workflow, provision, REMOTE_PROVISION_TIMEOUT,
     _M0_COLLECT_SCRIPT, _download_public, _safe_archive_member,
@@ -1512,6 +1512,34 @@ class ProvisionTests(unittest.TestCase):
         for name in ("logs\\evil.log", "logs\\\\evil.log", "logs/../evil.log", "README.md", "evil.log", "logs/"):
             self.assertFalse(_safe_archive_member(name))
         self.assertTrue(_safe_archive_member("logs/worker.log"))
+
+    def test_m0_work_root_is_fresh_private_disk_space_beneath_remote_root(self):
+        current = node("fm1")
+        context = RunContext("20260908T010203Z-0123456789", Path("."),
+                             "/var/lib/hat-qualification/20260908T010203Z-0123456789")
+        calls = []
+        def execute(_node, argv, **kwargs):
+            calls.append(argv)
+            if argv[0] == "df":
+                return subprocess.CompletedProcess(argv, 0, b"Avail\n1073741824\n", b"")
+            return subprocess.CompletedProcess(argv, 0, b"", b"")
+        with mock.patch("run._verify_remote_directory") as verify, mock.patch("run.ssh", side_effect=execute):
+            work = _create_runtime_root(current, context)
+        self.assertEqual(work, context.remote_root + "/m0-work")
+        verify.assert_any_call(current, context.remote_root, mode=0o700)
+        verify.assert_any_call(current, work, mode=0o700)
+        self.assertIn(["df", "--output=avail", "-B1", "--", context.remote_root], calls)
+        self.assertIn(["test", "!", "-e", work], calls)
+        self.assertIn(["mkdir", "-m", "700", "--", work], calls)
+
+    def test_m0_work_root_rejects_insufficient_disk_space(self):
+        current = node("fm1")
+        context = RunContext("20260908T010203Z-0123456789", Path("."),
+                             "/var/lib/hat-qualification/20260908T010203Z-0123456789")
+        result = subprocess.CompletedProcess([], 0, b"Avail\n536870911\n", b"")
+        with mock.patch("run._verify_remote_directory"), mock.patch("run.ssh", return_value=result), \
+                self.assertRaisesRegex(RuntimeError, "insufficient M0 work-root capacity"):
+            _create_runtime_root(current, context)
 
     def test_m0_collector_writes_archive_for_real_logs(self):
         with tempfile.TemporaryDirectory() as d:
