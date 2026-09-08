@@ -1718,11 +1718,17 @@ class LitestreamTask5Tests(unittest.TestCase):
         with self.assertRaises(RuntimeError): _parse_task5_log_stat("regular  file 600 42\\n")
 
     def test_pinned_litestream_help_contract_is_explicit(self):
-        validate_litestream_task5_help("-config -follow-interval -txid", "-config", "-config -socket -wait -json")
-        with self.assertRaises(RuntimeError): validate_litestream_task5_help("-config", "-config", "-config -wait -json")
+        sync_help = ("Usage: litestream sync [options] PATH\n\n"
+                     "Options:\n  -wait duration\n  -timeout duration\n  -socket path\n  -json\n")
+        validate_litestream_task5_help("-config -follow-interval -txid", "-config", sync_help)
+        for missing in ("-wait -timeout -json", "-socket -timeout -json", "-socket -wait -timeout"):
+            with self.assertRaises(RuntimeError):
+                validate_litestream_task5_help("-config -follow-interval -txid", "-config", missing)
 
-    def test_task5_commands_use_configured_db_paths_and_custom_socket(self):
-        self.assertIn('"-socket", socket_path', _TASK5_REMOTE_SCRIPT)
+    def test_task5_sync_argv_uses_configured_db_paths_and_custom_socket(self):
+        self.assertIn('[str(litestream), "sync", "-socket", socket_path, "-wait", "-json", str(database)]',
+                      _TASK5_REMOTE_SCRIPT)
+        self.assertNotIn('"sync", "-config"', _TASK5_REMOTE_SCRIPT)
         self.assertIn('"-config", str(config), "-txid"', _TASK5_REMOTE_SCRIPT)
         self.assertNotIn('str(source).rstrip("/") + f"/{name}"', _TASK5_REMOTE_SCRIPT)
         self.assertNotIn('f"s3://{values', _TASK5_REMOTE_SCRIPT)

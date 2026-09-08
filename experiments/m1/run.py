@@ -454,7 +454,7 @@ elif action == "sync":
     positions = {}
     for name in DBS:
         database = Path(args[3]) / f"{name}.db"
-        result = subprocess.run([str(litestream), "sync", "-config", str(config), "-socket", socket_path, "-wait", "-json", str(database)], capture_output=True, text=True, timeout=90)
+        result = subprocess.run([str(litestream), "sync", "-socket", socket_path, "-wait", "-json", str(database)], capture_output=True, text=True, timeout=90)
         if result.returncode: raise RuntimeError(f"sync failed for {name}: {result.stderr[-300:]}")
         if len(result.stdout.encode()) > 64 * 1024: raise RuntimeError(f"sync output exceeds bound for {name}")
         try: output = json.loads(result.stdout)
@@ -689,7 +689,7 @@ def validate_binary_version(product: str, output: str) -> str:
 
 def validate_litestream_task5_help(restore: str, replicate: str, sync: str) -> None:
     required = ((restore, {"-config", "-follow-interval", "-txid"}),
-                (replicate, {"-config"}), (sync, {"-config", "-socket", "-wait", "-json"}))
+                (replicate, {"-config"}), (sync, {"-socket", "-wait", "-json"}))
     for output, options in required:
         if not isinstance(output, str):
             raise RuntimeError("pinned Litestream Task5 CLI semantics are unavailable")
