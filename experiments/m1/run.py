@@ -293,7 +293,7 @@ def bounded_log(path):
     return text
 
 LOG_FIELDS = {"time", "level", "msg", "message", "version", "dir", "count", "watch", "error",
-              "path", "type", "sync-interval", "url", "signal", "db", "component"}
+              "path", "type", "sync-interval", "url", "signal", "db", "component", "system", "bucket", "region", "endpoint", "interval", "retention", "db_txid", "replica_txid", "min_txid", "max_txid", "txid", "size", "attempts", "elapsed", "hint", "remaining", "replica", "output", "from_txid", "to_txid"}
 LOG_LEVELS = {"DEBUG", "INFO", "WARN", "ERROR", "FATAL"}
 APPLY_ERROR = re.compile(r"(?:error applying updates|apply(?:ing)? updates? failed|failed to apply|apply failure|decoder error|storage error)", re.I)
 
@@ -314,6 +314,7 @@ def parse_log(text, allow_empty=False):
                 event[key] = value
         if set(event) - LOG_FIELDS: raise RuntimeError("unknown Task5 follower log field")
         message = event.get("msg", event.get("message")); level = event.get("level")
+        if (isinstance(level, int) and not isinstance(level, bool) and message in {"starting compaction monitor", "compaction complete"} and level in {1, 2, 3, 9}): level = "INFO"
         if (not isinstance(level, str) or level.upper() not in LOG_LEVELS
                 or not isinstance(message, str) or not message):
             raise RuntimeError("invalid Task5 follower log event")
@@ -2726,7 +2727,7 @@ def _task5_prepare_source_directory(node: Node, path: str) -> None:
 
 _TASK5_LOG_FIELDS = {
     "time", "level", "msg", "message", "version", "dir", "count", "watch", "error",
-    "path", "type", "sync-interval", "url", "signal", "db", "component",
+    "path", "type", "sync-interval", "url", "signal", "db", "component", "system", "bucket", "region", "endpoint", "interval", "retention", "db_txid", "replica_txid", "min_txid", "max_txid", "txid", "size", "attempts", "elapsed", "hint", "remaining", "replica", "output", "from_txid", "to_txid",
 }
 _TASK5_LOG_LEVELS = {"DEBUG", "INFO", "WARN", "ERROR", "FATAL"}
 _TASK5_APPLY_ERROR = re.compile(
@@ -2747,6 +2748,10 @@ def _json_object_without_duplicates(text: str) -> dict[str, Any]:
         if (duplicates == ["level", "level"] and
                 [item for key, item in captured if key == "level"] == ["INFO", ""] and
                 value.get("msg") == "litestream" and value.get("version") == "0.5.17"):
+            value["level"] = "INFO"
+        elif (duplicates == ["level", "level"] and value.get("msg") in {"starting compaction monitor", "compaction complete"}
+              and [item for key, item in captured if key == "level"][0] == "INFO"
+              and [item for key, item in captured if key == "level"][1] in {1, 2, 3, 9}):
             value["level"] = "INFO"
         else:
             raise ValueError("duplicate log field")
@@ -2782,6 +2787,7 @@ def _task5_validate_log_text(text: str, *, allow_empty: bool = False) -> list[di
             raise RuntimeError("unknown Task5 follower log field")
         message = event.get("msg", event.get("message"))
         level = event.get("level")
+        if (isinstance(level, int) and not isinstance(level, bool) and message in {"starting compaction monitor", "compaction complete"} and level in {1, 2, 3, 9}): level = "INFO"
         if (not isinstance(level, str) or level.upper() not in _TASK5_LOG_LEVELS
                 or not isinstance(message, str) or not message):
             raise RuntimeError("invalid Task5 follower log event")

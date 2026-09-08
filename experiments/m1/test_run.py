@@ -33,7 +33,7 @@ from run import (
     write_litestream_s3_config, validate_litestream_s3_config, inventory_digest,
     assert_inventory_unchanged, scrub_private_path, scrub_private_tree, compare_database_summaries,
     task5_unit_argv, task5_replica_uri, read_strict_txid_sidecar, require_strict_position_advancement,
-    reconcile_epoch_ledger, validate_litestream_task5_help, _parse_task5_list_keys, _validate_support_archive_members, _parse_task5_log_stat, _task5_validate_log_text, _TASK5_REMOTE_SCRIPT, _task5_prepare_runtime_root,
+    reconcile_epoch_ledger, validate_litestream_task5_help, _parse_task5_list_keys, _validate_support_archive_members, _parse_task5_log_stat, _task5_validate_log_text, _TASK5_REMOTE_SCRIPT, _task5_prepare_runtime_root, _json_object_without_duplicates,
 )
 
 FP = "SHA256:" + "A" * 43
@@ -1841,6 +1841,21 @@ class LitestreamTask5Tests(unittest.TestCase):
                     'level=INFO msg="failed to apply updates"\n',
                     'level=INFO msg=ok msg=duplicate\n', 'not a log record\n'):
             with self.assertRaises(RuntimeError): _task5_validate_log_text(bad)
+
+    def test_task5_v0517_sanitized_corpus(self):
+        text = Path('/tmp/hat-litestream-v0.5.17-sanitized-corpus.jsonl').read_text()
+        self.assertEqual(len(_task5_validate_log_text(text)), 23)
+        start = _TASK5_REMOTE_SCRIPT.index('LOG_FIELDS = {')
+        end = _TASK5_REMOTE_SCRIPT.index('\ndef remove_confined', start)
+        namespace = {'__name__': 'remote_test', '__builtins__': __builtins__, 'json': json, 're': __import__('re'), 'shlex': __import__('shlex'), '_json_object_without_duplicates': _json_object_without_duplicates}
+        exec(_TASK5_REMOTE_SCRIPT[start:end], namespace)
+        self.assertEqual(len(namespace['parse_log'](text)), 23)
+        for bad in ('{"level":"INFO","level":"WARN","msg":"x"}',
+                    '{"level":1,"msg":"ordinary"}', '{"level":"ERROR","msg":"x"}',
+                    '{"level":"INFO","msg":"error applying updates"}',
+                    '{"level":"INFO","msg":"x","surprise":true}'):
+            with self.assertRaises(RuntimeError): _task5_validate_log_text(bad + '\n')
+            with self.assertRaises(RuntimeError): namespace['parse_log'](bad + '\n')
 
     def test_task5_stat_parser_preserves_multiword_file_kind(self):
         self.assertEqual(_parse_task5_log_stat("regular file\t600\t42\n"), ("regular file", "600", 42))
