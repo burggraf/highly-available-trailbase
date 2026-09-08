@@ -20,7 +20,7 @@ from run import (
     invoke_fence, validate_fence_evidence, promotion_allowed,
     append_evidence, build_pinned_known_hosts, ensure_remote_root, init_remote,
     load_inventory, load_linode_env, new_run_context, require_private_file,
-    redact, scp_to, ssh, storage, validate_inventory, _absolute_no_symlinks, _scp_failure_category,
+    redact, scp_to, ssh, storage, validate_inventory, _absolute_no_symlinks, _scp_failure_category, _ssh_failure_category,
     main, StorageStatus, write_latest_storage_evidence_pointer,
     Artifact, artifact_for, confined_remote_path, extract_verified_artifact,
     mask_writer_services, missing_packages, published_checksum,
@@ -526,6 +526,40 @@ class RemoteRootTests(unittest.TestCase):
         result = subprocess.CompletedProcess([], 0, b"regular file\t0\t0\t600\t/safe/file\n", b"")
         with mock.patch("run.ssh", return_value=result):
             self.assertEqual(_remote_stat(node(), "/safe/file"), ("regular file", 0, 0, 0o600, "/safe/file"))
+
+    def test_ssh_transport_classifier_accepts_exact_two_line_patterns(self):
+        for reason in ("Connection timed out", "Connection refused", "Connection reset by peer", "Connection closed"):
+            stderr = f"ssh: connect to host fm1.example port 22: {reason}\nssh: connect to host fm1.example port 22: {reason}\n"
+            self.assertEqual(_ssh_failure_category(subprocess.CompletedProcess([], 255, b"", stderr.encode())), "transient_transport")
+
+    def test_ssh_transport_classifier_rejects_scp_only_and_mixed_lines(self):
+        for stderr in (
+            "scp: Connection closed\n",
+            "ssh: connect to host fm1.example port 22: Connection timed out\nremote command failed\n",
+            "ssh: connect to host fm1.example port 22: Connection timed out; retry later\n",
+        ):
+            self.assertEqual(_ssh_failure_category(subprocess.CompletedProcess([], 255, b"", stderr.encode())), "non_transient")
+
+    def test_remote_stat_retries_one_transient_transport_failure(self):
+        transient = subprocess.CompletedProcess([], 255, b"", b"ssh: connect to host fm1.example port 22: Connection timed out\n")
+        success = subprocess.CompletedProcess([], 0, b"directory\t0\t0\t700\t/safe\n", b"")
+        with mock.patch("run.ssh", side_effect=[transient, success]) as call:
+            self.assertEqual(_remote_stat(node(), "/safe"), ("directory", 0, 0, 0o700, "/safe"))
+            self.assertEqual(call.call_count, 2)
+
+    def test_remote_stat_exhausted_transient_is_explicit_and_bounded(self):
+        transient = subprocess.CompletedProcess([], 255, b"", b"ssh: connect to host fm1.example port 22: Connection refused\n")
+        with mock.patch("run.ssh", side_effect=[transient, transient]) as call:
+            with self.assertRaisesRegex(RuntimeError, "remote stat transport exhausted"):
+                _remote_stat(node(), "/safe")
+            self.assertEqual(call.call_count, 2)
+
+    def test_remote_stat_genuine_enoent_is_not_retried(self):
+        missing = subprocess.CompletedProcess([], 1, b"", b"stat: cannot stat '/safe': No such file or directory\n")
+        with mock.patch("run.ssh", return_value=missing) as call:
+            with self.assertRaisesRegex(RuntimeError, "remote stat failed"):
+                _remote_stat(node(), "/safe")
+            self.assertEqual(call.call_count, 1)
 
     def test_reboot_returns_new_boot_identity_for_evidence(self):
         old = "01234567-89ab-cdef-0123-456789abcdef"

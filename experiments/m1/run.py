@@ -1155,16 +1155,29 @@ def build_pinned_known_hosts(nodes: list[Node], directory: Path) -> Path:
 
 def _remote_stat(node: Node, path: str) -> tuple[str, int, int, int, str]:
     _validate_node_fields(node)
-    result = ssh(node, ["stat", "-c", "%F\t%u\t%g\t%a\t%n", "--", path], check=False)
-    if result.returncode:
-        raise RuntimeError(f"remote path does not exist: {path}")
-    fields = _stdout(result).strip().split("\t")
-    if len(fields) != 5:
-        raise RuntimeError(f"invalid remote path metadata: {path}")
-    try:
-        return fields[0], int(fields[1]), int(fields[2]), int(fields[3], 8), fields[4]
-    except ValueError as exc:
-        raise RuntimeError(f"invalid remote path metadata: {path}") from exc
+    command = ["stat", "-c", "%F\t%u\t%g\t%a\t%n", "--", path]
+    for attempt in range(2):
+        result = ssh(node, command, check=False)
+        if result.returncode:
+            category = _ssh_failure_category(result)
+            detail = _task5_bounded_failure_detail(getattr(result, "stderr", None))
+            if category == "transient_transport" and attempt == 0:
+                continue
+            if category == "transient_transport":
+                message = "remote stat transport exhausted"
+            else:
+                message = "remote stat failed"
+            if detail:
+                message += f": {detail}"
+            raise RuntimeError(message)
+        fields = _stdout(result).strip().split("\t")
+        if len(fields) != 5:
+            raise RuntimeError(f"invalid remote path metadata: {path}")
+        try:
+            return fields[0], int(fields[1]), int(fields[2]), int(fields[3], 8), fields[4]
+        except ValueError as exc:
+            raise RuntimeError(f"invalid remote path metadata: {path}") from exc
+    raise AssertionError("bounded remote stat retry exhausted")
 
 
 def _verify_remote_directory(node: Node, path: str, *, mode: int | None = None) -> None:
@@ -1419,18 +1432,26 @@ def _result_text(value: Any) -> str:
         return value.decode("utf-8", "replace")
     return value if isinstance(value, str) else ""
 
-def _scp_failure_category(result: subprocess.CompletedProcess) -> str:
+def _transport_failure_category(result: subprocess.CompletedProcess, *, allow_scp_diagnostics: bool) -> str:
     lines = [line.strip().lower() for line in _result_text(result.stderr).replace("\r\n", "\n").split("\n") if line.strip()]
     primary = (
         r"(?:ssh: connect to host \S+ port \d+: )?connection (?:reset by peer|closed|refused)$",
         r"(?:ssh: connect to host \S+ port \d+: )?(?:connection|operation) timed out$",
         r"(?:ssh: )?broken pipe$",
     )
-    allowed = primary + (r"scp: connection closed$",)
+    allowed = primary + ((r"scp: connection closed$",) if allow_scp_diagnostics else ())
     if lines and any(re.fullmatch(pattern, line) for line in lines for pattern in primary) and all(
             any(re.fullmatch(pattern, line) for pattern in allowed) for line in lines):
         return "transient_transport"
     return "non_transient"
+
+
+def _scp_failure_category(result: subprocess.CompletedProcess) -> str:
+    return _transport_failure_category(result, allow_scp_diagnostics=True)
+
+
+def _ssh_failure_category(result: subprocess.CompletedProcess) -> str:
+    return _transport_failure_category(result, allow_scp_diagnostics=False)
 
 def _safe_process_output(value: Any) -> bytes:
     detail = _task5_bounded_failure_detail(value)
