@@ -312,10 +312,20 @@ class TransportTests(unittest.TestCase):
                 "transient_transport",
             )
 
-    def test_scp_failure_category_rejects_deceptive_diagnostic_suffixes(self):
+    def test_scp_failure_category_requires_only_exact_transport_lines(self):
         for message in (
-            "scp: application payload: connection timed out",
+            "ssh: connect to host fm1.example port 22: Connection timed out\r\nscp: Connection closed\r\n",
+            "ssh: connect to host fm1.example port 22: Connection reset by peer\nBroken pipe\n",
+        ):
+            self.assertEqual(
+                _scp_failure_category(subprocess.CompletedProcess([], 255, b"", message.encode())),
+                "transient_transport",
+            )
+        for message in (
+            "scp: Connection closed",
+            "ssh: connect to host fm1.example port 22: Connection timed out\nscp: application payload: connection timed out",
             "ssh: connect to host fm1.example port 22: Connection timed out; retry later",
+            "ssh: connect to host fm1.example port 22: Connection timed out\nunknown extra line",
         ):
             self.assertEqual(
                 _scp_failure_category(subprocess.CompletedProcess([], 255, b"", message.encode())),

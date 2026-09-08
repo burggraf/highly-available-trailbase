@@ -1267,12 +1267,24 @@ def trusted(fd):
     if st.st_uid != 0 or st.st_gid != 0 or (st.st_mode & 0o777) != 0o700:
         raise SystemExit("untrusted directory")
 def open_parent(path):
-    fd = os.open(root, flags); trusted(fd)
-    for part in parts(path)[:-1]:
-        child = os.open(part, flags, dir_fd=fd); trusted(child); os.close(fd); fd = child
-    return fd
-parent = open_parent(destination)
+    fd = os.open(root, flags)
+    try:
+        trusted(fd)
+        for part in parts(path)[:-1]:
+            child = os.open(part, flags, dir_fd=fd)
+            try:
+                trusted(child)
+            except BaseException:
+                os.close(child)
+                raise
+            os.close(fd); fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+parent = None
 try:
+    parent = open_parent(destination)
     temporary_name = parts(temporary)[-1]
     destination_name = parts(destination)[-1]
     os.stat(temporary_name, dir_fd=parent, follow_symlinks=False)
@@ -1285,7 +1297,8 @@ try:
     os.unlink(temporary_name, dir_fd=parent)
     os.fsync(parent)
 finally:
-    os.close(parent)
+    if parent is not None:
+        os.close(parent)
 '''
 
 
@@ -1304,12 +1317,24 @@ def trusted(fd):
     if st.st_uid != 0 or st.st_gid != 0 or stat.S_IMODE(st.st_mode) != 0o700:
         raise SystemExit("untrusted directory")
 def open_parent(path):
-    fd = os.open(root, flags); trusted(fd)
-    for part in parts(path)[:-1]:
-        child = os.open(part, flags, dir_fd=fd); trusted(child); os.close(fd); fd = child
-    return fd
-parent = open_parent(temporary)
+    fd = os.open(root, flags)
+    try:
+        trusted(fd)
+        for part in parts(path)[:-1]:
+            child = os.open(part, flags, dir_fd=fd)
+            try:
+                trusted(child)
+            except BaseException:
+                os.close(child)
+                raise
+            os.close(fd); fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+parent = None
 try:
+    parent = open_parent(temporary)
     name = parts(temporary)[-1]
     try:
         temporary_fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=parent)
@@ -1331,7 +1356,8 @@ try:
         finally:
             os.close(temporary_fd)
 finally:
-    os.close(parent)
+    if parent is not None:
+        os.close(parent)
 '''
 
 _REMOTE_REMOVE_SCRIPT = r'''import os, stat, sys
@@ -1349,12 +1375,24 @@ def trusted(fd):
     if st.st_uid != 0 or st.st_gid != 0 or stat.S_IMODE(st.st_mode) != 0o700:
         raise SystemExit("untrusted directory")
 def open_parent(path):
-    fd = os.open(root, flags); trusted(fd)
-    for part in parts(path)[:-1]:
-        child = os.open(part, flags, dir_fd=fd); trusted(child); os.close(fd); fd = child
-    return fd
-parent = open_parent(temporary)
+    fd = os.open(root, flags)
+    try:
+        trusted(fd)
+        for part in parts(path)[:-1]:
+            child = os.open(part, flags, dir_fd=fd)
+            try:
+                trusted(child)
+            except BaseException:
+                os.close(child)
+                raise
+            os.close(fd); fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+parent = None
 try:
+    parent = open_parent(temporary)
     name = parts(temporary)[-1]
     try:
         st = os.stat(name, dir_fd=parent, follow_symlinks=False)
@@ -1372,7 +1410,8 @@ try:
         else:
             raise SystemExit("temporary still exists")
 finally:
-    os.close(parent)
+    if parent is not None:
+        os.close(parent)
 '''
 
 def _result_text(value: Any) -> str:
@@ -1381,21 +1420,16 @@ def _result_text(value: Any) -> str:
     return value if isinstance(value, str) else ""
 
 def _scp_failure_category(result: subprocess.CompletedProcess) -> str:
-    # Only classify complete OpenSSH diagnostic lines; stdout and embedded application text are untrusted.
-    lines = [_result_text(result.stderr).strip().lower()]
-    transient = (
+    lines = [line.strip().lower() for line in _result_text(result.stderr).replace("\r\n", "\n").split("\n") if line.strip()]
+    primary = (
         r"(?:ssh: connect to host \S+ port \d+: )?connection (?:reset by peer|closed|refused)$",
         r"(?:ssh: connect to host \S+ port \d+: )?(?:connection|operation) timed out$",
-        r"broken pipe$",
+        r"(?:ssh: )?broken pipe$",
     )
-    non_transient = (
-        r"host key verification failed$", r"remote host identification has changed$",
-        r"permission denied(?: \(publickey\))?$", r"no such file or directory$",
-    )
-    if any(re.fullmatch(pattern, line) for line in lines for pattern in transient):
+    allowed = primary + (r"scp: connection closed$",)
+    if lines and any(re.fullmatch(pattern, line) for line in lines for pattern in primary) and all(
+            any(re.fullmatch(pattern, line) for pattern in allowed) for line in lines):
         return "transient_transport"
-    if any(re.fullmatch(pattern, line) for line in lines for pattern in non_transient):
-        return "non_transient"
     return "non_transient"
 
 def _safe_process_output(value: Any) -> bytes:
