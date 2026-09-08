@@ -2757,7 +2757,9 @@ def _task5_remote_json(node: Node, context: RunContext, m0_dir: str, action: str
         message = f"Task5 remote {action} failed on {node.name}"
         if detail:
             message += f": {detail}"
-        raise RuntimeError(message)
+        error = RuntimeError(message)
+        error.failure_category = _ssh_failure_category(result)
+        raise error
     output = _stdout(result).strip()
     try:
         value = json.loads(output)
@@ -2968,9 +2970,9 @@ def _task5_position_records(positions: dict[str, Any]) -> list[dict[str, str]]:
     records = []
     for database in _LITESTREAM_DATABASES:
         txid = positions[database]
-        if not isinstance(txid, str) or not _STRICT_TXID.fullmatch(txid):
+        if isinstance(txid, bool) or not isinstance(txid, int) or not 0 <= txid <= 0xFFFFFFFFFFFFFFFF:
             raise RuntimeError("invalid Task5 position TXID")
-        records.append({"database": database, "txid": txid})
+        records.append({"database": database, "txid": f"{txid:016x}"})
     return records
 
 
@@ -3359,13 +3361,25 @@ def _safe_extract_support_archive(archive: Path, destination: Path) -> tuple[str
     return members
 
 
-def _task5_remote_cleanup(node: Node, context: RunContext, m0_dir: str, paths: list[str]) -> dict[str, Any]:
+def _task5_remote_cleanup(node: Node, context: RunContext, m0_dir: str, paths: list[str], *, sensitive: bool = False) -> dict[str, Any]:
     if not paths:
         return {"status": "PASS", "results": []}
-    # The run context, not a caller-supplied path, is the cleanup confinement.
-    result = _task5_remote_json(node, context, m0_dir, "cleanup", context.remote_root, *paths)
-    return result
-
+    if not sensitive:
+        return _task5_remote_json(node, context, m0_dir, "cleanup", context.remote_root, *paths)
+    results = []
+    for path in paths:
+        value = None
+        for attempt in range(2):
+            try:
+                value = _task5_remote_json(node, context, m0_dir, "cleanup", context.remote_root, path)
+                break
+            except RuntimeError as exc:
+                if attempt == 0 and getattr(exc, "failure_category", None) == "transient_transport":
+                    continue
+                value = {"status": "NO-GO", "results": [{"path": path, "result": "NO-GO", "proof": "removal-failed", "error": str(exc)}]}
+                break
+        results.append(value["results"][0])
+    return {"status": "PASS" if all(item["result"] == "PASS" for item in results) else "NO-GO", "results": results}
 
 def _task5_transfer_support(fm1: Node, fm2: Node, source: str, destination: str,
                             context: RunContext) -> None:
@@ -3683,7 +3697,7 @@ def _cross_host_flow(nodes: list[Node], context: RunContext, evidence: Path, rep
                     # Sensitive artifacts are scrubbed first; the runner and source remain for this call.
                     sensitive_paths = sorted(sensitive_files[node.name],
                                              key=lambda path: 0 if path.endswith((".env", ".yml")) else 1)
-                    sensitive_result = _task5_remote_cleanup(node, context, m0_dirs[node.name], sensitive_paths)
+                    sensitive_result = _task5_remote_cleanup(node, context, m0_dirs[node.name], sensitive_paths, sensitive=True)
                     sensitive_result = _validate_task5_cleanup_response(sensitive_result, sensitive_paths)
                     if sensitive_result["status"] != "PASS":
                         cleanup_failures.append(f"sensitive:{node.name}:failed")
