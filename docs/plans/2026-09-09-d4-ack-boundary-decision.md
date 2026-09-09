@@ -108,7 +108,7 @@ Static review `957ab9b6-dbeb-4cec-ad37-a6ec9d54f021` accepted the bounded record
 
 ### Owner decision required before a write-admission prototype
 
-Recommended direction, **not yet approved or implemented**:
+Recommended direction, **approved by the owner for a bounded local-only prototype; not implemented or approved for rollout at this checkpoint**:
 
 - One authorized writer. No minority takeover, automatic failback or health-only routing. Distributed authority/effect admission must be real before any eventual rollout, including manual paths.
 - Initially qualify only the bounded main/aux create/read workload and the tested login/logout/refresh behavior. Update/delete, account/admin/configuration changes, uploads, jobs and direct bypasses must be covered or enforceably excluded; none is silently deemed safe. Qualification must address non-admin policy separately.
@@ -116,7 +116,7 @@ Recommended direction, **not yet approved or implemented**:
 - If proof/authority is unavailable, refuse admission before forwarding when possible. After a forwarded mutation, uncertain completion stays uncertain: withhold success, retain intent/evidence and do not automatically replay. Stale auth or unproven recovered state must not open application traffic; diagnostics may remain available.
 - Prototype and qualify locally first. No production write interception, new paid infrastructure, migration, fault drill or automatic activation is authorized by this choice. Any eventual deployment still requires reviewed proofs, resolved provider-effect obligations and explicit rollout approval.
 
-Alternatives remain the synchronous-architecture evaluation or retaining manual/refusal behavior. Choosing this bounded prototype direction is a write-path design decision; it does not mean the currently supplied VPS topology or backup backend already satisfies the contract.
+Alternatives remain the synchronous-architecture evaluation or retaining manual/refusal behavior. The owner selected the bounded local-only prototype direction after reviewing these choices. This is a write-path design decision; it does not mean the currently supplied VPS topology or backup backend already satisfies the contract.
 
 ### Initial bounded native check plan (executed above)
 
