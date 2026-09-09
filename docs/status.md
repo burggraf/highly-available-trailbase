@@ -18,6 +18,12 @@ The single authorized cloud qualification used exactly three temporary coordinat
 
 Last full live recovery acceptance remains D3. A later read-only audit after the authorized guard installation freshly confirmed healthy A writer/B standby in the same D3 epoch, completed journal and unchanged C ingress PID/configuration. It did not repeat restore/ACK acceptance. C remains a single point of failure; the local observer changed none of those services.
 
+### Native ACK-boundary feasibility checkpoint
+
+The [decision packet](plans/2026-09-09-d4-ack-boundary-decision.md) records pinned-source findings and reviewed fresh local checks: native sync/restore, upload-permission refusal, success-response loss before CLI receipt, and real TrailBase data/logout/refresh restore behavior. The latter distinguished a stale image that accepted a revoked refresh token from a newer image that rejected it. All fixture processes were stopped and evidence retained; none of these checks changed VPS write handling.
+
+These findings make a native mechanism worth considering, not an implemented ACK gate. Remote durability, complete/non-admin mutation coverage, global consistency and distributed admission remain unqualified. The next meaningful step requires owner selection of a bounded write-admission contract before local prototype implementation; the packet contains a recommended direction and explicit rollout limits.
+
 ### Source-audit warning: manual recovery is not a zero-ACK-loss policy gate
 
 Read-only review `20e2f324-718e-4a92-a9a8-71722100c5e8` identified a specific existing manual-path gap, independently confirmed by tracing the source at historical revision `0ef6db3`: `hat/recovery.py::_fault_outcomes()` validates classification shape and exhaustive membership but permits a nonempty `lost` list. `recover()`'s comparison phase accepts that report and proceeds toward activation without requiring `lost` to be empty. `tests/restore_baseline.py` separately marks the supplied protected ledger's auth/records as passing before attaching fault classification; that PASS is not proof every fault acknowledgement survived.

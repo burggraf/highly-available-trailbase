@@ -96,6 +96,28 @@ This is **client response-receipt timeout after native server completion**, not 
 
 The next useful local evidence step is pinned TrailBase data plus logout/refresh finite restore. Additional component passes still cannot remove ambiguous outcomes or authorize a production write gate.
 
+### Native TrailBase data/session compatibility result
+
+Fresh local run `trail-sync-50635c41656a` used the official Darwin arm64 TrailBase archive digest `dea7a7e865f14405c3e09785a680c6830b1084bfd9785e7d44fc72b6a3583f91`, binary SHA-256 `88e64c0b207a4501b7074525a7f533d9b8a8e2aef1780cfeb5b45791e70a0f34`, and the pinned Litestream binary above. TrailBase reported `v0.33.11-0-gf24291b8`, SQLite `3.53.2`. Preparation first failed because the version parser selected the trailing SQLite version. The failed parser/output were retained; a corrected anchored parser passed the captured output and four negative cases, then native version was reconfirmed before any server start. No redownload or bootstrap replay was used to hide that failure.
+
+Two generated local-admin sessions existed in the initial three-database image. After main/aux record creation and specific logout, sequential native sync/finite restore advanced this fresh fixture from `1/1/1` to `2/2/2`; these are not D3 epoch positions. A native oracle on copies of the old images accepted the source-revoked refresh token (200) and lacked the new records (404). The new-image oracle rejected that refresh token (401), accepted the retained refresh token (200), returned both exact records (200), and denied anonymous access (403). This demonstrates the tested refresh-session rollback difference, not immediate invalidation of all previously issued access tokens.
+
+Restored originals remained untouched: oracle applications used separate copies. Generic SQLite structural and foreign-key checks passed with **custom CHECK constraints ignored**; native restore used `integrity-check none` because those schema functions are not present in generic SQLite. This is not full custom-constraint validation. Separate post-run image/hash/structure checks confirmed main/session/aux row counts `0/2/0` before and `1/1/1` after. PID-specific listener checks bound the three application processes to loopback, and all four processes (source, replicator, two oracles) exited 0 and were reaped without forced kill.
+
+Static review `957ab9b6-dbeb-4cec-ad37-a6ec9d54f021` accepted the bounded recording. Generated credentials, tokens, keys, raw application logs and database images remain private; the reviewer received sanitized metadata and parent-attested image checks, not those artifacts. Non-admin authorization, complete mutation/ACK coverage, concurrency, global cross-database atomicity, remote durability and HA remain unqualified.
+
+### Owner decision required before a write-admission prototype
+
+Recommended direction, **not yet approved or implemented**:
+
+- One authorized writer. No minority takeover, automatic failback or health-only routing. Distributed authority/effect admission must be real before any eventual rollout, including manual paths.
+- Initially qualify only the bounded main/aux create/read workload and the tested login/logout/refresh behavior. Update/delete, account/admin/configuration changes, uploads, jobs and direct bypasses must be covered or enforceably excluded; none is silently deemed safe. Qualification must address non-admin policy separately.
+- Never expose mutation success merely because TrailBase returned success or a local replica advanced. A future ACK boundary must establish recoverability of the required native database state on the selected independent storage and publish controller-independent, epoch/incarnation-bound proof before releasing success. Native `sync -wait` is a candidate mechanism, not sufficient proof by itself; remote backend and proof-publication semantics still need qualification.
+- If proof/authority is unavailable, refuse admission before forwarding when possible. After a forwarded mutation, uncertain completion stays uncertain: withhold success, retain intent/evidence and do not automatically replay. Stale auth or unproven recovered state must not open application traffic; diagnostics may remain available.
+- Prototype and qualify locally first. No production write interception, new paid infrastructure, migration, fault drill or automatic activation is authorized by this choice. Any eventual deployment still requires reviewed proofs, resolved provider-effect obligations and explicit rollout approval.
+
+Alternatives remain the synchronous-architecture evaluation or retaining manual/refusal behavior. Choosing this bounded prototype direction is a write-path design decision; it does not mean the currently supplied VPS topology or backup backend already satisfies the contract.
+
 ### Initial bounded native check plan (executed above)
 
 Use only a fresh local disposable SQLite database, pinned Litestream binary, private Unix socket and local file replica. Do not touch retained fixtures, live data, production object-store credentials or HAT admission paths.
