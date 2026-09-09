@@ -70,7 +70,33 @@ Static reviews `869b7852-96bd-47c1-bfde-d3475da59082` and `b5f784a6-e594-4f98-88
 
 It is not yet an HA acknowledgement: [`Store.SyncDB`](https://github.com/benbjohnson/litestream/blob/ccd326c175b583b5e82893a6078f06dcef5fba3f/store.go#L428-L469) reads the local TXID after synchronization and separately reads cached replica position. Concurrent progress can make these differ; the response has no HAT epoch/incarnation binding or caller-specific commit identity. Backend upload completion is not independent read-back or restored-image verification. Timeout/error may follow partial or complete upload and therefore leaves outcome uncertain. HAT epoch/prefix isolation must not be confused with legacy Litestream generation fields.
 
-### Next bounded native check
+### First native local-file result
+
+Run `native-sync-a7101a149c22` used the official Darwin arm64 Litestream 0.5.17 binary, archive checksum verified; binary SHA-256 `205b4c315d61a7f5709c4ab9001084eadfa8c9d36e1c198f9887417c2d88bb73`. A fresh SQLite WAL/FULL toy database and private Unix socket were used, with no VPS/cloud access.
+
+Baseline sync and finite restore were at TXID 1. After a known marker commit, native `sync -wait` returned local/replica TXID 2; a separate finite restore at 2 contained both expected rows and passed native full plus independent SQLite integrity checks. The pre-mutation restored image failed **the checker's membership predicate**, not a native recovery gate. An unavailable socket refused; a no-change request stayed at 2. Image checks completed while the exact identified daemon was running, before shutdown; SIGTERM then exited 0 and was reaped without forced kill. A separate post-run image/hash/integrity read also passed. All files and logs remain private under the run directory.
+
+Static review `5b04d2d3-671a-4b89-bc37-2c21dc8c88e6` accepted this bounded result. Background replication was configured and **not excluded**. This does not prove an HTTP acknowledgement boundary, remote durability, concurrency, multi-database/auth coverage or HA. The smallest next negative check is a fresh local file replica with writes denied: observe native sync failure and independently inspect available recovery state, without inferring remote-backend or partial-upload semantics.
+
+### Native local upload-denial result
+
+Fresh run `native-sync-denied-3c18c61b658c` used the same verified binary and a separate local file replica. After baseline replication, every replica directory/file was made non-writable; an unprivileged write probe independently refused before a new marker was committed. Native `sync -wait` then returned nonzero with `.ltx.tmp: permission denied`. Replica inventory/hashes were unchanged, and a restore of the **latest available** replica—not merely an explicitly selected old cut—contained only the baseline. Its absent marker failed the checker's membership predicate.
+
+Permissions stayed blocked through daemon shutdown. The daemon exited 0 and was reaped without forced kill, **while logging a failed database-close sync due to permission denial**. Exit code 0 is therefore not a replication-completion proof. Permissions were restored only after exit; separate source/restore/inventory/permission checks confirmed the source retained the new marker, the replica did not, and original modes were restored. All evidence remains under the private run directory. Static review `85f59283-77f5-4e19-b122-2441bc4d37c9` accepted these limited findings.
+
+This is local upload-permission failure, not remote-backend or partial-upload/cancellation behavior. The next bounded local check will distinguish native upstream sync completion from client response receipt by withholding a captured success response after a pass-through relay control. It will not implement a HAT write gate.
+
+### Native client-response-loss result
+
+Fresh run `native-sync-lost-4cb6557c0a0e` used a fixture-only Unix-socket relay and the same pinned local file backend. A pass-through control returned the actual native JSON body to the CLI successfully (semantic forwarding, not byte-for-byte HTTP headers). After a SQLite marker commit, native `/sync` returned HTTP 200, `synced`, local/replica TXID 2. The relay retained that upstream response but sent zero bytes downstream until the CLI returned an awaiting-headers deadline error with exit 1. Monotonic timestamps establish commit → acceptance → upstream completion → withholding → CLI return → release.
+
+The observed `1.0300145s` is elapsed time around the command wrapper, not separately instrumented child runtime or an RTO. A finite restore at the upstream-returned TXID 2 contained the marker and passed integrity before daemon shutdown. Both relay threads stopped; the daemon exited 0 on SIGTERM and was reaped without forced kill. A separate image/hash/chronology audit passed. Static review `7de4725e-0fc4-4ae4-b373-61f9b16b8292` accepted the bounded evidence; it did not reproduce the binary or image checks.
+
+This is **client response-receipt timeout after native server completion**, not server continuation after cancellation. SQLite committed the mutation before sync; sync replicated it. It is one counterexample to timeout-implies-no-effect, not a guarantee that timeouts always commit. It proves neither remote durability nor restart/crash behavior. The relay is not an ACK gate or durable receipt/reconciliation mechanism. Raw source, responses, images and terminal evidence remain in the private run directory.
+
+The next useful local evidence step is pinned TrailBase data plus logout/refresh finite restore. Additional component passes still cannot remove ambiguous outcomes or authorize a production write gate.
+
+### Initial bounded native check plan (executed above)
 
 Use only a fresh local disposable SQLite database, pinned Litestream binary, private Unix socket and local file replica. Do not touch retained fixtures, live data, production object-store credentials or HAT admission paths.
 
