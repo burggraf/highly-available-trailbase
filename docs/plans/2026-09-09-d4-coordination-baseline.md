@@ -150,6 +150,45 @@ The reviewer also recommended clearer termination-reason reporting. Parent inspe
 
 The proposed next synthetic admission check must first be grounded in actual HAT call boundaries. A test-only invented admission function would not qualify existing HAT, and native etcd results do not supply its missing distributed authority integration. No application/runtime changes or extra infrastructure are authorized by this review.
 
+## Existing HAT manual uncertainty seam — passed after fixture correction
+
+Source-boundary review `42bc93d8-e79a-4b0c-ac3f-9a231a5b9c44` confirmed that HAT has no distributed-owner admission API. Its actual `Journal.step()` / `ControlIO.command()` seam can test local manual uncertainty, not a fictional stale-owner adapter.
+
+Run `manual-uncertainty-5c6fe5a7e023` first passed the two existing journal failure/process-death regressions. The new harness then failed before launching its helper because it omitted the existing private directory required by `Journal.__enter__`; no command intent or file effect was created. That failed source/setup was retained. The corrected check used fresh directories and unmodified HAT source.
+
+A real local subprocess durably wrote a harmless file and partial stdout before exceeding the three-second command deadline. Independent inspection found the file still present and the child absent. HAT recorded an uncertain command outcome with no return code, retained the fence-phase intent without a done row, and refused retry, completion and reopening as a new operation. A negative control with normal helper completion deliberately failed the timeout expectation. Synthetic prerequisite rows existed only in disposable private journals; no provider, node, ingress or application mutation occurred.
+
+This is **local manual uncertainty handling**, not a native provider test, distributed admission, or acknowledged-write preservation qualification. Tested `hat/control.py` SHA-256: `5d6da2fb0e7315a41746e6d503d2fee3d8ae8280aa38b22443d603ce53a20a13`. All attempt directories, local effect files, journals and command evidence remain private.
+
+## Public provider contract — uncertainty remains unresolved
+
+The official `linode/linode-api-openapi` snapshot, API **4.229.1**, was retained and verified against Git blob `a7673606df1f0b4b89225e32e75689e816ded71b`. Its documented power endpoints provide:
+
+- Shutdown: instance ID path parameter, no request body; HTTP 200 says **“Shutdown started.”** and returns an empty object.
+- Boot: instance ID plus optional `config_id`; HTTP 200 says **“Boot started.”** and returns an empty object. A config profile ID is not a guest boot incarnation.
+- Shutdown explicitly requires currently running/queued actions to complete before initiation. This statement is not a cancellation guarantee for a delayed request or a conditional-incarnation fence.
+- Account events expose event IDs, entities, actions, creation times and statuses. These power-response schemas do not return a documented event/request ID binding. Entity/action/time matching alone does not establish unique correlation for a lost response under delayed or concurrent requests.
+
+The snapshot even differs between list-event and single-event status enums, so neither terminal-state interpretation nor request correlation should be inferred casually from one enum. This is a documentation finding, not a claim about observed live responses or proof that undocumented provider capabilities cannot exist.
+
+The extracted contract does **not establish** the required no-late-effect/reused-incarnation guarantee. Unknown power-action intent therefore stays unresolved; lease expiry, a fresh offline observation, or a guessed matching event must not automatically clear it. No provider request, support ticket or new resource was created during this research.
+
+Source: https://github.com/linode/linode-api-openapi . Private snapshot/extraction: `~/.config/hat/d4-qualification/provider-contract-a7673606/`. An initial lookup in the older `linode-api-docs` repository returned 404 before the current official repository was located.
+
+## Local certificate-expiry boundary — passed
+
+Run `expiry-b4e4e7634fca` issued a short-lived certificate for the existing read-only lab observer using the retained client CA. The signing key stayed outside every container. The observer first read the protected fixture while its certificate was valid, then read it again after expiry through the same instrumented gRPC connection: exactly one dial, with client TLS session resumption disabled.
+
+A separate fresh TLS connection, explicitly presenting that expired certificate, was rejected with **`remote error: tls: expired certificate`**. Thus expiry rejected the tested new handshake but did **not** revoke the established connection's per-RPC access. Certificate lifetime must not be substituted for HAT ownership/admission checks or assumed to cancel accepted effects. This does not qualify certificate rotation, administrative revocation, or every reconnect path.
+
+Initial/final protected-fixture audits passed. All three clients and three servers were inspected stopped with PID 0; no cleanup errors occurred, and all containers/data were retained. No application or provider action was involved. Binary SHA-256: `e971cc01c581a786d5fe7284c9253855f101486e5ae353870c046d8117280f25`. Private evidence: `~/.config/hat/d4-qualification/expiry-b4e4e7634fca/`.
+
+## Final boundary review
+
+Review `53684887-4c53-4025-a1d9-cfd9267f22bb` found no issues in the bounded manual-uncertainty, provider-schema and certificate-expiry claims. It accepted their parent-attested evidence and retained all stated limitations; it did not independently reproduce the runs or authorize implementation/rollout.
+
+The design's effect-admission gate remains unresolved: the extracted provider contract does not establish safe settlement of a lost power-action response against a reused guest incarnation. Component qualification must not silently become permission to implement or enable automatic power, activation, routing or rejoin. Moving instead to a strictly observation/refusal-only HAT implementation requires an explicit scope decision; that alternative must retain this gate, not claim to satisfy it.
+
 ## Pending gates
 
 Whole-host pause and asymmetric peer partitions; HAT stale-response/action admission; certificate lifecycle; sustained representative resource/fault-domain qualification; actual provider delayed-effect guarantees; acknowledged-write preservation; redundant ingress and controller-independent prerequisites. Basic keepalive cancellation/expiry and watch compaction/revalidation now have native cloud evidence. Basic contention, expiry, one-member/quorum-loss and tested TLS/permission cases now have native evidence, but no HAT adapter or safe automatic activation is qualified.
