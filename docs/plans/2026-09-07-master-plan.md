@@ -20,7 +20,7 @@ In scope:
 - Main, session, and declared attached databases; separate per-node logs.
 - Storage objects, auth secrets, realtime connections, jobs, schema/config compatibility, routing, and observability.
 - Recovery drills, failure injection, portable capability checks, operating procedures, and eventual packaging.
-- Optional read scaling, without treating HTTP GET as a read-only guarantee.
+- Service-hot standby nodes running TrailBase in a strictly qualified read-only mode; reads remain allowlisted and primary-only for mutations, auth-sensitive paths, and realtime.
 
 Out of scope initially:
 
@@ -35,11 +35,11 @@ Out of scope initially:
 
 1. **Application fence:** establish how an old writer is made unable to write before a new writer starts, including process suspension and network partitions.
 2. **Restore/promote correctness:** qualify `restore -f`, recovery after interrupted page application, all required DB files, and writable startup after following stops.
-3. **Read-only TrailBase:** the current unmodified release opens files writable, forces WAL, and performs startup writes. Keep its process stopped on standbys; qualify a future upstream read-only capability before allowing service-hot/read replicas.
+3. **Read-only TrailBase:** the current unmodified release opens files writable, forces WAL, and performs startup writes. The target is for every standby to run TrailBase as a read replica, but that cannot be enabled until a genuine read-only capability is qualified. Until then, the standby remains data-hot with TrailBase stopped.
 4. **Multi-file consistency:** define which data must recover together and how to detect or prevent unsafe skew, especially auth/session and attached DB dependencies.
 5. **S3/R2 coordination:** test conditional operations on the actual provider. Litestream's leaser is not currently an integrated CLI supervisor.
 
-Until these pass, HAT is an HA design experiment, not a production availability claim. A blocked service-hot replica does not block data-hot standby research.
+Until these pass, HAT is an HA design experiment, not a production availability claim. A blocked service-hot replica does not block data-hot standby research; failure of the gate may permanently remove read replicas from the project scope.
 
 ## 3. Architecture alternatives
 
@@ -51,7 +51,7 @@ Until these pass, HAT is an HA design experiment, not a production availability 
 
 Within the chosen cloud-VM/VPS target, the proposed initial deployment is two or three Linux VMs in separate failure domains, an existing HA ingress service, one S3-compatible endpoint, and an operator-supplied independent fence. HAT consumes a provider-neutral fencing contract; any hosting-specific implementation remains outside this repo. Two nodes can coordinate through a single authoritative object-store lease; adding a third node does **not** magically create data quorum replication.
 
-Start with data-hot standbys: restore processes stay running, but TrailBase is stopped. Add service-hot read replicas only after the read-only gate. This is an explicit reduction of initial scope, not a claim to have solved the requested hot application standby yet.
+The eventual target is service-hot standbys: restore processes and TrailBase both stay running, with TrailBase constrained to qualified read-only operation. Data-hot standbys remain the safe interim mode until the read-only gate passes; this does not change the single-writer failover model.
 
 ## 4. Proposed invariants
 
@@ -87,9 +87,9 @@ Even primary-only reads cannot guarantee that data survives subsequent failover.
 | Stage | Deliverable | Exit condition |
 | --- | --- | --- |
 | M0: qualify the premise | Version-pinned experiments and compatibility report | Follow/recovery, writable startup, multi-DB policy, storage CAS, and fencing contract demonstrated in a controlled harness; deployment assumptions recorded |
-| M1: recover safely by operator command | Minimal supervisor, generic Linux VM setup, operator-supplied fence, data-hot standbys, manual promotion/rejoin, primary-only ingress, runbooks | Repeated fence/promote/rejoin drills; no shared-prefix corruption; no unfenced override; recover all supported state |
+| M1: recover safely by operator command | Minimal supervisor, generic Linux VM setup, operator-supplied fence, standby nodes prepared for service-hot operation, manual promotion/rejoin, primary-only ingress, runbooks | Repeated fence/promote/rejoin drills; no shared-prefix corruption; no unfenced override; recover all supported state |
 | M2: automate bounded failover | Detection, eligibility/RPO policy, race-safe election, resumable transitions, alerts | Partition/suspension/process-crash tests pass; explicit RPO/RTO evidence; unknown states stop safely |
-| M3: optional read scaling | Qualified read-only TrailBase mode, route allowlist, lag gates, auth restrictions | Hidden-write audit and concurrent-follow tests pass; stale/security behavior documented and tested |
+| M3: service-hot read replicas | Actual-binary qualification of read-only TrailBase on every standby, route allowlist, lag gates, auth restrictions | Startup/read/auth/job/log/write tracing, concurrent-follow, restart and interrupted-restore tests pass; if no supported mode passes, this capability is abandoned and data-hot standbys remain the supported design |
 | M4: operational hardening | S3/R2 compatibility checks, private VPS integration drills, restore/PITR drills, upgrade checks, cost/load tests, packaging | Published capability matrix and measured SLO envelope; sanitized evidence, no hosting-provider certification or integrations |
 | Later | Realtime replay, durable jobs, richer rollout helpers, aggregated log analytics | Only when demanded by application requirements |
 
@@ -111,7 +111,7 @@ Priority order:
 
 1. **Fencing contract:** define the evidence, timeout, retry, and restart-prevention requirements for an operator-supplied fence. Hosting-provider choice is not a project decision; deployment-specific validation comes later.
 2. **Loss and downtime:** what acknowledged-write loss is acceptable, and for which data? What write/API RTO is useful? Is operator review acceptable when loss cannot be bounded?
-3. **Hotness:** is data-hot/process-stopped an acceptable first milestone while genuine read-only TrailBase support is established?
+3. **Hotness:** service-hot/read replicas are the eventual target. Data-hot/process-stopped remains the fallback deployment mode until genuine read-only TrailBase support is established.
 4. **Database semantics:** are attached DBs independently recoverable, or do transactions/workflows require cross-DB invariants? Can failover invalidate sessions and require reauthentication?
 5. **Storage capability/latency envelope:** define required S3-compatible operations, retention and latency assumptions without selecting an account or vendor now. Preserve the requested S3/R2 compatibility work; coordination and backup availability are shared dependencies.
 6. **Reads:** public eventually-consistent reads only, or auth-sensitive reads? Which maximum stale/revocation windows are acceptable?

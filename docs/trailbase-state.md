@@ -35,6 +35,8 @@ Evidence:
 
 Therefore neither “disable cron,” “read-only API ACL,” nor “put a proxy in front” fixes startup or connection-level behavior. `--demo` is not a read-only mode. Making replica files writable to let initialization succeed is not a supported workaround for continuous follow.
 
+**Decision gate:** explicitly test the proposed service-hot/read-replica mode before committing to it. The test must run the actual pinned TrailBase binary against continuously restored `main.db`, `session.db`, and every enrolled attached database, while exercising startup, ordinary reads, auth reads, schema/config loading, long-lived readers, background jobs, log writes, follower catch-up, restart, and restore interruption. Trace filesystem and SQLite writes, WAL/SHM changes, locks, restore errors, and logical divergence. A passing test must demonstrate that TrailBase never mutates follower business databases and does not disrupt Litestream follow. If the pinned binary or an approved upstream/patch-based mode cannot satisfy this, abandon service-hot/read-replica capability for this project and retain data-hot stopped-application standbys.
+
 **Baseline proposal:** keep TrailBase stopped on data-hot standbys. To achieve service-hot/read replicas, seek an upstream mode that:
 
 1. Opens main/session/attached DBs truly read-only and validates existence/schema without creating, migrating, optimizing, or converting journal mode.

@@ -4,7 +4,7 @@
 
 **Goal:** Deliver TrailBase through one stable endpoint, with one active writer, a recoverable standby, safe operator-controlled failover and rejoin, then automatic failover.
 
-**Architecture:** Keep pinned TrailBase and Litestream; keep TrailBase stopped on standbys. Use IDrive e2 only for database backup transport, independently completed power fencing for writer exclusion, and an existing consensus service for the later automatic control plane. Ship a persistent manual recovery prototype before adding election.
+**Architecture:** Keep pinned TrailBase and Litestream; the eventual target is TrailBase running on every standby in a strictly qualified read-only mode. Until that mode is proven, use stopped TrailBase as the safe fallback. Use IDrive e2 only for database backup transport, independently completed power fencing for writer exclusion, and an existing consensus service for the later automatic control plane. Ship a persistent manual recovery prototype before adding election.
 
 **Tech Stack:** TrailBase v0.33.11, Litestream v0.5.17, Ubuntu/systemd, Python standard library for the first operational commands, HAProxy for prototype ingress. Proposed later automatic coordinator: a three-member etcd cluster, with version/resource qualification before installation. Private fencing adapter remains operator-owned.
 
@@ -17,7 +17,7 @@
 The observable product is:
 
 1. A client uses the same URL to create and read records and authenticate.
-2. One node is the only TrailBase writer. Another holds continuously restored databases with TrailBase stopped.
+2. One node is the only TrailBase writer. Other nodes continuously restore the databases and, once the read-only gate passes, run TrailBase as read replicas; stopped TrailBase remains the fallback.
 3. An operator can move service to the standby without changing the client URL.
 4. After actual loss of the writer, confirmed external fencing permits recovery on the standby.
 5. The former writer cannot start writable on reboot; it rejoins only through a new clean restore.
@@ -35,7 +35,7 @@ Reviewed README, master plan, architecture, deployment, TrailBase state, upstrea
 | --- | --- | --- |
 | Local follow-to-writer promotion, fresh epochs, and reseed can work | M0 macOS/local-file report passed the specified matrix | Reuse the validated semantics and fixture; not proof of Linux/S3 HA |
 | Acknowledged writes can be lost | Observed natural and deliberately lagged M0 crashes | No zero-RPO promise; measure loss against an external client ledger |
-| Stock TrailBase is not a read-only follower server | Pinned source inspection, writable startup behavior | Standby TrailBase remains stopped; no read scaling in first release |
+| Stock TrailBase is not a read-only follower server | Pinned source inspection, writable startup behavior | Service-hot read replicas remain gated on a real read-only mode; data-hot stopped-app standby is the fallback |
 | All required DBs need independent replication plus application checks | main/session/aux fixture and pinned state inventory | Retain all three; do not replace the workload with a main-only demo |
 | IDrive e2 cannot serve as our CAS/lease authority | Conditional-delete and concurrent-replace failures in live storage matrix | Remove S3 election from the delivery path; no workaround protocol |
 | IDrive basic object operations and initial replication work | Storage probes and partial Task5 runs | Keep as backup transport provisionally, not a qualified HA transport yet |
@@ -118,7 +118,7 @@ Timeboxes below are **active-work review limits**, not guarantees of completion.
 - Reuse pinned artifact/config/TXID/validation knowledge from M0/M1 without importing the 4,400-line experiment as the operational controller.
 - Use systemd for process lifetime and a short runtime socket path. No autonomous writable boot; HAT alone activates the writer.
 - Deploy the three-DB demo once, then keep the setup for subsequent commands. Separate install/setup from transitions and from explicit decommissioning.
-- Serve real create/read/login through a stable demo URL. Run replication on A and followers on B with TrailBase stopped there.
+- Serve real create/read/login through a stable demo URL. Run replication on A and followers on B; run TrailBase on B only if the qualified read-only mode is available, otherwise keep it stopped.
 - `hat status` shows role, epoch, per-DB positions, replication health and refusal reasons.
 - Independently restore the published baseline and check fixture data/auth. Never infer readiness from process liveness alone.
 
@@ -173,7 +173,7 @@ If this cannot complete within the review budget, deliver D1/D2 plus the exact b
 - Run bounded cases for node pause/partition, concurrent commands, controller crash during promotion, fence failure, restore error, one missing required DB, and storage outage.
 - Test supported auth continuity/revocation semantics, shared-object upload/download and declared update/delete restrictions, SSE reconnect, and version/config mismatch.
 - Publish one install/runbook, one supported-workload statement, real RPO/RTO observations, dependency failure behavior and unresolved limitations.
-- Only then advertise the supported configuration as HA. Keep read replicas, generic providers, zero-loss replication, multi-region and broad feature coverage out of this release.
+- Only then advertise the supported configuration as HA. Read replicas are an intended release capability, but remain disabled until the read-only gate passes. Keep generic providers, zero-loss replication, multi-region and broad feature coverage out of this release.
 
 ## 7. Test and delivery discipline
 

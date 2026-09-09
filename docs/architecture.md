@@ -22,8 +22,8 @@ HAT supervisors <──> one authoritative cluster lease / activation metadata
 
 HAT uses “standby” for a cluster node and “backup destination” for Litestream's `replica` setting; these are not the same thing.
 
-- **Data-hot standby:** databases continuously restored; TrailBase not running.
-- **Service-hot/read standby:** same replication, plus a qualified read-only TrailBase process and local writable logs. Not supported until the feasibility gate passes.
+- **Service-hot/read standby (eventual target):** databases continuously restored and TrailBase running in a strictly qualified read-only mode, with local writable logs. It serves only approved stale-tolerant reads.
+- **Data-hot standby (fallback):** databases continuously restored; TrailBase not running. Use this mode until the service-hot read-only gate passes.
 - **Primary:** sole authorized mutable TrailBase instance plus outbound Litestream for every required database.
 - **Quarantined node:** no ingress, no outbound replication or mutating jobs; local state retained for diagnosis.
 
@@ -152,7 +152,7 @@ For cluster-wide loss or PITR: stop/fence every mutator first, choose an explici
 
 Default all API/auth/admin/custom routes, file mutations, and realtime to the primary. Use one existing HA load balancer/reverse proxy with role-aware readiness; DNS-only failover has client caching and connection limitations and is not the baseline. Protect the ingress/control plane from becoming the new single point of failure.
 
-Read offloading is opt-in per tested endpoint. A separate read hostname is simplest; preserve TLS, origin/cookie and CORS behavior if used. Enforce staleness limits and current-epoch checks. Sensitive auth/ACL reads and read-after-write flows stay primary by default. Stickiness is an optimization, not a durability guarantee; future causal tokens must carry epoch and per-DB position semantics.
+Read offloading is opt-in per tested endpoint. The intended steady state is that all standbys run TrailBase, but a separate read hostname or explicit route allowlist must send only approved stale-tolerant reads there. Preserve TLS, origin/cookie and CORS behavior if used. Enforce staleness limits and current-epoch checks. Mutations, auth/ACL/session-sensitive reads, jobs, admin paths, and read-after-write flows stay primary by default. Stickiness is an optimization, not a durability guarantee; future causal tokens must carry epoch and per-DB position semantics.
 
 On demotion close existing long-lived streams/connections, not only readiness for new ones. Never automatically retry non-idempotent mutations after an ambiguous timeout. Clients may need to query operation status or retry with application idempotency keys. Return explicit unavailability while safety is uncertain.
 

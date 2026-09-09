@@ -48,16 +48,16 @@ The final directory layout must respect TrailBase's actual paths described in [s
 
 ## 3. Per-role process and access model
 
-| Concern | Primary | Data-hot standby | Optional service-hot standby |
+| Concern | Primary | Data-hot standby (fallback) | Service-hot/read standby (eventual target) |
 | --- | --- | --- | --- |
 | HAT supervisor | Lease holder, process owner, writer readiness | Follows metadata, evaluates eligibility | Same, plus read eligibility |
-| TrailBase | Writable only after fence/activation checks | Stopped | Qualified read-only DB mode; node log writable |
+| TrailBase | Writable only after fence/activation checks | Stopped until read-only qualification passes | Running only in a qualified read-only DB mode; node log writable |
 | Litestream | One `replicate` process for required DB set | One `restore -f` per required DB | Same followers; never outbound replicate these files |
 | Logs | Local/node-specific stream | Supervisor/follower logs | Local TrailBase log DB; never incoming log replay |
 | S3 backup permissions | Read/write only the owned epoch; retention as needed | Read/list approved history | Same |
 | Object permissions | Required read/write/delete while authorized | None unless required for readiness | Read-only; enforce beyond HTTP routing |
 | Jobs/admin/auth mutation | Authorized primary only | Off | Off; auth-sensitive traffic normally primary |
-| Ingress | Write and default read target | No application traffic | Only approved stale-tolerant routes |
+| Ingress | Write and default read target | No application traffic | Approved stale-tolerant read routes only; no mutations/auth-sensitive default traffic |
 
 Backup writer credentials must not let a stale epoch overwrite the next epoch. Prefer scoped short-lived identities where supported. R2/S3 permission propagation and expiry must be measured; credentials are defense-in-depth, not the primary fence. If a provider cannot express desired prefix scoping, use bucket/account isolation or document the reduced security boundary and require an external fence; do not imply S3 IAM works unchanged on R2.
 
