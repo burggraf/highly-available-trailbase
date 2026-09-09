@@ -4,7 +4,31 @@ D0 checkpoint: 2026-09-08 UTC. Delivery direction approved by owner; work stays 
 
 | Delivered | Currently building | Blocker | Next demonstration |
 | --- | --- | --- | --- |
-| D0–D3 delivered with preserved explicit reconciliations | A healthy writer; B healthy same-epoch standby | D3 required a guarded boot-evidence reconciliation, not a second power action | Owner review before any D4/automatic-control work |
+| D0–D3 delivered with preserved explicit reconciliations; D4 offline refusal diagnostic merged locally | D4 qualification and unresolved safety contracts | Complete acknowledged-write preservation and safe settlement of uncertain external effects are not established | No automatic recovery demonstration authorized or qualified |
+
+## D4 current: offline refusal diagnostic, not automatic HA
+
+The owner approved staged isolated qualification and then local-only observation/refusal implementation. `hat/observe.py` is merged locally on `main` at `a15f6a9`; it is **not pushed, installed or connected to live services**. It accepts bounded captured JSON on stdin and inventories declared missing/uncertain/reported evidence. Reported captures remain unverified; every output refuses promotion and exposes no action capabilities. See [usage and limits](observation-only.md).
+
+Independent static review `fa9b8446-16b4-41b2-ba94-44aecf723775` found no issues. The merged result passed **106 current tests**, including nine observer tests; existing SQLite ResourceWarnings and expected parser-error output remain in the logs. These are local current-suite results, not a fresh frozen-suite or deployment qualification. The clean feature worktree was removed after verification. Existing manual controller/node paths, deployment files and frozen experiments were unchanged.
+
+The [D4 baseline](plans/2026-09-09-d4-coordination-baseline.md) retains native quorum, explicit RPC deadlines, ambiguous committed-response behavior, lease/pending-intent lifetime, TLS/RBAC, paused-client stale-write refusal, watch revalidation, manual command uncertainty and certificate-expiry boundaries. These are bounded component findings, not distributed HAT effect admission. In particular, existing TLS channels can retain RPC access after certificate expiry, and a timeout or expired owner lease does not settle an external action.
+
+The single authorized cloud qualification used exactly three temporary coordinator-only VMs at $0.216/hour total. All three were deleted and deletion independently audited; the evidence and local stopped fixtures were retained. **No further paid run or permanent infrastructure is authorized.** Delayed process-completion/log-match notifications for those historical runs neither supersede their final audits nor authorize replay.
+
+Last recorded live acceptance remains A writer, B same-epoch three-follower standby and C controller/ingress, with the D3 operation complete. This is not a fresh health observation. C remains a single point of failure; the local observer changed none of those services.
+
+### Remaining D4 gates
+
+1. **Acknowledged-write preservation:** establish coverage of every admitted data/auth mutation and independently prove a recoverable image contains all acknowledgements. Asynchronous replication or an incomplete ledger is insufficient. Unknown preservation requires operator review, never promotion.
+2. **External effects:** obtain an authoritative provider contract for accepted-request identity, response-loss settlement and prevention of late effects against a reused guest incarnation. The retained public schema does not establish these guarantees; this is not proof undocumented capabilities are impossible. Local UUIDs and guessed event/time matches are not provider operation bindings.
+3. **Common authority-aware admission:** existing HAT manual APIs do not accept distributed owner/revision/action identity. No synthetic admission test can qualify them. A real contract must precede implementation and cover manual as well as future automated paths, durable unresolved intent and stale responses without a legacy activation bypass.
+4. **Operational prerequisites:** sustained resource sizing, actual fault domains, whole-host pause/asymmetric partitions, certificate rotation/admin revocation and removal of C's dependencies remain unqualified. The short shared-VM sample is not sizing or physical fault-domain proof.
+5. **Rollout authorization:** this local-only implementation is not permission for live installation, power, activation, routing, rejoin, new spending or policy relaxation. Existing review-window caveats remain in the historical evidence; component progress does not waive them.
+
+The safe continuation is evidence/contract review within the approved local scope. A new action-capable implementation or live/paid qualification needs its own explicit authorization; a refusal report cannot supply it.
+
+The sections below retain earlier checkpoints and failures. Their state descriptions apply to those checkpoints, not necessarily to the latest recorded live state above.
 
 ## D3 live recovery checkpoint — 2026-09-09
 
