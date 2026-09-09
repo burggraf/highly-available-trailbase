@@ -225,12 +225,19 @@ class NativeAdapterTests(unittest.TestCase):
             native_adapter._run_group(command,{'PATH':os.environ.get('PATH','/usr/bin:/bin')},5)
         self.assertLessEqual(len(caught.exception.stdout),1024*1024)
 
-    def test_transport_error_is_forward_uncertain_without_native_commands(self):
+    def test_transport_error_is_durable_forward_uncertain_and_never_replays(self):
         opener, runner = Opener(error=OSError('NEVER_LEAK_TRANSPORT')), Runner()
+        adapter = self.adapter(opener, runner)
         with admission.AdmissionJournal(self.jroot) as journal:
-            decision = native_adapter.admit_native(journal, self.request, self.adapter(opener, runner))
-            self.assertEqual(self.rows(journal)[0][1], 'forward_uncertain')
-        self.assertEqual((decision.released, decision.reason, runner.calls), (False, 'forward_uncertain', []))
+            decision = native_adapter.admit_native(journal, self.request, adapter)
+        with admission.AdmissionJournal(self.jroot) as journal:
+            self.assertEqual(self.rows(journal), [('a'*32, 'forward_uncertain', None, None)])
+            with self.assertRaisesRegex(RuntimeError, 'operation identity already used'):
+                native_adapter.admit_native(journal, self.request, adapter)
+        self.assertEqual((decision.released, decision.reason, decision.body),
+                         (False, 'forward_uncertain', b'admission forward uncertain'))
+        self.assertEqual((len(opener.calls), runner.calls), (1, []))
+        self.assertFalse((self.root/'evidence'/('a'*32)).exists())
 
     def test_http_error_is_possible_and_requires_proof(self):
         opener, runner = Opener(Response(403,b'NEVER_RELEASE_4XX')), Runner(failure=(1,RuntimeError('proof unavailable')))
@@ -257,16 +264,23 @@ class NativeAdapterTests(unittest.TestCase):
             self.assertLessEqual(len([c for c in runner.calls if c[0][1]=='sync']), 1)
             self.assertLessEqual(len([c for c in runner.calls if c[0][1]=='restore']), 1)
 
-    def test_native_timeout_is_proof_uncertain_and_preserves_command_intent(self):
+    def test_native_timeout_is_durable_proof_uncertain_and_never_replays(self):
         error=subprocess.TimeoutExpired(['litestream','sync'],10,output=b'partial',stderr=b'timeout')
-        runner=Runner(failure=(1,error));adapter=self.adapter(runner=runner)
+        opener=Opener();runner=Runner(failure=(1,error));adapter=self.adapter(opener,runner)
         with admission.AdmissionJournal(self.jroot) as journal:
             decision=native_adapter.admit_native(journal,self.request,adapter)
+        with admission.AdmissionJournal(self.jroot) as journal:
+            self.assertEqual(self.rows(journal), [('a'*32, 'proof_uncertain', None, None)])
+            with self.assertRaisesRegex(RuntimeError, 'operation identity already used'):
+                native_adapter.admit_native(journal,self.request,adapter)
         self.assertEqual((decision.released,decision.reason,len(runner.calls)),(False,'proof_uncertain',1))
+        self.assertEqual(len(opener.calls), 1)
         evidence=self.root/'evidence'/('a'*32)
         self.assertTrue((evidence/'sync.intent.json').is_file())
         self.assertEqual(json.loads((evidence/'sync.outcome.json').read_text())['outcome'],'timeout')
         self.assertEqual((evidence/'sync.stdout').read_bytes(),b'partial')
+        self.assertFalse((evidence/'restore.intent.json').exists())
+        self.assertFalse((evidence/'proof.json').exists())
 
     def test_no_secret_or_body_is_persisted_by_adapter_or_journal(self):
         adapter=self.adapter(runner=Runner(failure=(1,RuntimeError('NEVER_STORE_EXCEPTION'))))
