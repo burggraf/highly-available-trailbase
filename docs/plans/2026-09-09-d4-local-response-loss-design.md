@@ -21,9 +21,9 @@ Each relay must pass a separate control before its fault case, count requests, r
 
 Run four isolated cases: HTTP response loss for main and aux, then sync response loss for main and aux.
 
-For HTTP response loss, TrailBase must contain the exact inserted ID/op_key/payload, while `admit_native()` raises and the reopened journal remains `forward_uncertain`. No sync, restore or proof command may be emitted.
+For HTTP response loss, TrailBase must contain the exact inserted ID/op_key/payload, while `admit_native()` returns an unreleased generic refusal and the reopened journal remains `forward_uncertain`. No sync, restore or proof command may be emitted.
 
-For sync response loss, TrailBase's response reaches the adapter and native sync completes upstream, but the CLI receives no response. `admit_native()` raises and the reopened journal remains `proof_uncertain`. No adapter restore, `proof.json` or released body may exist.
+For sync response loss, TrailBase's response reaches the adapter and native sync completes upstream, but the CLI receives no response. `admit_native()` returns an unreleased generic refusal and the reopened journal remains `proof_uncertain`. No adapter restore, `proof.json` or released upstream body may exist.
 
 A deliberate second call with the same operation ID must refuse before forwarding or native effects. Counters must remain unchanged. This is a refusal check, not permission to replay the mutation.
 

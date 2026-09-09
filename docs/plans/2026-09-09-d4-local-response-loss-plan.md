@@ -123,6 +123,20 @@ Run adapter, protocol and runtime suites; run `git diff --check`; verify no chan
 
 Document failed attempts and limitations. Commit locally, fast-forward `main`, rerun merged verification and remove the clean worktree. Do not push or deploy.
 
+## Recorded evidence
+
+- Baseline passed: 17 adapter, 14 protocol and 107 runtime tests. Existing ResourceWarnings/parser stderr remained the known baseline categories.
+- Strengthened unit contracts reopened `forward_uncertain` and `proof_uncertain` journals, proved duplicate operation IDs refuse before callbacks/native commands, and checked absent proof publication. They passed immediately against existing behavior, so no kernel or adapter implementation changed.
+- Private harness root: `~/.config/hat/d4-qualification/rl-z9WWB1TlIpH0/`. Only copied hash-pinned binaries, fixture source and evidence live there; no state from a completed fixture was reused.
+- Static missing-harness and three review-finding red checks were preserved. Review sequence blocked hard-coded sync IDs, HTTP worker cleanup, daemon output bounds, real socket cleanup semantics, diagnostic image bounds/identity, early Unix evidence persistence and incomplete identity continuity. Each was corrected before execution. Final static review `5a8106a8-cc20-4be6-9329-f6073a30795b` found no issues and approved exactly one fresh local run.
+- A pre-execution process scan matched its own wrapper PID `79825`; it exited before harness launch and created no fixture/case state. `preflight-scan-correction.json` records the corrected ancestor-excluding scan. This was not a native attempt.
+- Exactly one reviewed native harness run, managed process `proc_0e13`, exited 0 after 37 seconds. No whole-run retry occurred.
+- HTTP main and aux each observed TrailBase HTTP 200 completion, then sent zero downstream bytes until the adapter returned after about five seconds. Both decisions remained unreleased `forward_uncertain`; reopened journals contained one operation, duplicate invocation refused without a third relay request, source exact membership passed and the pre-fault image failed the same predicate. No native evidence operation directory existed.
+- Sync main and aux each observed native HTTP 200 with TXID/replica TXID `2/2`, then sent zero downstream bytes until the CLI returned after about ten seconds. Both decisions remained unreleased `proof_uncertain`; reopened journals contained one operation with upstream status 200, duplicate invocation refused without a third relay request, and no adapter restore intent or proof publication existed. An independent restore at the upstream-reported TXID—without another sync—contained the exact captured TrailBase response ID/op_key/payload; the pre-fault image failed the same predicate.
+- Exact predicate in all cases: `SELECT op_key,payload FROM hat_ops WHERE id=?`. Target/stale image hashes, generic integrity and zero foreign-key violations are recorded. Later inspections did not alter journal states or authorize replay/release.
+- Eight TrailBase/Litestream fixture processes exited 0, were reaped without forced kill or log overflow and had no remaining process groups. HTTP/Unix relay threads and listeners stopped; relay and native sockets disappeared, with native sockets absent immediately after shutdown rather than removed by the harness.
+- Harness metadata scan and independent read-only parent audit passed. The audit performed no request, sync, restore, replay or process launch. Sanitized evidence review `ae83ea74-2c8e-417e-aa8b-cfeaa7f755bd` found no issues and approved bounded local recording/integration only.
+
 ## Stop boundary
 
 No additional native attempt after the one reviewed run without explicit owner approval. No auth proof, remote storage, production listener/proxy, VPS/live data, deployment, automatic recovery, distributed authority, policy relaxation or paid resource use. Timeout and later membership establish an ambiguous completed effect, not cancellation semantics, remote durability or complete ACK guarantees.
