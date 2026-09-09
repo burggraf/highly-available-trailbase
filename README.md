@@ -6,6 +6,8 @@ An early-stage project for a single-writer [TrailBase](https://github.com/trailb
 
 ## Start here
 
+- [Offline observation/refusal](docs/observation-only.md): inventory captured evidence without live access or action authorization; existing manual behavior is unchanged.
+
 - [Master plan](docs/plans/2026-09-07-master-plan.md): goals, decisions, alternatives, milestones, and questions.
 - [M0 local experiment](experiments/m0/README.md) and [result report](docs/reports/m0-local-failover.md): runnable local follow-to-writer qualification and sanitized results.
 - [M1 Ubuntu provisioning and Linux parity report](docs/reports/m1-linux-parity.md): sanitized Task 4 result; the fresh short-root acceptance remains NO-GO because M0 did not produce the exact 13-result aggregate.
