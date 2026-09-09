@@ -118,6 +118,9 @@ class FakeIO:
         if phase == 'compare':
             value['fault_outcomes'] = {'recovered': ['main_ops/d3-fault'], 'lost': [],
                                        'ambiguous': [], 'unacknowledged_recovered': [], 'rejected': []}
+            if self.scenario == 'lost-ack':
+                value['fault_outcomes']['lost'] = value['fault_outcomes'].pop('recovered')
+                value['fault_outcomes']['recovered'] = []
         return value
 
     def command(self, argv, data=None, timeout=180):
@@ -296,6 +299,41 @@ class RecoverDriverTests(unittest.TestCase):
                     self.assertTrue(failure.is_file())
                     self.assertIn(json.loads(failure.read_text())['phase'], ('compare', 'activate'))
                 self.assertEqual(FakeIO.calls[-1][0], 'close-ingress')
+
+    def test_lost_ack_refuses_comparison_preserves_intent_and_blocks_replay(self):
+        temporary, root, _, args = self.fixture('lost-ack')
+        self.addCleanup(temporary.cleanup)
+        ingress_before = args['ingress'].read_bytes()
+        with self.assertRaisesRegex(RuntimeError, 'acknowledged writes are missing'):
+            recovery.recover({'hostname': socket.gethostname()}, **args)
+        self.assertFalse(any(call[0] in ('start-ingress', 'verify-url', 'smoke-url')
+                             for call in FakeIO.calls))
+        self.assertFalse(any(call[:3] in (('remote', 'A', 'prepare'), ('remote', 'A', 'activate'))
+                             for call in FakeIO.calls))
+        self.assertEqual(args['ingress'].read_bytes(), ingress_before)
+        self.assertTrue(args['maintenance'].is_file())
+        self.assertEqual(FakeIO.calls[-1][0], 'close-ingress')
+        with control.Journal(root) as journal:
+            operation = journal.db.execute('SELECT id FROM operations WHERE complete=0').fetchone()[0]
+            steps = journal.db.execute('SELECT phase,status,evidence FROM steps WHERE operation=? ORDER BY rowid',
+                                       (operation,)).fetchall()
+            self.assertEqual([(phase, status) for phase, status, _ in steps],
+                             [(p, s) for p in control.D3_PHASES[:5] for s in ('intent', 'done')]
+                             + [('compare', 'intent')])
+            count = journal.db.execute('SELECT count(*) FROM operations').fetchone()[0]
+        failure = root / operation / 'failure.json'
+        failure_before = failure.read_bytes()
+        self.assertEqual(json.loads(failure_before)['phase'], 'compare')
+        calls_before = list(FakeIO.calls)
+        with self.assertRaises(RuntimeError):
+            recovery.recover({'hostname': socket.gethostname()}, **args)
+        self.assertEqual(FakeIO.calls, calls_before)
+        self.assertEqual(failure.read_bytes(), failure_before)
+        with control.Journal(root) as journal:
+            self.assertEqual(journal.db.execute('SELECT count(*) FROM operations').fetchone()[0], count)
+            self.assertEqual(journal.db.execute(
+                'SELECT phase,status,evidence FROM steps WHERE operation=? ORDER BY rowid',
+                (operation,)).fetchall(), steps)
 
     def test_protected_baseline_auth_refuses_before_new_operation(self):
         temporary, root, _, args = self.fixture(); self.addCleanup(temporary.cleanup)

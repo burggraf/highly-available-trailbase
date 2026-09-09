@@ -325,6 +325,8 @@ def _fault_outcomes(value, events):
                 for event in events if event['event'] == 'submitted'}
     if len(flattened) != len(set(flattened)) or set(flattened) != expected:
         raise ValueError('fault outcome classifications overlap or omit operations')
+    if value['lost']:
+        raise RuntimeError('acknowledged writes are missing from the recovery image')
     return value
 
 
