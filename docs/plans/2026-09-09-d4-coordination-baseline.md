@@ -1,6 +1,6 @@
 # D4 native coordination checkpoint — partial, not qualified
 
-Date: 2026-09-09. Local run `coord-f340a3cd307b`, started 14:08:36 UTC. No VPS, HAT runtime, ingress, credentials or provider actions were changed. All lab server containers and the diagnostic client container are stopped; data/logs are retained.
+Initial local checkpoint, 2026-09-09: run `coord-f340a3cd307b`, started 14:08:36 UTC. That initial run changed no VPS, HAT runtime, ingress, credentials or provider actions. Later, separately authorized temporary-VM work is recorded below. All lab server containers and the diagnostic client container are stopped; data/logs are retained.
 
 ## Verified
 
@@ -94,9 +94,65 @@ A separate parent-owned SSH inventory changed no services. All three VPSs report
 
 Official etcd hardware guidance describes typical 2–4-core clusters, typically 8 GB RAM, and dedicated-machine examples; it explicitly calls these starting guidelines, not hard minimums. Sharing resources can cause contention and instability. Therefore neither the successful tiny Docker fixtures nor this idle snapshot authorizes co-location on the current VPSs. Resource/topology approval and representative validation remain required before installation. Source: https://etcd.io/docs/v3.7/op-guide/hardware/ . Private snapshot: `~/.config/hat/d4-qualification/vps-resource-inventory.json`.
 
+## Separate authorization: temporary cloud qualification
+
+The owner subsequently authorized **exactly three temporary coordinator-only VMs**, each with 8 GB RAM and four **shared** vCPUs, capped at **$0.25/hour additional compute total**, and explicitly instructed removal when finished. This does not authorize permanent coordinator infrastructure or changes to existing A/B/C services.
+
+Run `cloud-37a30d02c9a7` verified regional availability and the provider's listed rate of **$0.072/hour each, $0.216/hour total**, before creating three uniquely tagged VMs. The rate is not an attested final invoice; taxes and regional exceptions remain distinct. Source: https://api.linode.com/v4/linode/types/g6-standard-4 . The provider confirmed cloud-init support for the selected image and region.
+
+The new VMs passed pre-generated SSH host-key pinning, exact private run-marker and boot checks, password-login refusal configuration, and native Linux/amd64 / four-CPU inventory. No trust-on-first-use downgrade was used. The official etcd 3.7.1 Linux/amd64 archive matched published SHA-256 `e8cd3fa8064c98137c5dbd78b76f969417ace84efb83c481041d7a52ffdd8fb9`. Only these new boot-bound VMs received the qualification service; A/B/C remain unchanged.
+
+**All ten native cloud checks passed; all three temporary VMs were deleted.** The new service ran under an unprivileged identity, with separate client identities and TLS client/peer listeners verified on private addresses only. The cloud checks covered bootstrap, scoped permissions/TLS refusals, observer/no-role denial, root audit, keepalive cancellation/expiry, watch compaction/revalidation, contention/expiry, majority progress and quorum-loss deadlines.
+
+- Three keepalive responses kept an owner alive beyond its original three-second TTL. Cancelling keepalive then allowed expiry; the unleased pending intent survived.
+- A watch starting behind compaction received native compaction cancellation. A fresh linearizable snapshot, a new watch starting at the next revision, and an independent fresh read agreed. This is **not** network-disconnect/reconnect or host-pause qualification.
+- With one member stopped, the remaining two committed/read successfully. With two stopped, a 500 ms read context returned after **500.617193 ms**, and a transaction context after **501.108443 ms**. The transaction outcome remained unconfirmed, not cancelled.
+- A separate 100-sample, 4 KiB write/flush/fsync probe on each data filesystem measured median/P95 milliseconds: **0.578/0.835**, **0.444/0.647**, **0.526/0.786**. These are a tiny standalone filesystem probe, not etcd WAL histogram measurements or a sustained production workload. Service cgroup memory snapshots were approximately 14–16 MiB with zero reported restarts; these are not peak-memory or co-location qualification.
+
+Logs and each stopped member's data/config archive were retained before deletion, with no collection errors. Deletion guards reject preexisting IDs, changed identity and reused creation identity; their focused runnable check passed. A separate read-only audit confirmed all three IDs returned 404, no run-tagged instances remained, original instance identity/configuration-shape fields were unchanged, and both existing demo status URLs returned HTTP 200. Archive hashes and expected database/unit entries were independently checked. An uncertain create would not be replayed or silently counted as cleaned up.
+
+These were three separate shared-CPU VMs, not verified independent physical fault domains. The run qualifies the stated component checks, not sustained sizing, hardware power-loss persistence, HAT integration, permanent infrastructure or automatic recovery.
+
+Private credentials, bootstrap material, request evidence, manifests, binaries and lifecycle scripts remain under `~/.config/hat/d4-qualification/cloud-37a30d02c9a7/`.
+
+## Independent cloud review and next local boundary
+
+Review `15182099-39d9-44c4-829f-867a32b53f19` returned **OK with notes** on a parent-sanitized static packet. The reviewer did not access private/live resources or independently reproduce the native results. Two P2 failure-path findings were verified against the executed scripts:
+
+- Collection errors were recorded but would not prevent VM deletion, potentially discarding remaining evidence.
+- An SSH timeout recorded uncertainty without separately stopping/verifying the named remote test unit before collection.
+
+Neither path occurred in the completed passing run. The cloud scripts remain historical, **not approved for reuse**; no extra paid run is authorized. Future lifecycle checks must preserve partial timeout output, stop and verify exact named clients, and gate resource removal on verified evidence collection. Any future paid-resource retention/deletion conflict requires an explicit recorded decision, not silent continued spending or evidence destruction.
+
+The next approved scope remains local-only: suspend a lease/keepalive client past expiry, verify durable-intent survival and stale-write refusal, then separately disconnect/reconnect a watch client and require fresh authoritative revalidation. Preserve distinct process/resource identities, failure evidence and terminal-state checks. Neither check authorizes HAT rollout.
+
+## Local suspended-client follow-up — passed
+
+Run `pause-b1e907e8c0d2` reused the exact stopped local TLS member identities without replaying bootstrap or the successful protected fixture write. Initial/final root audits passed. A real lease/keepalive client's recorded PID was observed in **T (stopped)** state after SIGSTOP. An independent client then observed owner expiry, retained the durable pending intent and acquired a distinct lease. After SIGCONT, the old client's revision-guarded transaction was refused; the replacement leased owner remained present and the forbidden effect was absent.
+
+This is actual client-process suspension, **not whole-host pause, asymmetric partition, HAT admission, or cancellation of an already-issued external effect**. All four clients and three servers were independently inspected stopped with PID 0; no cleanup errors occurred. Containers, data and command/termination evidence were retained rather than deleted. Binary SHA-256: `29581383c55d8c384ee65ff11716a3dd4e2fb6cef4d30e759793d768892ec142`. Private evidence: `~/.config/hat/d4-qualification/pause-b1e907e8c0d2/`.
+
+## Local watch network recovery — passed
+
+Run `watch-19aae845210b` detached only the watch client's Docker network and independently verified its network-membership map was empty. A fresh read with a 500 ms context refused after **502.798063 ms**. The client cancelled and drained its old local watch channel; stale hints, if any, were not used. The recorded discarded-hint count was **zero**, so this run does not prove that a stale event actually arrived. While it remained detached, an independent client successfully updated the isolated key.
+
+After network reattachment, a fresh linearizable snapshot matched that independent writer's exact revision and the original cluster ID. A newly established watch started after the snapshot revision; a subsequent independent write produced the expected event, which a separate fresh read confirmed. Initial/final protected-fixture root audits passed without bootstrap replay.
+
+All five clients and three servers were inspected stopped with PID 0, with no cleanup errors; containers, data and command evidence remain retained. Binary SHA-256: `b91b4e4d43290db3b4fb160900afa16527a7cdb3bfe4890f76fb2884dc3e862c`. Private evidence: `~/.config/hat/d4-qualification/watch-19aae845210b/`.
+
+This qualifies explicit discard/snapshot/new-watch recovery after a real local network detach/reattach. It does **not** prove automatic SDK watch reconnection, a new underlying TCP connection, remote cancellation, asymmetric peer partition, or HAT action admission.
+
+## Independent local follow-up review
+
+Review `5ad53022-e29b-43ee-b35f-fc25880009ce` returned **OK with notes**, based on a parent-sanitized static packet rather than independent reproduction. No blocker affected the observed pause or watch-recovery successes. The report's watch wording was narrowed because no discarded event was observed; the original executable/log wording remains historical evidence, not a stronger claim.
+
+The reviewer also recommended clearer termination-reason reporting. Parent inspection of the retained raw Docker evidence confirmed that full terminal states already contain `ExitCode`, `OOMKilled`, `Error`, `FinishedAt` and `Pid`: all four pause clients and all five watch clients exited zero, with PID 0, no OOM/error, and no forced-cleanup KILL commands. The separate private `local-terminal-state-audit.json` records these findings. This establishes the observed successful termination, not coverage of every hypothetical failure path.
+
+The proposed next synthetic admission check must first be grounded in actual HAT call boundaries. A test-only invented admission function would not qualify existing HAT, and native etcd results do not supply its missing distributed authority integration. No application/runtime changes or extra infrastructure are authorized by this review.
+
 ## Pending gates
 
-Lease renewal and paused-holder behavior; stale responses and watch reconnect/compaction; certificate lifecycle; representative VPS resource qualification; actual provider delayed-effect guarantees; acknowledged-write preservation; redundant ingress and controller-independent prerequisites. Basic contention, expiry, one-member/quorum-loss and tested TLS/permission cases now have native evidence, but no HAT adapter or safe automatic activation is qualified.
+Whole-host pause and asymmetric peer partitions; HAT stale-response/action admission; certificate lifecycle; sustained representative resource/fault-domain qualification; actual provider delayed-effect guarantees; acknowledged-write preservation; redundant ingress and controller-independent prerequisites. Basic keepalive cancellation/expiry and watch compaction/revalidation now have native cloud evidence. Basic contention, expiry, one-member/quorum-loss and tested TLS/permission cases now have native evidence, but no HAT adapter or safe automatic activation is qualified.
 
 ## Evidence and source
 
