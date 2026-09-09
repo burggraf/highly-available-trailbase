@@ -18,6 +18,14 @@ The single authorized cloud qualification used exactly three temporary coordinat
 
 Last recorded live acceptance remains A writer, B same-epoch three-follower standby and C controller/ingress, with the D3 operation complete. This is not a fresh health observation. C remains a single point of failure; the local observer changed none of those services.
 
+### Source-audit warning: manual recovery is not a zero-ACK-loss policy gate
+
+Read-only review `20e2f324-718e-4a92-a9a8-71722100c5e8` identified a specific existing manual-path gap, independently confirmed by tracing the source at `0ef6db3`: `hat/recovery.py::_fault_outcomes()` validates classification shape and exhaustive membership but permits a nonempty `lost` list. `recover()`'s comparison phase accepts that report and proceeds toward activation without requiring `lost` to be empty. `tests/restore_baseline.py` separately marks the supplied protected ledger's auth/records as passing before attaching fault classification; that PASS is not proof every fault acknowledgement survived.
+
+**Do not treat the current manual recovery command as an enforced strict acknowledged-write-preservation gate.** The recorded D3 run had zero lost acknowledgements; this source finding neither changes that evidence nor proves an actual live loss. Rejecting a nonempty `lost` classification would address this specific gap, not global ACK coverage, authentication mutation completeness or distributed authority. Manual behavior has not been changed or deployed: such a correction is outside the owner's observation-only implementation authorization and requires explicit approval.
+
+The same audit confirms the external ACK ledger is not on every client's write path and is fsynced after receiving a response (`hat/client.py`), leaving an incomplete-ledger crash window. Safe refusal on that uncertainty is not completed recovery. Provider and topology contracts remain unresolved as listed below; further component passes cannot close these source-policy gaps.
+
 ### Remaining D4 gates
 
 1. **Acknowledged-write preservation:** establish coverage of every admitted data/auth mutation and independently prove a recoverable image contains all acknowledgements. Asynchronous replication or an incomplete ledger is insufficient. Unknown preservation requires operator review, never promotion.

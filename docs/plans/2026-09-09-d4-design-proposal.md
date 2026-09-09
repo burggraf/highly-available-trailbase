@@ -1,6 +1,6 @@
 # D4 — quorum-controlled recovery: design proposal
 
-Status: **staged approach approved; isolated qualification starting**. Owner approved strict fail-closed loss policy and then the recommended safety-first path on 2026-09-09. The first executable slice is `2026-09-09-d4-coordination-plan.md`. Numeric timings, live rollout and automatic mutating capabilities remain gated. No deployment changes or live fault drills are authorized by this document.
+Historical proposal status: **staged approach approved; isolated qualification starting at proposal time**. Subsequent bounded qualification and the merged offline refusal diagnostic are recorded in [current delivery status](../status.md); action-capable D4 remains gated. Owner approved strict fail-closed loss policy and then the recommended safety-first path on 2026-09-09. The first executable slice is `2026-09-09-d4-coordination-plan.md`. Numeric timings, live rollout and automatic mutating capabilities remain gated. No deployment changes or live fault drills are authorized by this document.
 
 Baseline: `a46bd289ce3465e890ce3b90101ec9febbff1337`, clean checkout when planning began. A is the last verified healthy writer; B the healthy same-epoch standby. Preserve the existing private URL and all D0–D3 evidence. This proposal does not qualify HA or supersede the delivery reset's review limits.
 
