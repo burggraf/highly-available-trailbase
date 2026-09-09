@@ -33,7 +33,7 @@ Review `e3b3f6ac-e24f-43d9-aff6-bed29cb96650` permits isolated official-client q
 
 Passing these checks qualifies neither `Journal` nor fencing, promotion, zero RPO, HA ingress or the 120-second objective. Subsequent gates remain mandatory.
 
-**Focused follow-up result:** the official-client explicit-deadline and committed-response-withheld checks passed in a fresh single-member lab, with an expected failing negative control. Exact observations and limitations are in `2026-09-09-d4-coordination-baseline.md`. This completes only these focused client checks; transaction contention, lease lifecycle, quorum loss and TLS qualification remain pending.
+**Focused follow-up result:** the official-client explicit-deadline and committed-response-withheld checks passed in a fresh single-member lab, with an expected failing negative control. Exact observations and limitations are in `2026-09-09-d4-coordination-baseline.md`. Subsequent isolated contention, basic lease-expiry, quorum-loss, client/peer TLS and scoped-permission checks also passed, with a preserved SDK permission-error classification correction. Remaining gates include renewal/paused-holder/watch behavior, certificate lifecycle, representative resources and all HAT-specific authority/fencing/data/ingress obligations. See the baseline report; these are not automatic-HA acceptance results.
 
 ## Task 1: Record environment and pin the native candidate
 

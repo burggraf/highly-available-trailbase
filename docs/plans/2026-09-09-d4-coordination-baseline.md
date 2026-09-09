@@ -61,9 +61,42 @@ Conclusion: explicit contexts bound the tested client wait, **not server-side co
 
 Private follow-up evidence: `~/.config/hat/d4-qualification/go-868abb5b7479/`, including `client_test.go`, locked `go.mod`/`go.sum`, build output, `resource-identities.json`, command evidence and `result.json`. No Go module or dependency was added to HAT.
 
+## Follow-up: contention, expiry and quorum loss — passed
+
+Run `quorum-3fa2769a9941` used three fresh plaintext-isolated members and the official Go client. Exactly one of two concurrent conditional transactions won; the stored owner matched that winner. After a conditional generation update, the old revision was refused and its forbidden key was absent. A lease-attached owner expired, an expired-owner transaction was refused, and an unleased pending-intent key survived.
+
+Stopping one recorded lab member left the two survivors able to commit and read a new transaction. Stopping a second left the remaining member unable to complete a linearizable read or transaction: explicit 500 ms contexts returned after **502.109313 ms** and **503.674142 ms**, respectively. The write remains unconfirmed; this is not a cancellation assertion. These were graceful container member stops, not host pauses or network-partition qualification.
+
+All six owned server/client containers were stopped, with no OOM kills; data and command evidence remain private. Test-binary SHA-256: `5100a0e04fce99ef38c4b01c44de9aa21c923fd42184f21b6cd75152c05507d6`. No HAT authority implementation was involved.
+
+## Follow-up: TLS and namespace permissions — passed with retained harness correction
+
+Run `tls-e0998d74e841` established a fresh three-member TLS cluster using separate server, client and peer lab CAs. Signing keys were not mounted into any server or test client. Servers received only their own leaf keys and public trust anchors; each test client received only its selected identity. No host ports were published.
+
+Certificate-CN root authentication bootstrapped passwordless lab users and enabled authorization. A scoped runtime identity could write/read only `/hat-lab/runtime/`; an observer could read but not write it; a trusted certificate for a user without a role did not confer access.
+
+The first runtime check correctly received permission denial, but the harness expected a gRPC status error rather than the SDK's native `rpctypes.ErrPermissionDenied`. The original failure, binary and source were retained. A focused classification check failed, then passed after recognizing the native error with `errors.Is` (without string matching or accepting timeouts). The exact retained lab member identities were restarted for remaining assertions; authorization bootstrap and the successful fixture write were **not replayed**.
+
+The follow-up passed initial/final independent root audits and verified:
+
+- Out-of-namespace reads, privilege escalation and an atomic transaction containing an unauthorized write were denied. Neither the permitted nor forbidden part of that denied transaction appeared.
+- Wrong server DNS name and wrong server CA were rejected by certificate verification.
+- Missing client certificate was rejected with `tls: certificate required`.
+- An explicitly presented untrusted client certificate was rejected with `tls: unknown certificate authority`.
+- A client-CA identity explicitly presented to the peer listener was rejected; client credentials did not become peer credentials.
+- Valid TLS/scoped access remained usable after the negative cases, and protected values were unchanged.
+
+All owned servers and clients were stopped without OOM kills. Follow-up binary SHA-256: `92fad14fdf82831a35ca4fc287d8b1904746e70c4f3c6b4372a4556288797b72`. Evidence, private short-lived lab keys, failed first attempt and separate follow-up remain under `~/.config/hat/d4-qualification/tls-e0998d74e841/`. This is not a clean one-shot run and does not qualify certificate rotation/expiry, every administrative API, revocation operations, or HAT authorization.
+
+## Read-only deployment resource snapshot
+
+A separate parent-owned SSH inventory changed no services. All three VPSs report **one CPU and 984,564 KiB total memory**. Available memory at the snapshot: A **289,152 KiB**, B **652,624 KiB**, C **633,868 KiB**. This is not a load or fsync qualification and leaves little headroom on the writer for another stateful service.
+
+Official etcd hardware guidance describes typical 2–4-core clusters, typically 8 GB RAM, and dedicated-machine examples; it explicitly calls these starting guidelines, not hard minimums. Sharing resources can cause contention and instability. Therefore neither the successful tiny Docker fixtures nor this idle snapshot authorizes co-location on the current VPSs. Resource/topology approval and representative validation remain required before installation. Source: https://etcd.io/docs/v3.7/op-guide/hardware/ . Private snapshot: `~/.config/hat/d4-qualification/vps-resource-inventory.json`.
+
 ## Pending gates
 
-Exclusive transaction ownership under contention; lease renewal/expiry and durable-intent separation; one-member/quorum loss; authenticated client/peer TLS and permissions; stale responses and watch reconnect; VPS resource qualification; actual provider delayed-effect guarantees; acknowledged-write preservation; redundant ingress. No safe automatic activation or automatic HA claim follows from this checkpoint.
+Lease renewal and paused-holder behavior; stale responses and watch reconnect/compaction; certificate lifecycle; representative VPS resource qualification; actual provider delayed-effect guarantees; acknowledged-write preservation; redundant ingress and controller-independent prerequisites. Basic contention, expiry, one-member/quorum-loss and tested TLS/permission cases now have native evidence, but no HAT adapter or safe automatic activation is qualified.
 
 ## Evidence and source
 
