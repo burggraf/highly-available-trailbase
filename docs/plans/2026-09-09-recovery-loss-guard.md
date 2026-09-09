@@ -32,4 +32,3 @@ Retained predecessor SHA-256: `4a3601338aaa277705fd941e1e1f4e5114cc64b28475ef15d
 Private archive SHA-256: `2db9e05c5132e834b1f37fec4c172005bcb15e66f1f8dc59396b40598ad18be1`.
 
 Evidence: `~/.config/hat/d1-deployment/loss-guard-ab253c18980a/`, including original/repeated preflights, negative controls, installation receipts, `final-audit.json` and `controller-evidence.tar.gz`. C retains `/var/lib/hat-control/loss-guard-ab253c18980a/`. These are one-shot historical scripts, not approved retry/rollback tools. Timeout would have required separate inspection, not replay; the actual installation and audit completed without a timeout.
-
