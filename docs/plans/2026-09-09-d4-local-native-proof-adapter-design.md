@@ -1,6 +1,6 @@
 # D4 local native proof-adapter design — approval required
 
-Status: **design only**. The owner-approved protocol kernel at `experiments/d4/admission.py` intentionally has fixture callbacks and no I/O. Its stop boundary forbids a native proof producer without a separately reviewed design and explicit approval. This document does not authorize a listener, deployment or live write interception.
+Status: **fresh local harness approved by the owner; implementation remains local-only**. The owner-approved protocol kernel at `experiments/d4/admission.py` intentionally has fixture callbacks and no I/O. Its stop boundary forbids a native proof producer without a separately reviewed design and explicit approval. This document does not authorize a listener, deployment or live write interception.
 
 ## Options
 
@@ -15,6 +15,8 @@ The adapter is an experiment, not a reusable backend abstraction. It accepts onl
 `forward(request)` performs exactly one loopback request and captures status/body privately. It must classify every returned outcome as `completed` or `possible`; it cannot claim non-mutation. Transport error after submission raises and leaves `forward_uncertain`. It never retries.
 
 `prove(requirement)` is closure-bound to that exact forwarded request/outcome. It invokes native Litestream `sync -wait -json` once for the kernel-selected database, requires exact path and positive local/replica TXID equality, then restores that exact TXID into a new immutable evidence area. Sync timeout/error is proof uncertainty, even if later inspection finds an upload. No automatic retry.
+
+Implementation is staged. The first executable slice supports only main/aux create and refuses auth paths before kernel forwarding; no auth path may inherit the kernel's broader classification merely because it is listed there. Later auth integration requires its native-oracle proof and separate review.
 
 Membership checks are operation-specific and occur only on the restored copy:
 
