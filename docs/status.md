@@ -4,7 +4,37 @@ D0 checkpoint: 2026-09-08 UTC. Delivery direction approved by owner; work stays 
 
 | Delivered | Currently building | Blocker | Next demonstration |
 | --- | --- | --- | --- |
-| D0/D1 delivered; D2 A-to-B operation completed with explicit recovery checkpoints | Owner-approved D2 publication; D3 preparation next | Clean one-shot handover not demonstrated; redundancy/rejoin and D3 remain unqualified | D3 only after exact disruptive-test approval |
+| D0–D3 delivered with preserved explicit reconciliations | A healthy writer; B healthy same-epoch standby | D3 required a guarded boot-evidence reconciliation, not a second power action | Owner review before any D4/automatic-control work |
+
+## D3 live recovery checkpoint — 2026-09-09
+
+The owner renewed the work window and authorized necessary operations on all three temporary VPSs. **A serves the unchanged URL as the healthy writer. B has rejoined as a healthy same-epoch standby with exactly three native followers and no TrailBase.** The producer and observer are stopped. Manual writer/standby redundancy is restored; no automatic failover is claimed.
+
+The installed candidate passed local and isolated Ubuntu validation, forced-command cold inspection and wrong-boot refusal, source boot/provider binding, and a real independently restored protected baseline (14 records, 6 historical auth cases). An installed oracle ancestry check initially refused its oracle-owned parent directory; original metadata was retained and the parent/support tree hardened to root ownership without content changes before the drill.
+
+One authorized provider-mediated B shutdown and `hat recover A` completed through durable verification. Selected **old B epoch** cut: **25/5/22** (main/session/aux). Independent candidate/oracle signatures and protected records/auth passed. **New A epoch** baseline: **1/1/1**; independently restored new writes: **2/3/2**. These TXIDs are not compared across epochs.
+
+Fault ledger: **138 submissions, 51 acknowledgements, 87 uncertain outcomes, 0 rejections**. The selected image contains all **51 acknowledged writes**, with **0 acknowledged writes missing**. All **87 unacknowledged absent submissions remain ambiguous**, not proven loss. The observer recorded one uncensored availability gap bracketed by successful observations approximately **68.35 seconds** apart (0.5-second sampling, 1-second request timeout); this is observation-bounded, not a universal RTO. Provider shutdown may flush gracefully and is not abrupt power-loss qualification.
+
+The same operation's `rejoin_boot` then failed: the controller required a *stale* activation authority, whereas a normal reboot correctly removed `/run` authority. Fresh pinned inspection exactly matches the original cold response and confirms safe B quarantine; no node rejoin mutation was executed. A's verified route remains available. The absent/stale guard correction has regression coverage. The narrowly scoped `reconcile-rejoin-boot` completed after regression tests, independent review corrections and a real-evidence rehearsal on a copied journal that stopped before node mutation. It retained the original failure and boot receipt, freshly verified A/B, acknowledged only the already-completed boot, and executed B's rejoin once without another power action or epoch. The same operation is complete and maintenance cleared. Original B data, metadata and raw config/replica hashes were independently checked against retained files; exactly three native follower argv and no writer process were verified on B.
+
+Post-rejoin fresh main/aux writes and historical auth were independently restored at **new A epoch 5/6/5**; B reached the same cut. The restored image still contains all 51 acknowledged fault writes and the same 87 ambiguous submissions. Final acceptance initially stopped after the successful restore because its collector incorrectly passed the observer name to the deliberately client-only death validator. A separate read-only collector confirmed the observer's loaded stopped unit and empty/absent cgroup, without replaying writes or transitions. This diagnostic failure is retained.
+
+Private evidence: `d3-recovery-accounting.json`, `d3-rejoin-failure-inspection.json`, `d3-failed-boot-bound-evidence.json` under `~/.config/hat/d1-deployment/`. C retains operation `59f3e121806a43dfb2326fb0d2a62eba`, original phase intents, stdout/exit receipts, and client/observer ledgers. Final independent proof is in `d3-final-acceptance.json` and `d3-final-b-native-proof.json`. This is **completed operator-controlled D3 with explicit reconciliation, not a clean one-shot or automatic failover demonstration**.
+
+### D3 publication checks
+
+Fresh publication verification: **97 current tests passed**, **39 frozen M0 passed**, **11 frozen S3 passed**. The frozen M1 suite ran 181 tests with **one failure** in `test_cross_host_early_failure_records_each_node_without_unbound_state`: the cached fake secret `x` redacted a randomly generated temporary pathname before exact-path comparison. This is the previously observed legacy path-redaction flake; experiments remain unchanged. Earlier frozen validation passed 231 tests, but the initial full publication run was **not all green** (327 passing, 1 failing). A separate deterministic diagnosis reproduced the failure with a pathname containing `x` and passed with an otherwise identical safe pathname. One subsequent unmodified full M1 confirmation passed **181/181**, giving 328 passing current/frozen checks across the final suite results; the intermittent defect remains, and this is not a clean one-shot test run. The frozen current candidate also passed 97 tests on isolated Ubuntu before installation. Preserve the failed publication log at `~/.config/hat/d1-deployment/d3-publication-1788961074526636000/2.stderr`; the subsequent confirmation is separately retained at `d3-frozen-confirmation-1788961367868990000/stderr`, not substituted for the failure.
+
+## D3 review-limit checkpoint — 2026-09-09 02:03 UTC (historical)
+
+Implementation is paused for owner review at the planned four-hour limit. D2 remains the deployed version; no D3 power action or integrated recovery attempt occurred. D3 changes are uncommitted on `main`, preserving the unrelated documentation commit `2075ee3` above published D2 `e7902f3`.
+
+The bounded external client passed independent review and isolated Ubuntu HTTP/filesystem/SIGTERM tests. Shared controller I/O and the corrected epoch proof passed review: the candidate uses the node's actual `cut` result, independent comparison still requires matching signatures and protected auth, and fresh-epoch TXIDs are never ordered against old-epoch TXIDs.
+
+A local `hat recover A` driver now exists through the verified A-serving pause, but is **not deployed or accepted as completed D3**. The implementation child reports 309 passing local tests (78 current, 231 frozen); mocked I/O is not installed recovery proof. Latest review leaves source-boot evidence binding and strict oracle artifact ownership/mode checks open. Provider identity/offline receipts do not themselves attest a guest boot ID; any correction must use actual captured node evidence rather than inventing provider fields. `hat rejoin B <operation>` remains unimplemented. Installed entrypoint/action-sequence validation and the full recovery/rejoin demonstration are outstanding.
+
+The failed workflow parse (zero children, no edits) and validated same-protocol retry are retained. Private checkpoint `d3-before-recover-retry-1788917328990896000` preserves the pre-driver tree; review artifacts are under run `1de44e68-03d1-4485-a594-de293d5ddc32`. No previous failure, data, credential, epoch, or journal was removed. Further implementation requires an explicitly renewed bounded work window; no D3 success, redundancy, RPO/RTO, or automatic failover claim is made.
 
 ## D2 current: A-to-B operation completed with authorized reconciliation
 
@@ -109,6 +139,28 @@ Both nodes now run the consolidated correction. B's old followed directory was p
 - No active managed process/subagent runs at initial inspection; local process-name inspection found no TrailBase/Litestream or old Python/SSH runner. New D0 collectors and tests have finished.
 - `experiments/m1` is frozen qualification evidence. No old workflow, `cross-host`, provisioning, storage mutation, fencing, or qualification retry was launched.
 
+## D3 preparation — blocked local checkpoint (2026-09-08)
+
+D2 is published as `e7902f310d21ecc7d43f4d33a84dc437cd1e1d2e`. The owner approved the next D3 provider-mediated shutdown/recovery/rejoin steps. **No D3 power action or integrated recovery attempt has occurred.** The new controller/node code remains local and uncommitted; installed live controller/node services remain at D2. C received only the isolated recovery-contract helper/tests, which are not wired into live control.
+
+Three read-only native Litestream JSON restore plans passed strict validation against the completed D2 write proof. A failed SSH upload left none of its three files installed; a read-only check established that before a bounded successful retry. The initial HTTP diagnostic used a disallowed path (404); the configured B status path subsequently confirmed a healthy writer. Private outputs are retained.
+
+The journal/routing foundation passed independent scoped review after three guard fixes. The cold-node/rejoin batch remains **BLOCKED** after repeated local corrective reviews. Remaining issues include exact follower config/output/DB identity checks, consistent healthy/refusal state, and private recovery-record validation at promotion preparation. Parent inspection additionally found that the readiness helper omits `required database positions unconfirmed`, a real startup refusal emitted by `node.public_status()`.
+
+Parent independently ran 54 current tests before the latest readiness changes; the latest worker reports 56 passing current tests, but review still blocks deployment. Those counts exclude the frozen experiment suites. Real-file parent regressions exposed and corrected source/new-epoch conflation, the existing authority-file mode mismatch, and an invalid directory link-count assumption. The unit sequence simulates Litestream; it is not installed recovery proof.
+
+The local correction loop was paused for owner review rather than treating mocked green tests as permission to fault B. The owner then approved the bounded native component pass below. See `docs/plans/2026-09-08-d3-recovery.md`. No D3 completion, redundancy, loss, downtime, or production-readiness claim is made.
+
+### Owner-approved native component pass — complete
+
+An isolated, unprivileged Ubuntu component on C ran the pinned Litestream binary and D2 node logic with filesystem/config paths substituted. It captured **30 actual status samples**, reached healthy standby with **three exact follower argument vectors**, and stopped cleanly. B was independently confirmed healthy through the unchanged URL. Two preceding fixture-setup failures (umask reducing directory traversal permissions, then a missing logs directory) and their stopped/failed unit evidence remain private; neither reached follower validation.
+
+The capture exposed the real `required database positions unconfirmed` startup refusal. New sanitized fixtures now exercise that producer contract rather than invented readiness states. Local corrections require exact executable/config/output/source argv and one follower per database; healthy status requires no refusals and explicit absence of TrailBase. Recovery preparation now uses the existing private-record validator.
+
+**60 current tests passed**, `git diff --check` passed, and the candidate validator separately replayed all 30 raw samples and three captured follower bindings on Ubuntu, rejecting wrong-config variants. Independent review returned **OK for this narrow component-consumer scope**. Raw evidence is under the protected `d3-native-*` component/deployment directories; normalized fixtures and provenance are in `tests/fixtures/`.
+
+Live controller/node entrypoints were not replaced; only an isolated candidate was staged for replay. Full operational controller/client integration, installed dispatcher/action sequencing, and the powered-off-writer recovery/rejoin demonstration remain unfinished. This pass does not authorize interpreting local green tests as completed D3.
+
 ## Historical D0 node safety (before D1 deployment)
 
 Private read-only snapshot: `~/.config/hat/d0-inventory/20260908T155653Z/`. Inventory ordering maps A/B/C to the three existing private inventory entries. All three SSH host keys matched inventory pins and all hostnames matched. Collection ran as root, exited 0 on every node, and reported no filesystem scan errors.
@@ -136,4 +188,4 @@ After the form timed out, the owner explicitly authorized necessary work on all 
 
 Authorized D1 deployment now uses the existing A/B/C, only needed packages/services, protected persistent demo secrets and C's loopback proxy through `http://127.0.0.1:18080`. Raw app/admin access stays private; no new public listener or DNS was introduced. C is a prototype single point of failure. Writer startup remains operator-controlled, never autonomous on boot.
 
-Historical material remains protected and untouched. Any needed change to that policy requires owner approval. D3's exact disruptive-test approval is separate and has not been requested or granted. No automatic failover work starts before D3.
+Historical material remains protected and untouched. Any needed change to that policy requires owner approval. The owner subsequently approved D3 provider-mediated B shutdown, recovery on A, and quarantined B rejoin; execution remains gated on safe implementation and validation. No automatic failover work starts before D3.

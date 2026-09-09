@@ -142,6 +142,8 @@ Timeboxes below are **active-work review limits**, not guarantees of completion.
 
 ### D3 — Recover from a powered-off writer and rejoin it safely
 
+**Delivered 2026-09-09 with explicit reconciliation:** A is again the healthy writer at the unchanged URL; B is a healthy same-epoch standby. Protected data/auth, acknowledged traffic accounting, independently restored post-rejoin writes, native followers and retained originals passed. The first boot validation rejected normal absent activation authority; a narrowly guarded reconciliation completed the same operation without another power-on. See [D3 execution record](2026-09-08-d3-recovery.md) and [current status](../status.md). This does not authorize automatic-control work or claim a clean one-shot/abrupt-power-loss demonstration.
+
 **Review limit:** four hours after D2; actual disruptive step requires explicit approval for the selected deployment.
 
 - While the demo client records submitted/acknowledged operations externally, power off the active node through the private fence integration.

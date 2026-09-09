@@ -1,8 +1,8 @@
 # Private manual demo runbook
 
-**Current state: B serves the unchanged private URL as the healthy sole writer in a fresh epoch; A remains fenced offline. The original D2 operation is complete after explicitly authorized recovery checkpoints, and fresh writes were independently restored. No standby/redundancy has yet been restored. See [status](status.md) for the failed attempts, completed evidence and limits. Do not reactivate A or start D3 without its separate approval.**
+**Current state: A serves the unchanged private URL as the healthy writer; B is a healthy same-epoch standby with three native followers and no TrailBase. D3 powered-off-writer recovery and cold rejoin completed with explicit boot-evidence reconciliation. Fresh post-rejoin writes and historical auth were independently restored. See [status](status.md) for retained failures, uncertainty accounting and limits. No D4 or automatic-control work is authorized by this runbook.**
 
-This is a persistent disposable demo, **not HA**. D1 and the reconciled D2 planned handover have real HTTP/auth and independent restore proof. A clean one-shot handover has not been demonstrated. Unchanged legacy tests have intermittent failures, retained below. No unplanned failover, rejoin, automatic recovery or production readiness is claimed.
+This is a persistent disposable **manual recovery demo, not automatic HA**. D1, reconciled D2 and reconciled D3 have real HTTP/auth and independent restore proof. A clean one-shot handover/recovery has not been demonstrated. Unchanged legacy tests have historical intermittent failures, retained below. Provider shutdown may flush gracefully; abrupt physical power loss and production readiness are not qualified.
 
 ## Access the running demo
 
@@ -27,10 +27,10 @@ On A and B:
 - `/etc/hat-demo/node.json`: root-owned fixed role, epoch, hostname, binary and application-support fingerprints; bootstrap is now false.
 - `/etc/hat-demo/litestream.yml`: three independent DB prefixes in a new demo epoch, separate from qualification history; short socket `/run/hat-demo/ls.sock`.
 - `/etc/hat-demo/backup.env`: root-readable persistent backup credentials, loaded by systemd, not command arguments. The original backup credential's access scope is unchanged; no separate read-only standby key was provisioned. It is transport access, not election authority.
-- `/var/lib/hat-demo/depot`: now the live writer on B; A is fenced. Before D2, A wrote and B followed. Both have the same new demo signing/config identity. Historical auth material was not reused.
+- `/var/lib/hat-demo/depot`: live writer on A and clean same-epoch follower data on B. Original data and metadata are retained in operation-tagged sibling directories. Signing/config identity and protected historical auth were preserved through recovery.
 - `/var/lib/hat-demo/logs`: protected process logs, preserved across restarts. Retention is disabled in this short-lived demo; disk growth needs operator attention. This is not a production retention policy.
 
-Read status over existing pinned SSH access on B; A is intentionally offline:
+Read status over existing pinned SSH access on A or B:
 
 ```sh
 hat status
@@ -43,7 +43,7 @@ Node status is a transport observation, not a freshness/RPO guarantee. Compare A
 
 Startup checks require real nonempty regular databases, valid SQLite headers/structure and the required fixture schema. Bootstrap only accepts an actually empty directory. Runtime checks refuse missing/replaced database objects. The support manifest must contain the fixed config, migrations and signing-key anchors; empty, escaping or symlinked manifests are rejected.
 
-Do not restart the standby against existing files: it intentionally refuses, pending a later explicit clean rejoin implementation. Do not clear directories or delete a failed follower's files to make startup pass. Do not run `activate` again or remove activation records as a retry mechanism.
+Do not restart the standby against existing files: it intentionally refuses. The implemented cold rejoin is restricted to the exact verified D3 operation boundary; it is not a generic restart/resume mechanism. Do not clear directories or delete a failed follower's files to make startup pass. Do not run `activate` again or remove activation records as a retry mechanism.
 
 On C, `hat-ingress.service` and `hat-tunnel-{a,b}.service` are enabled. HAProxy binds only `127.0.0.1:18080`; application and node-status connections use pinned SSH tunnels. Tunnel keys use dedicated non-shell accounts restricted to local forwarding and exact loopback destination ports. Raw TrailBase/admin access stays private. Ingress exposes only the demo page, A/B status, selected auth endpoints and main/aux Record APIs; registration/admin are not exposed by the proxy.
 
@@ -97,8 +97,20 @@ Ingress startup executes `hat ingress-check`: unfinished routing requires comple
 
 A/B's `transition.py` performs quiesce, freeze, finite-restore fallback, prepare and activate under root-only operation records. Rejected follower data and prior epoch data/metadata are retained. Preparation copies only the three validated databases, not follower sidecars. Do not invoke these phases manually or reactivate A. D3/rejoin still needs its separate disruptive-test approval.
 
+## D3 commands and completed recovery
+
+C's root-only commands are deliberately narrow:
+
+- `hat recover A`: consume the exact private `/etc/hat-control/recovery-input.json`, completed B authority, protected baseline, sealed fault ledger and real producer-death evidence. Verify B offline, independently restore a selected old-epoch cut, then activate/verify A in a reserved fresh epoch. This command does not initiate the fault.
+- `hat rejoin B <operation>`: only at the unused verified A-serving boundary. Verify A, boot B into quarantine, bind its actual new guest boot, retain original files, start clean followers and verify same-epoch catch-up. No blind retry.
+- `hat reconcile-rejoin-boot <operation>`: only the exact retained pending boot intent/failure with unique successful original power-on/cold command evidence. A durable one-shot marker precedes fresh node/provider checks. It performs **provider inspect only**, requires the identical safe cold guest, archives the failure, and executes the first node rejoin under the same controller lock. It is not a generic resume/force command.
+
+The completed operation is `59f3e121806a43dfb2326fb0d2a62eba`; all three commands now refuse reuse of that boundary. Do not rerun the private drill/install scripts. A normal reboot removes `/run` activation authority; safe cold inspection permits absent or validated stale authority, never current authority or live mutators.
+
+Measured result: 51 acknowledged fault writes recovered, 0 acknowledged missing, 87 unacknowledged absences ambiguous; protected records/auth passed. The observer brackets approximately 68.35 seconds between successful observations. Final fresh-epoch restore and B catch-up both reached main/session/aux **5/6/5**. Preserve original ledgers, unsuccessful attempts, archived failure and reconciliation evidence. No lossless/general RPO or universal RTO promise follows from this sample.
+
 ## Evidence and limits
 
 Protected local commands, raw stdout/stderr, configuration and client ledgers: `~/.config/hat/d1-deployment/`. Original qualification roots/prefixes/logs are unchanged. A later decommission must explicitly identify only the new deployment's services, paths and credentials; there is no automatic cleanup command.
 
-No uploaded-file HA, custom jobs, gapless SSE, automatic election or cross-file atomic recovery promise. Asynchronous replication can lose acknowledged writes. The D2 handover completed with explicit recovery checkpoints, not a clean one-shot run. D3/rejoin and redundancy restoration remain separate future work. URL availability is not proof that failover is safe.
+No uploaded-file HA, custom jobs, gapless SSE, automatic election or cross-file atomic recovery promise. Asynchronous replication can lose acknowledged writes. The D2 handover completed with explicit recovery checkpoints, not a clean one-shot run. D3 recovery and redundancy restoration completed with explicit reconciliation, not a one-shot run. URL availability is not proof that failover is safe.

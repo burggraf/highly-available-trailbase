@@ -1,0 +1,43 @@
+[
+  {
+    "role": "standby",
+    "epoch": "d1-fixture-source",
+    "sampled_at": 1000.0,
+    "positions": {},
+    "refusals": [
+      "main: database not yet restored",
+      "session: database not yet restored",
+      "aux: database not yet restored",
+      "required database positions unconfirmed"
+    ],
+    "trailbase_running": false,
+    "processes": {
+      "main": true,
+      "session": true,
+      "aux": true
+    },
+    "healthy": false,
+    "promotion_ready": false,
+    "limitation": "D1 transport observation only; no failover readiness or RPO bound"
+  },
+  {
+    "role": "standby",
+    "epoch": "d1-fixture-source",
+    "sampled_at": 1000.0,
+    "positions": {
+      "main": 4,
+      "session": 3,
+      "aux": 3
+    },
+    "refusals": [],
+    "trailbase_running": false,
+    "processes": {
+      "main": true,
+      "session": true,
+      "aux": true
+    },
+    "healthy": true,
+    "promotion_ready": false,
+    "limitation": "D1 transport observation only; no failover readiness or RPO bound"
+  }
+]

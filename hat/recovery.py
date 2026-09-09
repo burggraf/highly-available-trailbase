@@ -1,0 +1,644 @@
+"""D3 fixed-fixture recovery contracts and the B-to-A recovery driver.
+
+``/etc/hat-control/recovery-input.json`` is a private root-owned JSON object with
+exactly these fields::
+
+  authority_operation: 32 lowercase hex ID of the completed B-writer operation
+  source_epoch/source_boot: captured pre-fault B epoch and boot ID
+  source_health: private pre-producer node probe, authority_operation and observed_ns
+  source_config/source_replica: verbatim pre-fault B node object and replica text
+  candidate_epoch/candidate_boot: quarantined cold A's configured epoch and boot
+  protected_ledger: absolute protected history path below /var/lib/hat-control
+  protected_baseline: absolute report path below that root; source epoch, valid
+                      three-DB positions/signatures, and auth_and_records=PASS
+  fault_ledger: absolute closed generated D3 ledger path below that root
+  producer_unit: hat-d3-client-<32 lowercase hex>.service
+  producer_cgroup: /sys/fs/cgroup/system.slice/<producer_unit>
+
+The input and referenced artifacts are bounded, private, owned, singly linked
+regular files; artifact ancestry below the controller root is private and has no
+symlinks. The driver never powers a node off and intentionally leaves the ten
+verified recovery phases unfinished for the separately authorized rejoin tail.
+"""
+from contextlib import closing
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import sqlite3
+import stat
+import time
+
+import client
+import node
+
+
+def restore_endpoint(plan, source, target, minimum):
+    """Validate the pinned native JSON plan; the finite restore remains mandatory."""
+    try:
+        if (set(plan)!={'source','target_path','replica','min_txid','max_txid','files'}
+                or plan['source']!=source or plan['target_path']!=target or plan['replica']!='s3'
+                or type(minimum) is not int or not 0<minimum<2**64
+                or not isinstance(plan['files'],list) or not 0<len(plan['files'])<=10000):
+            raise ValueError('invalid native restore plan')
+        low,high=node.txid(plan['min_txid']),node.txid(plan['max_txid'])
+        if not 0<low<=high or high<minimum:raise ValueError('plan is invalid or older than protected baseline')
+        spans=[];seen=set()
+        for file in plan['files']:
+            if (set(file)!={'level','name','min_txid','max_txid','size','timestamp'}
+                    or type(file['level']) is not int or not 0<=file['level']<=9
+                    or type(file['size']) is not int or not 0<file['size']<2**63):
+                raise ValueError('invalid plan file metadata')
+            a,b=node.txid(file['min_txid']),node.txid(file['max_txid'])
+            key=file['level'],file['name']
+            if (not low<=a<=b<=high or file['name']!=f'{a:016x}-{b:016x}.ltx' or key in seen
+                    or datetime.datetime.fromisoformat(file['timestamp'].replace('Z','+00:00')).tzinfo is None):
+                raise ValueError('invalid plan file identity or range')
+            seen.add(key);spans.append((a,b))
+        if min(a for a,b in spans)!=low or max(b for a,b in spans)!=high:raise ValueError('plan endpoints disagree')
+        return high
+    except (KeyError,TypeError,AttributeError,OverflowError) as exc:
+        raise ValueError('malformed native restore plan') from exc
+
+
+def classify_fault(events, data):
+    """Classify only generated append operations in the chosen recovery image."""
+    submitted={};outcomes={}
+    for event in events:
+        if not isinstance(event,dict) or not {'event','api','row'}<=set(event) or set(event)-{'event','api','row','id','time_ns','status','error'}:
+            raise ValueError('malformed fault event')
+        kind,api,row=event['event'],event['api'],event['row']
+        if (kind not in ('submitted','acknowledged','rejected','uncertain') or api not in ('main_ops','aux_ops')
+                or not isinstance(row,dict) or set(row)!={'op_key','payload'}
+                or not isinstance(row['op_key'],str) or not re.fullmatch('d3-[A-Za-z0-9-]{1,125}',row['op_key'])
+                or not isinstance(row['payload'],str) or len(row['payload'])>4096):
+            raise ValueError('invalid fault operation')
+        key=api,row['op_key']
+        if kind=='submitted':
+            if key in submitted:raise ValueError('duplicate submission')
+            submitted[key]=row
+        else:
+            if key not in submitted or key in outcomes or submitted[key]!=row:raise ValueError('unmatched or duplicate outcome')
+            if kind=='acknowledged' and (type(event.get('id')) not in (str,int) or not str(event['id']).isdigit()):raise ValueError('invalid acknowledgement ID')
+            outcomes[key]=event
+    result={name:[] for name in ('recovered','lost','ambiguous','unacknowledged_recovered','rejected')}
+    for api in ('main_ops','aux_ops'):
+        with closing(sqlite3.connect((data/(api.removesuffix('_ops')+'.db')).as_uri()+'?mode=ro',uri=True)) as db:
+            for key,row in submitted.items():
+                if key[0]!=api:continue
+                found=db.execute('SELECT id,payload FROM hat_ops WHERE op_key=?',(key[1],)).fetchall()
+                outcome=outcomes.get(key,{});kind=outcome.get('event')
+                if len(found)>1 or (found and found[0][1]!=row['payload']):raise ValueError('recovered payload differs')
+                if kind=='acknowledged':
+                    if found and str(found[0][0])!=str(outcome['id']):raise ValueError('acknowledged row identity differs')
+                    category='recovered' if found else 'lost'
+                elif kind=='rejected':
+                    if found:raise ValueError('rejected operation exists in recovery image')
+                    category='rejected'
+                else:category='unacknowledged_recovered' if found else 'ambiguous'
+                result[category].append('/'.join(key))
+    return {name:sorted(values) for name,values in result.items()}
+
+
+INPUT_FIELDS = {
+    'authority_operation', 'source_epoch', 'source_boot', 'source_config', 'source_health',
+    'source_replica', 'candidate_epoch', 'candidate_boot', 'protected_ledger',
+    'protected_baseline', 'fault_ledger', 'producer_unit', 'producer_cgroup',
+}
+MAX_INPUT = 1 << 20
+MAX_ARTIFACT = 4 << 20
+_EPOCH = re.compile(r'd1-[a-z0-9-]+')
+_OPERATION = re.compile(r'[0-9a-f]{32}')
+_PRODUCER = re.compile(r'hat-d3-client-([0-9a-f]{32})\.service')
+
+
+def _json(raw):
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value: raise ValueError('duplicate JSON key')
+            value[key] = item
+        return value
+    return json.loads(raw, object_pairs_hook=unique)
+
+
+def _owned_bytes(path, limit, root=None):
+    """Read one bounded owned, private, singly linked regular file without following it."""
+    path = Path(path).absolute()
+    if '..' in path.parts: raise ValueError('artifact path traversal is forbidden')
+    if root is not None:
+        root = Path(root).absolute()
+        try: path.relative_to(root)
+        except ValueError as exc: raise ValueError('artifact is outside private controller root') from exc
+        parent = path.parent
+        while True:
+            s = parent.lstat()
+            if (not stat.S_ISDIR(s.st_mode) or stat.S_ISLNK(s.st_mode)
+                    or s.st_uid != os.geteuid() or s.st_mode & 0o077):
+                raise ValueError('artifact directory is not private and owned')
+            if parent == root: break
+            if root not in parent.parents: raise ValueError('artifact ancestry differs')
+            parent = parent.parent
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        s = os.fstat(fd)
+        if (not stat.S_ISREG(s.st_mode) or s.st_uid != os.geteuid() or s.st_nlink != 1
+                or s.st_mode & 0o077 or not 0 < s.st_size <= limit):
+            raise ValueError('artifact must be bounded, private, owned, regular and singly linked')
+        raw = b''
+        while len(raw) <= limit:
+            part = os.read(fd, min(65536, limit + 1 - len(raw)))
+            if not part: break
+            raw += part
+        if len(raw) > limit: raise ValueError('oversized artifact')
+        return raw
+    finally:
+        os.close(fd)
+
+
+def _write_private(path, raw):
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    try:
+        view = memoryview(raw)
+        while view:
+            written = os.write(fd, view)
+            view = view[written:]
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    directory = os.open(Path(path).parent, os.O_RDONLY | os.O_DIRECTORY)
+    try: os.fsync(directory)
+    finally: os.close(directory)
+
+
+def _write_json(path, value):
+    _write_private(path, json.dumps(value, separators=(',', ':'), allow_nan=False).encode())
+
+
+def _cut_report(value, epoch=None):
+    from transition import validate_cut
+    if not isinstance(value, dict): raise ValueError('restore report is not an object')
+    try: positions, signature = value['positions'], value['signature']
+    except KeyError as exc: raise ValueError('restore report is incomplete') from exc
+    validate_cut(positions)
+    if (not isinstance(signature, dict) or set(signature) != set(node.DBS)
+            or any(not isinstance(v, str) or not re.fullmatch('[0-9a-f]{64}', v) for v in signature.values())
+            or value.get('auth_and_records') != 'PASS'
+            or (epoch is not None and value.get('epoch') != epoch)):
+        raise ValueError('restore report signature, auth, or epoch differs')
+    return value
+
+
+def _source_config(value, epoch):
+    required = {'role', 'epoch', 'hostname', 'binaries', 'support'}
+    binaries = value.get('binaries') if isinstance(value, dict) else None
+    if (not isinstance(value, dict) or not required <= set(value) or value['role'] != 'writer'
+            or value['epoch'] != epoch or not isinstance(value['hostname'], str) or not value['hostname']
+            or not isinstance(binaries, dict) or set(binaries) != {'trail', 'litestream'}
+            or any(not isinstance(v, str) or not re.fullmatch('[0-9a-f]{64}', v)
+                   for v in binaries.values())
+            or value.get('bootstrap', False) is not False):
+        raise ValueError('captured source config is not the existing writer config')
+    # validate_support enforces the exact fixed support key set; local files are checked later.
+    required_support = {'config.textproto', 'migrations/main/U100__hat_ops.sql',
+                        'migrations/aux/U100__hat_ops.sql', 'secrets/keys/private_key.pem',
+                        'secrets/keys/public_key.pem'}
+    support = value.get('support')
+    if (not isinstance(support, dict) or set(support) != required_support
+            or any(not isinstance(v, str) or not re.fullmatch('[0-9a-f]{64}', v)
+                   for v in support.values())):
+        raise ValueError('captured source support identity is invalid')
+    return value
+
+
+def _replica_config(value, epoch):
+    if not isinstance(value, str) or not 0 < len(value.encode()) <= MAX_INPUT or '\0' in value:
+        raise ValueError('captured replica config is invalid')
+    for db in node.DBS:
+        if len(re.findall(r'(?m)^[ \t]*path:[ \t]*demos/' + re.escape(epoch) + '/' + db + r'[ \t]*(?:#.*)?$', value)) != 1:
+            raise ValueError('captured replica config does not bind the source epoch')
+    return value
+
+
+def _protected_ledger(raw):
+    lines = raw.splitlines()
+    if not raw.endswith(b'\n') or not lines or any(not line or len(line) > 8192 for line in lines):
+        raise ValueError('protected ledger is incomplete or oversized')
+    rows = [_json(line) for line in lines]
+    auth = rows[0]
+    if (not isinstance(auth, dict) or set(auth) != {'auth_token', 'retained_refresh', 'revoked_refresh'}
+            or any(not isinstance(auth[name], str) or not auth[name] for name in auth)):
+        raise ValueError('protected ledger auth frame is invalid')
+    for row in rows[1:]:
+        if not isinstance(row, dict): raise ValueError('protected ledger row is invalid')
+        event = row.get('event')
+        if event in ('submitted', 'acknowledged'):
+            expected = {'event', 'api', 'row', 'time_ns'} | ({'id'} if event == 'acknowledged' else set())
+            payload = row.get('row')
+            if (set(row) != expected or row.get('api') not in ('main_ops', 'aux_ops')
+                    or not isinstance(payload, dict) or set(payload) != {'op_key', 'payload'}
+                    or not all(isinstance(payload[name], str) for name in payload)
+                    or type(row.get('time_ns')) is not int or row['time_ns'] <= 0
+                    or (event == 'acknowledged' and type(row.get('id')) not in (str, int))):
+                raise ValueError('protected ledger operation is invalid')
+        elif event == 'historical_auth':
+            if (not {'retained_refresh', 'revoked_refresh', 'retained_expected'} <= set(row)
+                    or row['retained_expected'] not in ('accepted', 'denied')
+                    or any(not isinstance(row[name], str) or not row[name]
+                           for name in ('retained_refresh', 'revoked_refresh'))):
+                raise ValueError('protected historical auth frame is invalid')
+        elif event == 'smoke_pass':
+            if set(row) != {'event'}: raise ValueError('protected smoke marker is invalid')
+        else:
+            raise ValueError('protected ledger event is invalid')
+    if {row['api'] for row in rows if row.get('event') == 'acknowledged'} != {'main_ops', 'aux_ops'}:
+        raise ValueError('protected ledger must retain main and aux records')
+    return rows
+
+
+def _load_input(path, root):
+    """Load the exact D3 recovery input contract.
+
+    The private JSON object has exactly INPUT_FIELDS. source_config is the verbatim
+    pre-fault B node config object and source_replica its Litestream text. The three
+    ledger/report fields are absolute paths below root. producer_unit is exactly
+    hat-d3-client-<32 lowercase hex>.service and producer_cgroup is that unit's
+    system.slice cgroup. No field is a command, URL, fence action, or recovery override.
+    """
+    value = _json(_owned_bytes(path, MAX_INPUT))
+    if not isinstance(value, dict) or set(value) != INPUT_FIELDS:
+        raise ValueError('invalid recovery input fields')
+    if (not isinstance(value['authority_operation'], str) or not _OPERATION.fullmatch(value['authority_operation'])
+            or not isinstance(value['source_epoch'], str) or not _EPOCH.fullmatch(value['source_epoch'])
+            or not isinstance(value['candidate_epoch'], str) or not _EPOCH.fullmatch(value['candidate_epoch'])
+            or value['candidate_epoch'] == value['source_epoch']
+            or any(not isinstance(value[name], str) or not value[name]
+                   for name in ('source_boot', 'candidate_boot'))):
+        raise ValueError('invalid recovery authority, epoch, or boot binding')
+    _source_config(value['source_config'], value['source_epoch'])
+    _replica_config(value['source_replica'], value['source_epoch'])
+    match = _PRODUCER.fullmatch(value['producer_unit']) if isinstance(value['producer_unit'], str) else None
+    expected_cgroup = '/sys/fs/cgroup/system.slice/' + value['producer_unit'] if match else None
+    if not match or value['producer_cgroup'] != expected_cgroup:
+        raise ValueError('producer unit or cgroup is not the fixed D3 producer')
+    for name in ('protected_ledger', 'protected_baseline', 'fault_ledger'):
+        if not isinstance(value[name], str) or not Path(value[name]).is_absolute():
+            raise ValueError('artifact paths must be absolute')
+        _owned_bytes(value[name], MAX_ARTIFACT, root)
+    protected_raw = _owned_bytes(value['protected_ledger'], MAX_ARTIFACT, root)
+    _protected_ledger(protected_raw)
+    baseline = _cut_report(_json(_owned_bytes(value['protected_baseline'], MAX_INPUT, root)), value['source_epoch'])
+    health = value['source_health']
+    if (not isinstance(health, dict) or set(health) != {'authority_operation', 'observed_ns', 'probe'}
+            or health['authority_operation'] != value['authority_operation']):
+        raise ValueError('pre-fault health authority differs')
+    probe = _writer(health['probe'], value['source_epoch'], value['source_boot'], value['source_config'])
+    start = _json(_owned_bytes(value['fault_ledger'], MAX_ARTIFACT, root).splitlines()[0])
+    if (probe['config'] != value['source_config'] or probe.get('replica_config') != value['source_replica']
+            or any(probe['status']['positions'][db] < baseline['positions'][db] for db in node.DBS)
+            or type(health['observed_ns']) is not int or type(start.get('time_ns')) is not int
+            or start.get('event') != 'start' or not 0 <= health['observed_ns'] <= start['time_ns']):
+        raise ValueError('source health is not bound before fault traffic at the protected baseline')
+    return value, baseline
+
+
+def _producer_proof(value, unit):
+    if (not isinstance(value, dict) or value.get('unit') != unit or value.get('load_state') != 'loaded'
+            or value.get('main_pid') != 0 or value.get('active_state') not in ('inactive', 'failed')
+            or value.get('cgroup') not in ('absent', 'empty')):
+        raise RuntimeError('fault producer death is not independently proven')
+    return value
+
+
+def _fault_outcomes(value, events):
+    categories = {'recovered', 'lost', 'ambiguous', 'unacknowledged_recovered', 'rejected'}
+    if (not isinstance(value, dict) or set(value) != categories
+            or any(not isinstance(rows, list) or any(not isinstance(row, str)
+                   or not re.fullmatch(r'(?:main|aux)_ops/d3-[A-Za-z0-9-]{1,125}', row) for row in rows)
+                   for rows in value.values())):
+        raise ValueError('fault outcome classification is malformed')
+    flattened = [row for rows in value.values() for row in rows]
+    expected = {event['api'] + '/' + event['row']['op_key']
+                for event in events if event['event'] == 'submitted'}
+    if len(flattened) != len(set(flattened)) or set(flattened) != expected:
+        raise ValueError('fault outcome classifications overlap or omit operations')
+    return value
+
+
+def _oracle_identity(source, support, binaries):
+    support, binaries = Path(support), Path(binaries)
+
+    def trusted_files(root, names):
+        # The configured roots and every directory below them remain owned by the
+        # controller and non-writable by the oracle account that consumes the files.
+        try:
+            for directory in (root, *root.parents):
+                item = directory.lstat()
+                if (not stat.S_ISDIR(item.st_mode) or stat.S_ISLNK(item.st_mode)
+                        or item.st_uid not in (0, os.geteuid()) or item.st_mode & 0o022):
+                    raise ValueError('oracle trust ancestry is writable, symlinked, or unowned')
+            for relative in names:
+                path = root / relative
+                path.relative_to(root)
+                directories = [root]
+                directory = root
+                for part in path.parent.relative_to(root).parts:
+                    directory /= part
+                    directories.append(directory)
+                for directory in dict.fromkeys(directories):
+                    item = directory.lstat()
+                    if (not stat.S_ISDIR(item.st_mode) or stat.S_ISLNK(item.st_mode)
+                            or item.st_uid != os.geteuid() or item.st_mode & 0o022):
+                        raise ValueError('oracle trust directory is writable or unowned')
+                item = path.lstat()
+                if (not stat.S_ISREG(item.st_mode) or stat.S_ISLNK(item.st_mode)
+                        or item.st_uid != os.geteuid() or item.st_mode & 0o022 or item.st_nlink != 1):
+                    raise ValueError('oracle trust file is writable, linked, or unowned')
+        except OSError as exc:
+            raise ValueError('oracle trust boundary is unavailable') from exc
+
+    trusted_files(support, source['support'])
+    trusted_files(binaries, source['binaries'])
+    node.validate_support(support, source['support'])
+    for name, digest in source['binaries'].items():
+        path = binaries / name
+        if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            raise RuntimeError('oracle binary identity differs from captured writer')
+
+
+def _cold(value, operation, epoch, boot, role, source, replica):
+    if (not isinstance(value, dict) or value.get('operation') != operation or value.get('epoch') != epoch
+            or value.get('boot_id') != boot or value.get('authority') != 'absent'
+            or value.get('cgroup') != 'empty' or value.get('mutators') != 'none'):
+        raise RuntimeError('candidate cold identity or safety differs')
+    config = value.get('config')
+    if (not isinstance(config, dict) or config.get('role') != role or config.get('epoch') != epoch
+            or config.get('binaries') != source['binaries'] or config.get('support') != source['support']
+            or value.get('replica_config') != replica):
+        raise RuntimeError('candidate config, release, support, or replica identity differs')
+    return value
+
+
+def _writer(value, epoch, boot, source):
+    from transition import validate_cut
+    if (not isinstance(value, dict) or value.get('boot_id') != boot
+            or value.get('config', {}).get('role') != 'writer'
+            or value.get('config', {}).get('epoch') != epoch
+            or value['config'].get('binaries') != source['binaries']
+            or value['config'].get('support') != source['support']):
+        raise RuntimeError('activated candidate identity differs')
+    status = value.get('status', {})
+    if (status.get('epoch') != epoch or status.get('healthy') is not True
+            or status.get('trailbase_running') is not True):
+        raise RuntimeError('activated candidate is not a healthy writer')
+    validate_cut(status.get('positions'))
+    return value
+
+
+def _seal_fault(root, input_value, raw):
+    run_id = _PRODUCER.fullmatch(input_value['producer_unit']).group(1)
+    intake = Path(root) / ('recovery-intake-' + run_id)
+    intake.mkdir(mode=0o700)
+    sealed = intake / 'fault-ledger.jsonl'
+    _write_private(sealed, raw)
+    seal = {'sha256': hashlib.sha256(raw).hexdigest(), 'bytes': len(raw),
+            'source_epoch': input_value['source_epoch'], 'producer_unit': input_value['producer_unit']}
+    _write_json(intake / 'fault-seal.json', seal)
+    return intake, sealed, seal
+
+
+def _recheck_fault(input_value, root, sealed, seal):
+    raw = _owned_bytes(input_value['fault_ledger'], MAX_ARTIFACT, root)
+    copy = _owned_bytes(sealed, MAX_ARTIFACT, root)
+    if (len(raw) != seal['bytes'] or raw != copy
+            or hashlib.sha256(raw).hexdigest() != seal['sha256']):
+        raise RuntimeError('fault ledger changed after sealing')
+    client.read_closed_ledger(input_value['fault_ledger'], input_value['source_epoch'])
+    return seal['sha256']
+
+
+def recover(config, *, control_module=None, io_factory=None,
+            root=Path('/var/lib/hat-control'),
+            input_path=Path('/etc/hat-control/recovery-input.json'),
+            maintenance=Path('/etc/hat-control/maintenance'),
+            ingress=Path('/etc/hat-ingress/haproxy.cfg'),
+            credentials=Path('/etc/hat-control/demo-login.json'),
+            oracle_support=Path('/var/lib/hat-oracle/support'),
+            oracle_binaries=Path('/opt/hat-oracle/bin')):
+    """Recover externally fenced B onto cold A, then pause before the rejoin tail.
+
+    This has no power-off, retry, resume, force, replay, or finish path. The returned
+    operation ID is the only identifier a later, separately implemented rejoin may use.
+    """
+    if control_module is None:
+        import control as control_module
+    if io_factory is None: io_factory = control_module.ControlIO
+    from transition import atomic_json, replace_replica_prefix, validate_cut
+
+    root, input_path, maintenance, ingress = map(Path, (root, input_path, maintenance, ingress))
+    with control_module.Journal(root) as journal:
+        authority = control_module.current_writer(journal, ingress)  # Must precede begin().
+        input_value, protected = _load_input(input_path, root)
+        if authority != {'operation': input_value['authority_operation'], 'writer': 'B',
+                         'epoch': input_value['source_epoch']}:
+            raise RuntimeError('captured source does not match current writer authority and route')
+        # D2's completed preflight is the only retained source-boot attestation;
+        # provider receipts cannot attest the guest boot incarnation.
+        row = journal.db.execute(
+            "SELECT evidence FROM steps WHERE operation=? AND phase='preflight' AND status='done'",
+            (authority['operation'],)).fetchone()
+        try:
+            d2_preflight = json.loads(row[0])
+            if input_value['source_boot'] != d2_preflight['candidate_boot']:
+                raise RuntimeError('captured source boot differs from completed D2 evidence')
+        except (TypeError, KeyError, ValueError, IndexError) as exc:
+            raise RuntimeError('completed D2 source boot evidence is unavailable') from exc
+        if maintenance.exists() or maintenance.is_symlink():
+            raise RuntimeError('ingress maintenance already set')
+        fault_raw = _owned_bytes(input_value['fault_ledger'], MAX_ARTIFACT, root)
+        events = client.read_closed_ledger(input_value['fault_ledger'], input_value['source_epoch'])
+        intake, sealed_fault, seal = _seal_fault(root, input_value, fault_raw)
+        provisional = {'id': authority['operation'], 'source': 'B', 'target': 'A',
+                       'source_epoch': authority['epoch']}
+        state = {'ingress_touched': False, 'A': {'boot_id': input_value['candidate_boot']}}
+        guard_io = io_factory(journal, config, provisional, intake, state, maintenance, ingress)
+        death = _producer_proof(guard_io.producer_stopped(input_value['producer_unit'],
+                                                         input_value['producer_cgroup']),
+                                input_value['producer_unit'])
+        operation = journal.begin('B', 'A', input_value['source_epoch'])
+        if operation['new_epoch'] == input_value['source_epoch']:
+            raise RuntimeError('recovery epoch was not freshly reserved')
+        work = root / operation['id']
+        intake.rename(work)
+        directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+        try: os.fsync(directory)
+        finally: os.close(directory)
+        sealed_fault = work / sealed_fault.name
+        state['events'] = events
+        io = io_factory(journal, config, operation, work, state, maintenance, ingress)
+
+        def preflight():
+            if socket.gethostname() != config['hostname']: raise ValueError('wrong controller')
+            if maintenance.exists() or maintenance.is_symlink(): raise RuntimeError('ingress maintenance already set')
+            candidate = io.remote('A', 'inspect-cold', epoch=input_value['candidate_epoch'])
+            expected_replica = replace_replica_prefix(candidate.get('replica_config', ''),
+                                                      input_value['candidate_epoch'], input_value['source_epoch'])
+            if expected_replica != input_value['source_replica']:
+                raise RuntimeError('candidate replica identity differs from captured writer')
+            _cold(candidate, operation['id'], input_value['candidate_epoch'], input_value['candidate_boot'],
+                  'writer', input_value['source_config'], candidate['replica_config'])
+            _oracle_identity(input_value['source_config'], oracle_support, oracle_binaries)
+            control_module.route_to(ingress.read_text(), 'B', 'A', control_module.ROUTE_ENDPOINTS)
+            _write_private(work / 'ingress-before.cfg', ingress.read_bytes())
+            state['candidate'] = candidate
+            return {'authority_operation': authority['operation'], 'source_epoch': authority['epoch'],
+                    'source_boot': input_value['source_boot'], 'candidate_boot': input_value['candidate_boot'],
+                    'candidate_epoch': input_value['candidate_epoch'], 'producer': death,
+                    'fault_ledger_sha256': seal['sha256'], 'protected_baseline': protected,
+                    'source_health': input_value['source_health']}
+
+        def close_ingress():
+            return io.close_ingress()
+
+        def fence():
+            state['fence'] = io.fence('inspect', 'offline', label='B')
+            return state['fence']
+
+        def select_cut():
+            selected = io.select_cut(input_value['source_replica'], protected['positions'])
+            if not isinstance(selected, dict): raise RuntimeError('restore plan result is malformed')
+            validate_cut(selected.get('positions'))
+            if any(selected['positions'][db] < protected['positions'][db] for db in node.DBS):
+                raise RuntimeError('selected cut is older than protected baseline')
+            state['cut'] = selected['positions']
+            return selected
+
+        def restore():
+            prepared = io.remote('A', 'prepare-recovery', {'source_epoch': operation['source_epoch']},
+                                 epoch=input_value['candidate_epoch'])
+            if (prepared.get('operation') != operation['id'] or prepared.get('original_epoch') != input_value['candidate_epoch']
+                    or prepared.get('original_boot_id') != input_value['candidate_boot']
+                    or prepared.get('epoch') != operation['source_epoch'] or prepared.get('role') != 'standby'):
+                raise RuntimeError('candidate recovery preparation differs')
+            digest = hashlib.sha256(json.dumps(state['fence'], sort_keys=True).encode()).hexdigest()
+            restored = io.remote('A', 'restore-recovery', {'cut': state['cut'], 'fence_digest': digest},
+                                 epoch=operation['source_epoch'])
+            validate_cut(restored.get('cut'))
+            signature = restored.get('signature')
+            if (restored.get('operation') != operation['id'] or restored['cut'] != state['cut']
+                    or restored.get('original_epoch') != input_value['candidate_epoch']
+                    or restored.get('original_boot_id') != input_value['candidate_boot']
+                    or restored.get('epoch') != operation['source_epoch']
+                    or restored.get('source_epoch') != operation['source_epoch']
+                    or restored.get('fence_digest') != digest or not isinstance(signature, dict)
+                    or set(signature) != set(node.DBS)
+                    or any(not isinstance(v, str) or not re.fullmatch('[0-9a-f]{64}', v) for v in signature.values())):
+                raise RuntimeError('candidate restored cut or binding differs')
+            state['restore'] = restored
+            state['fence_digest'] = digest
+            return restored
+
+        def compare():
+            compared = io.oracle('compare', input_value['source_replica'], state['cut'],
+                                 Path(input_value['protected_ledger']), fault_ledger=sealed_fault,
+                                 source_epoch=operation['source_epoch'])
+            _cut_report(compared)
+            if compared['positions'] != state['cut'] or compared['signature'] != state['restore']['signature']:
+                raise RuntimeError('candidate and independent restored images differ')
+            _fault_outcomes(compared.get('fault_outcomes'), state['events'])
+            state['comparison'] = compared
+            return compared
+
+        def activate():
+            _recheck_fault(input_value, root, sealed_fault, seal)
+            producer = _producer_proof(io.producer_stopped(input_value['producer_unit'],
+                                                           input_value['producer_cgroup']),
+                                       input_value['producer_unit'])
+            fresh_fence = io.fence('inspect', 'offline', label='B')
+            current = io.remote('A', 'inspect-cold', epoch=operation['source_epoch'])
+            _cold(current, operation['id'], operation['source_epoch'], input_value['candidate_boot'],
+                  'standby', input_value['source_config'], input_value['source_replica'])
+            prepared = io.remote('A', 'prepare', {'new_epoch': operation['new_epoch'],
+                                 'signature': state['comparison']['signature'],
+                                 'fence_digest': state['fence_digest']}, epoch=operation['source_epoch'])
+            if (prepared.get('epoch') != operation['new_epoch']
+                    or prepared.get('signature') != state['comparison']['signature']
+                    or prepared.get('fence_digest') != state['fence_digest']):
+                raise RuntimeError('candidate activation preparation differs')
+            activated = io.remote('A', 'activate', epoch=operation['new_epoch'])
+            writer = _writer(io.remote('A', 'probe', epoch=operation['new_epoch']),
+                             operation['new_epoch'], input_value['candidate_boot'], input_value['source_config'])
+            state['new'] = writer
+            return {'producer': producer, 'source_fence': fresh_fence,
+                    'prepare': prepared, 'activate': activated, 'probe': writer}
+
+        def baseline():
+            status = state['new']['status']
+            report = io.oracle('baseline', state['new']['replica_config'], status['positions'],
+                               Path(input_value['protected_ledger']))
+            report = dict(report, epoch=operation['new_epoch'])
+            _cut_report(report, operation['new_epoch'])
+            if report['positions'] != status['positions']:
+                raise RuntimeError('new-epoch baseline positions differ')
+            state['baseline'] = report
+            return report
+
+        def route():
+            text = control_module.route_to((work / 'ingress-before.cfg').read_text(), 'B', 'A',
+                                           control_module.ROUTE_ENDPOINTS)
+            candidate = work / 'haproxy.cfg'
+            _write_private(candidate, text.encode())
+            io.command(['haproxy', '-c', '-f', str(candidate)])
+            pending = ingress.with_suffix('.d3-pending')
+            with pending.open('x') as stream:
+                os.fchmod(stream.fileno(), 0o644)
+                stream.write(text); stream.flush(); os.fsync(stream.fileno())
+            os.replace(pending, ingress)
+            directory = os.open(ingress.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try: os.fsync(directory)
+            finally: os.close(directory)
+            digest = hashlib.sha256(ingress.read_bytes()).hexdigest()
+            io.start_ingress(digest)
+            return {'writer': 'A', 'epoch': operation['new_epoch'], 'config_sha': digest}
+
+        def verify():
+            io.verify_url(Path(input_value['protected_ledger']))
+            _owned_bytes(credentials, MAX_INPUT)
+            fresh = work / 'new-writes.jsonl'
+            io.smoke_url(Path(credentials), fresh)
+            _owned_bytes(fresh, MAX_ARTIFACT, root)
+            deadline = time.monotonic() + 90
+            while True:
+                writer = _writer(io.remote('A', 'probe', epoch=operation['new_epoch']),
+                                 operation['new_epoch'], input_value['candidate_boot'], input_value['source_config'])
+                positions = writer['status']['positions']
+                if all(positions[db] > state['baseline']['positions'][db] for db in node.DBS): break
+                if time.monotonic() > deadline: raise RuntimeError('new writes were not published beyond baseline')
+                time.sleep(1)
+            report = io.oracle('new-writes', writer['replica_config'], positions, fresh)
+            _cut_report(report)
+            if report['positions'] != positions: raise RuntimeError('fresh-write restore positions differ')
+            return {'writer': 'A', 'epoch': operation['new_epoch'],
+                    'positions': positions, 'new_writes': report}
+
+        actions = (preflight, close_ingress, fence, select_cut, restore,
+                   compare, activate, baseline, route, verify)
+        try:
+            for phase, action in zip(control_module.D3_PHASES[:10], actions):
+                journal.step(phase, action)
+            evidence = {phase: json.loads(raw) for phase, raw in journal.db.execute(
+                "SELECT phase,evidence FROM steps WHERE operation=? AND status='done' ORDER BY position",
+                (operation['id'],))}
+            control_module._validate_d3_proof(operation, evidence)
+            return operation['id']
+        except BaseException as exc:
+            failure = work / 'failure.json'
+            if not failure.exists() and not failure.is_symlink():
+                phase = control_module.D3_PHASES[min(journal.next, 9)]
+                atomic_json(failure, {'phase': phase, 'error': type(exc).__name__})
+            try: io.close_ingress()
+            except BaseException: pass
+            raise

@@ -14,11 +14,13 @@ import time
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'hat'))
+from client import read_closed_ledger
 from demo_smoke import request, verify_restore
+from recovery import classify_fault
 from transition import logical_signature
 
 
-def restore(root, config, positions, ledger, support, binaries):
+def restore(root, config, positions, ledger, support, binaries, fault_ledger=None, source_epoch=None):
     os.umask(0o077)
     selected = json.loads(positions.read_text())
     assert set(selected) == {'main', 'session', 'aux'}
@@ -69,6 +71,10 @@ def restore(root, config, positions, ledger, support, binaries):
             child.terminate()
             try:child.wait(timeout=15)
             except subprocess.TimeoutExpired:child.kill();child.wait()
+    if (fault_ledger is None) != (source_epoch is None):
+        raise ValueError('fault ledger and source epoch must be supplied together')
+    if fault_ledger is not None:
+        evidence['fault_outcomes'] = classify_fault(read_closed_ledger(fault_ledger, source_epoch), data)
     (work/'result.json').write_text(json.dumps(evidence,indent=2))
     print('PASS: independent finite three-DB restore, integrity and HTTP/auth oracle; isolated oracle stopped')
     return dict(work=str(work), **evidence)
@@ -76,7 +82,10 @@ def restore(root, config, positions, ledger, support, binaries):
 if __name__ == '__main__':
     p=argparse.ArgumentParser(description=__doc__)
     for name in ('root','config','positions','ledger','support','binaries'):p.add_argument('--'+name,type=Path,required=True)
+    p.add_argument('--fault-ledger', type=Path)
+    p.add_argument('--source-epoch')
     p.add_argument('--result', type=Path)
-    a=p.parse_args(); result=restore(a.root,a.config,a.positions,a.ledger,a.support,a.binaries)
+    a=p.parse_args(); result=restore(a.root,a.config,a.positions,a.ledger,a.support,a.binaries,
+                                     a.fault_ledger,a.source_epoch)
     if a.result:
         with a.result.open('x') as f: json.dump(result,f,indent=2)

@@ -1,0 +1,231 @@
+"""Local D3 journal, route, and ingress guard contracts; no live actions."""
+import hashlib
+import importlib.util
+import json
+import os
+from pathlib import Path
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+ENTRY = Path(os.environ.get('HAT_CONTROL_ENTRY', str(Path(__file__).resolve().parents[1]/'hat/control.py')))
+D2 = ('preflight','close_ingress','quiesce','fence','freeze','compare','activate','baseline','route','verify')
+D3 = ('preflight','close_ingress','fence','select_cut','restore','compare','activate','baseline','route','verify','rejoin_boot','rejoin','verify_redundancy')
+
+
+def load():
+    sys.path.insert(0, str(ENTRY.parent))
+    spec = importlib.util.spec_from_file_location('hat_control_d3', ENTRY)
+    module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+    return module
+
+
+class RecoveryGuardTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.m = load()
+
+    def _d3(self, root, count=10, verify_writer='A'):
+        ingress = root/'proxy.cfg'; ingress.write_text('route A\n')
+        digest = hashlib.sha256(ingress.read_bytes()).hexdigest()
+        journal = self.m.Journal(root).__enter__()
+        operation = journal.begin('B','A','d1-current')
+        cut={'main':10,'session':20,'aux':30};baseline={db:1 for db in cut};fresh={db:2 for db in cut}
+        signature={db:hashlib.sha256(('cut-'+db).encode()).hexdigest() for db in cut}
+        baseline_signature={db:hashlib.sha256(('baseline-'+db).encode()).hexdigest() for db in cut}
+        fresh_signature={db:hashlib.sha256(('fresh-'+db).encode()).hexdigest() for db in cut}
+        evidence={
+            'preflight':{},'close_ingress':{},'fence':{},
+            'select_cut':{'positions':cut},
+            'restore':{'cut':cut,'signature':signature},
+            'compare':{'positions':cut,'signature':signature,'auth_and_records':'PASS'},
+            'activate':{},
+            'baseline':{'epoch':operation['new_epoch'],'positions':baseline,'signature':baseline_signature,'auth_and_records':'PASS'},
+            'route':{'writer':'A','epoch':operation['new_epoch'],'config_sha':digest},
+            'verify':{'writer':verify_writer,'epoch':operation['new_epoch'],'positions':fresh,
+                      'new_writes':{'positions':fresh,'signature':fresh_signature,'auth_and_records':'PASS'}},
+        }
+        for phase in D3[:count]: journal.step(phase, lambda phase=phase: evidence[phase])
+        return journal, operation, ingress
+
+    def _maintenance(self, root, operation):
+        path = root/'maintenance'; path.write_text(json.dumps({'operation':operation['id']})); path.chmod(0o600)
+        return path
+
+    def test_direction_selects_exact_phase_plan_and_finish_length(self):
+        self.assertEqual(self.m.PHASES, D2)
+        self.assertEqual(self.m.phase_plan('A','B'), D2)
+        self.assertEqual(self.m.phase_plan('B','A'), D3)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            with self.m.Journal(root) as journal:
+                operation = journal.begin('B','A','d1-current')
+                called=[]
+                with self.assertRaises(RuntimeError): journal.step('quiesce', lambda: called.append(True))
+                for phase in D3: journal.step(phase, lambda: {})
+                journal.finish()
+                self.assertEqual(called, [])
+                rows=journal.db.execute('SELECT phase,status FROM steps WHERE operation=? ORDER BY rowid',(operation['id'],)).fetchall()
+                self.assertEqual(rows, [(phase,status) for phase in D3 for status in ('intent','done')])
+
+    def test_rejoin_continuation_accepts_only_unused_verified_d3_boundary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve(); journal,operation,_=self._d3(root)
+            journal.__exit__(None,None,None)
+            with self.m.Journal(root) as journal:
+                resumed, evidence = journal.continue_rejoin(operation['id'])
+                self.assertEqual(resumed, operation); self.assertEqual(journal.next, 10)
+                self.assertEqual(evidence['verify']['writer'], 'A')
+                with self.assertRaises(RuntimeError): journal.continue_rejoin(operation['id'])
+                with self.assertRaises(RuntimeError): journal.continue_rejoin('f'*32)
+                with self.assertRaises(RuntimeError): journal.step('rejoin', lambda: {})
+                with self.assertRaises(RuntimeError): journal.step('rejoin_boot', lambda: (_ for _ in ()).throw(RuntimeError('failed')))
+            with self.m.Journal(root) as journal:
+                with self.assertRaises(RuntimeError): journal.continue_rejoin(operation['id'])
+
+    def test_route_rewrite_is_exact_and_reversible_for_configured_endpoints(self):
+        endpoints={'A':{'writer':'127.0.0.1:1','home':'127.0.0.1:2'},'B':{'writer':'127.0.0.1:3','home':'127.0.0.1:4'}}
+        original='backend writer\n    server a 127.0.0.1:1 check\n\nbackend home\n    server a 127.0.0.1:2 check\n\nbackend status_b\n    server b 127.0.0.1:4 check\n'
+        changed=self.m.route_to(original,'A','B',endpoints)
+        self.assertIn('backend writer\n    server b 127.0.0.1:3 check',changed)
+        self.assertIn('backend home\n    server b 127.0.0.1:4 check',changed)
+        self.assertEqual(self.m.route_to(changed,'B','A',endpoints),original)
+        with self.assertRaises(ValueError):self.m.route_to(changed,'A','B',endpoints)
+        with self.assertRaises(ValueError):self.m.route_to(original+'backend home\n    server a 127.0.0.1:2 check\n','A','B',endpoints)
+
+    def test_current_writer_comes_from_completed_operation_and_exact_route(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve(); ingress=root/'proxy.cfg'; ingress.write_text('route B\n')
+            digest=hashlib.sha256(ingress.read_bytes()).hexdigest()
+            with self.m.Journal(root) as journal:
+                operation=journal.begin('A','B','d1-stale-install')
+                for phase in D2:
+                    evidence={'writer':'B','epoch':operation['new_epoch'],'config_sha':digest} if phase=='route' else {}
+                    journal.step(phase,lambda evidence=evidence:evidence)
+                journal.finish()
+                self.assertEqual(self.m.current_writer(journal,ingress),{'operation':operation['id'],'writer':'B','epoch':operation['new_epoch']})
+                unfinished=journal.begin('B','A',operation['new_epoch'])
+                with self.assertRaises(RuntimeError):self.m.current_writer(journal,ingress)
+                journal.db.execute('DELETE FROM operations WHERE id=?',(unfinished['id'],));journal.db.commit();journal.operation=None
+                journal.db.execute("UPDATE steps SET evidence='{}' WHERE operation=? AND phase='route' AND status='done'",(operation['id'],));journal.db.commit()
+                with self.assertRaises(RuntimeError):self.m.current_writer(journal,ingress)
+
+    def test_d3_bootstrap_requires_exact_boundary_and_live_private_permit(self):
+        for boundary in ('route-intent','verify-intent'):
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp).resolve();journal,operation,ingress=self._d3(root,count=8 if boundary=='route-intent' else 9)
+                pending='route' if boundary=='route-intent' else 'verify'
+                with self.assertRaises(RuntimeError):journal.step(pending,lambda:(_ for _ in ()).throw(RuntimeError('pending')))
+                maintenance=self._maintenance(root,operation);permit=root/'permit'
+                value={'operation':operation['id'],'boot_id':'boot','pid':os.getpid(),
+                       'birth':'live-birth','config_sha':hashlib.sha256(ingress.read_bytes()).hexdigest()}
+                permit.write_text(json.dumps(value));permit.chmod(0o600);journal.__exit__(None,None,None)
+                args=(root,maintenance,permit,ingress,'boot')
+                identity=lambda pid:'live-birth' if pid==os.getpid() else None
+                with mock.patch.object(self.m,'process_identity',side_effect=identity):
+                    self.assertTrue(self.m.ingress_allowed(*args))
+                    for patch in ({'boot_id':'stale'},{'birth':'stale'},{'pid':999999999},{'operation':'f'*32},{'extra':True}):
+                        permit.write_text(json.dumps(dict(value,**patch)))
+                        self.assertFalse(self.m.ingress_allowed(*args),patch)
+                    permit.write_text(json.dumps(value));permit.chmod(0o644)
+                    self.assertFalse(self.m.ingress_allowed(*args))
+
+    def test_d3_bootstrap_rejects_early_failed_or_empty_proof_boundary(self):
+        for case in ('early','route-done','failure','empty-proof'):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                count=7 if case=='early' else 8 if case=='empty-proof' else 9
+                root=Path(tmp).resolve();journal,operation,ingress=self._d3(root,count=count)
+                if case in ('failure','empty-proof'):
+                    pending='route' if case=='empty-proof' else 'verify'
+                    with self.assertRaises(RuntimeError):journal.step(pending,lambda:(_ for _ in ()).throw(RuntimeError('pending')))
+                if case=='empty-proof':
+                    journal.db.execute("UPDATE steps SET evidence='{}' WHERE operation=? AND phase='baseline' AND status='done'",(operation['id'],));journal.db.commit()
+                maintenance=self._maintenance(root,operation);permit=root/'permit'
+                permit.write_text(json.dumps({'operation':operation['id'],'boot_id':'boot','pid':os.getpid(),
+                    'birth':self.m.process_identity(os.getpid()),'config_sha':hashlib.sha256(ingress.read_bytes()).hexdigest()}));permit.chmod(0o600)
+                if case=='failure':
+                    work=root/operation['id'];work.mkdir(mode=0o700)
+                    failure=work/'failure.json';failure.write_text(json.dumps({'phase':'verify','error':'RuntimeError'}));failure.chmod(0o600)
+                journal.__exit__(None,None,None)
+                self.assertFalse(self.m.ingress_allowed(root,maintenance,permit,ingress,'boot'))
+
+    def test_d3_proof_is_required_for_continuation_and_serving(self):
+        cases={
+            'empty-restore':('restore',{}),
+            'cut-disagreement':('compare',{'positions':{'main':10,'session':20,'aux':31},'signature':{db:hashlib.sha256(('cut-'+db).encode()).hexdigest() for db in ('main','session','aux')},'auth_and_records':'PASS'}),
+            'compare-auth-failed':('compare',{'positions':{'main':10,'session':20,'aux':30},'signature':{db:hashlib.sha256(('cut-'+db).encode()).hexdigest() for db in ('main','session','aux')},'auth_and_records':'FAIL'}),
+            'compare-signature-differs':('compare',{'positions':{'main':10,'session':20,'aux':30},'signature':{db:'f'*64 for db in ('main','session','aux')},'auth_and_records':'PASS'}),
+            'bad-signature':('baseline',{'epoch':'REPLACE','positions':{'main':11,'session':21,'aux':31},'signature':{},'auth_and_records':'PASS'}),
+            'no-baseline-auth':('baseline',{'epoch':'REPLACE','positions':{'main':11,'session':21,'aux':31},'signature':{db:hashlib.sha256(('baseline-'+db).encode()).hexdigest() for db in ('main','session','aux')},'auth_and_records':'FAIL'}),
+            'wrong-baseline-epoch':('baseline',{'epoch':'d1-wrong','positions':{'main':1,'session':1,'aux':1},'signature':{db:hashlib.sha256(('baseline-'+db).encode()).hexdigest() for db in ('main','session','aux')},'auth_and_records':'PASS'}),
+            'not-beyond-baseline':('verify',{'writer':'A','epoch':'REPLACE','positions':{'main':1,'session':2,'aux':2},'new_writes':{'positions':{'main':1,'session':2,'aux':2},'signature':{db:hashlib.sha256(('fresh-'+db).encode()).hexdigest() for db in ('main','session','aux')},'auth_and_records':'PASS'}}),
+            'empty-new-writes':('verify',{'writer':'A','epoch':'REPLACE','positions':{'main':12,'session':22,'aux':32},'new_writes':{}}),
+        }
+        for name,(phase,replacement) in cases.items():
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp).resolve();journal,operation,ingress=self._d3(root)
+                replacement=json.loads(json.dumps(replacement).replace('REPLACE',operation['new_epoch']))
+                journal.db.execute("UPDATE steps SET evidence=? WHERE operation=? AND phase=? AND status='done'",
+                                   (json.dumps(replacement),operation['id'],phase));journal.db.commit()
+                maintenance=self._maintenance(root,operation);journal.__exit__(None,None,None)
+                self.assertFalse(self.m.ingress_allowed(root,maintenance,root/'missing',ingress,'boot'))
+                with self.m.Journal(root) as journal:
+                    with self.assertRaises(RuntimeError):journal.continue_rejoin(operation['id'])
+
+    def test_verified_d3_pause_and_failed_rejoin_keep_exact_a_route(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve(); journal,operation,ingress=self._d3(root)
+            maintenance=self._maintenance(root,operation); permit=root/'missing-permit'
+            journal.__exit__(None,None,None)
+            args=(root,maintenance,permit,ingress,'boot')
+            self.assertTrue(self.m.ingress_allowed(*args))
+            stopped=[]
+            with self.m.Journal(root) as journal:
+                with self.assertRaises(RuntimeError): self.m.reconcile_existing(journal,maintenance,lambda:stopped.append(True),ingress)
+                with self.assertRaises(RuntimeError): journal.begin('A','B',operation['new_epoch'])
+                journal.continue_rejoin(operation['id'])
+                with self.assertRaises(RuntimeError): journal.step('rejoin_boot',lambda:(_ for _ in ()).throw(RuntimeError('cold inspection failed')))
+            work=root/operation['id'];work.mkdir(mode=0o700)
+            failure=work/'failure.json';failure.write_text(json.dumps({'phase':'rejoin_boot','error':'RuntimeError'}));failure.chmod(0o600)
+            self.assertTrue(self.m.ingress_allowed(*args))
+            with self.m.Journal(root) as journal:
+                with self.assertRaises(RuntimeError): self.m.reconcile_existing(journal,maintenance,lambda:stopped.append(True),ingress)
+            self.assertEqual(stopped,[]);self.assertEqual(ingress.read_text(),'route A\n')
+
+    def test_d3_gate_recognizes_each_post_verification_rejoin_tail_boundary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve();journal,operation,ingress=self._d3(root)
+            maintenance=self._maintenance(root,operation);args=(root,maintenance,root/'permit',ingress,'boot')
+            journal.__exit__(None,None,None)
+            with self.m.Journal(root) as journal:
+                journal.continue_rejoin(operation['id'])
+                for phase in D3[10:]:
+                    journal.step(phase,lambda:{})
+                    self.assertTrue(self.m.ingress_allowed(*args))
+                journal.finish()
+            self.assertFalse(self.m.ingress_allowed(*args))
+            maintenance.unlink()
+            self.assertTrue(self.m.ingress_allowed(*args))
+
+    def test_d3_gate_fails_closed_for_early_bad_evidence_or_unknown_failure(self):
+        for case in ('early','wrong-writer','wrong-route','wrong-failure'):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp).resolve(); count=9 if case=='early' else 10
+                journal,operation,ingress=self._d3(root,count=count,verify_writer='B' if case=='wrong-writer' else 'A')
+                maintenance=self._maintenance(root,operation);journal.__exit__(None,None,None)
+                if case=='wrong-route':ingress.write_text('route elsewhere\n')
+                if case=='wrong-failure':
+                    work=root/operation['id'];work.mkdir(mode=0o700)
+                    failure=work/'failure.json';failure.write_text(json.dumps({'phase':'compare','error':'RuntimeError'}));failure.chmod(0o600)
+                permit=root/'permit'
+                permit.write_text(json.dumps({'operation':operation['id'],'boot_id':'boot','pid':os.getpid(),
+                    'birth':self.m.process_identity(os.getpid()),'config_sha':hashlib.sha256(ingress.read_bytes()).hexdigest()}));permit.chmod(0o600)
+                self.assertFalse(self.m.ingress_allowed(root,maintenance,permit,ingress,'boot'))
+                stopped=[]
+                with self.m.Journal(root) as journal:
+                    with self.assertRaises(RuntimeError):self.m.reconcile_existing(journal,maintenance,lambda:stopped.append(True),ingress)
+                self.assertEqual(stopped,[True])
+
+
+if __name__ == '__main__': unittest.main()
