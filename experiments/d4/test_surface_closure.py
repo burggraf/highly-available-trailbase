@@ -1011,42 +1011,131 @@ class AttestationTests(unittest.TestCase):
         self.assertEqual(calls, 0)
 
 class QuarantineTests(unittest.TestCase):
+    def _fixture(self, tmp, payload=b"safe", nested=False):
+        base = tmp / "owner-base"
+        base.mkdir(mode=0o700)
+        root = base / "q"
+        root.mkdir(mode=0o700)
+        target = root / ("nested/payload" if nested else "payload")
+        target.parent.mkdir(mode=0o700, exist_ok=True)
+        target.write_bytes(payload); target.chmod(0o600)
+        log = root / "access.log"; log.write_bytes(b""); log.chmod(0o600)
+        m = {"schema":"d4-quarantine-1", "root":str(root.resolve()), "owner_uid":os.getuid(),
+             "disposition":"pending", "files":[{"path":str(target.relative_to(root)), "sha256":hashlib.sha256(payload).hexdigest(),
+             "size":len(payload), "mode":0o600, "nlink":1, "kind":"regular"}], "file_count":1,
+             "byte_total":len(payload), "hash_algorithm":"sha256", "manifest_sha256":"",
+             "access_log":str(log.resolve())}
+        m["manifest_sha256"] = surface_closure._canonical_digest(m, "manifest_sha256")
+        manifest_path = root / "manifest.json"
+        manifest_path.write_text(json.dumps(m, sort_keys=True, separators=(",", ":"))); manifest_path.chmod(0o600)
+        return root, m, manifest_path, log, target, base
+
+    def assert_rejected(self, root, manifest):
+        with self.assertRaises(surface_closure.SurfaceError):
+            surface_closure.validate_quarantine(root, manifest)
+
     def test_only_canonical_private_manifested_roots_pass(self):
         with tempfile.TemporaryDirectory() as td:
-            base = Path(td) / "owner-base"
-            base.mkdir(mode=0o700)
-            root = base / "q"
-            root.mkdir(mode=0o700)
-            payload = b"safe"
-            (root / "payload").write_bytes(payload)
-            (root / "payload").chmod(0o600)
-            (root / "access.log").write_bytes(b"")
-            (root / "access.log").chmod(0o600)
-            uid = os.getuid()
-            m = {"schema":"d4-quarantine-1", "root":str(root.resolve()), "owner_uid":uid,
-                 "disposition":"pending", "files":[{"path":"payload","sha256":hashlib.sha256(payload).hexdigest(),"size":4,"mode":0o600,"nlink":1,"kind":"regular"}],
-                 "file_count":1,"byte_total":4,"hash_algorithm":"sha256","manifest_sha256":"","access_log":str((root/"access.log").resolve())}
-            m["manifest_sha256"] = surface_closure._canonical_digest(m, "manifest_sha256")
-            (root / "manifest.json").write_text(json.dumps(m, sort_keys=True, separators=(",", ":")))
-            (root / "manifest.json").chmod(0o600)
-            result = surface_closure.validate_quarantine(root, m)
+            root, manifest, _, _, _, _ = self._fixture(Path(td), nested=True)
+            before = copy.deepcopy(manifest)
+            result = surface_closure.validate_quarantine(root, manifest)
             self.assertTrue(result["feasible"])
+            self.assertEqual(manifest, before)
             with self.assertRaises(TypeError): result["feasible"] = False
+            with self.assertRaises(TypeError): result["entries"][0] += ("changed",)
             self.assertIsInstance(result["entries"], tuple)
             self.assertTrue(all(type(entry) is tuple for entry in result["entries"]))
-            with self.assertRaises(TypeError): result["entries"] += ((),)
 
-    def test_quarantine_rejects_tamper_and_links(self):
+    def test_quarantine_rejects_declared_metadata_and_accounting_mutations(self):
+        mutations = [
+            ("mode", lambda m, r: m["files"][0].__setitem__("mode", 0o644)),
+            ("owner", lambda m, r: m.__setitem__("owner_uid", os.getuid() + 1)),
+            ("nlink", lambda m, r: m["files"][0].__setitem__("nlink", 2)),
+            ("size", lambda m, r: m["files"][0].__setitem__("size", 99)),
+            ("hash", lambda m, r: m["files"][0].__setitem__("sha256", "0" * 64)),
+            ("file_count", lambda m, r: m.__setitem__("file_count", 2)),
+            ("bytes", lambda m, r: m.__setitem__("byte_total", 99)),
+            ("negative bytes", lambda m, r: m.__setitem__("byte_total", -1)),
+            ("oversize bytes", lambda m, r: m.__setitem__("byte_total", 268435457)),
+        ]
+        for label, mutate in mutations:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as td:
+                root, manifest, *_ = self._fixture(Path(td)); mutate(manifest, root)
+                manifest["manifest_sha256"] = surface_closure._canonical_digest(manifest, "manifest_sha256")
+                self.assert_rejected(root, manifest)
+
+    def test_quarantine_rejects_roots_modes_owners_and_dispositions(self):
+        cases = [("root", lambda m, r, b: r.chmod(0o755)), ("parent", lambda m, r, b: b.chmod(0o755)),
+                 ("owner", lambda m, r, b: m.__setitem__("owner_uid", os.getuid() + 1)),
+                 ("running", lambda m, r, b: m.__setitem__("disposition", "running")),
+                 ("released", lambda m, r, b: m.__setitem__("disposition", "released"))]
+        for label, mutate in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as td:
+                root, manifest, _, _, _, base = self._fixture(Path(td)); mutate(manifest, root, base)
+                manifest["manifest_sha256"] = surface_closure._canonical_digest(manifest, "manifest_sha256")
+                self.assert_rejected(root, manifest)
+
+    def test_quarantine_rejects_paths_types_collisions_and_special_files(self):
+        cases = [
+            ("missing", lambda m, r: (r / "payload").unlink()),
+            ("extra", lambda m, r: (r / "extra").write_bytes(b"x")),
+            ("manifest collision", lambda m, r: m["files"].__setitem__(0, dict(m["files"][0], path="manifest.json"))),
+            ("log collision", lambda m, r: m["files"].__setitem__(0, dict(m["files"][0], path="access.log"))),
+            ("duplicate path", lambda m, r: m["files"].append(dict(m["files"][0]))),
+            ("duplicate inode", lambda m, r: (os.link(r / "payload", r / "other"), m["files"].append(dict(m["files"][0], path="other")))),
+            ("symlink", lambda m, r: ((r / "payload").unlink(), (r / "payload").symlink_to(r / "outside"))),
+            ("fifo", lambda m, r: ((r / "payload").unlink(), os.mkfifo(r / "payload"))),
+        ]
+        for label, mutate in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as td:
+                root, manifest, *_ = self._fixture(Path(td));
+                try: mutate(manifest, root)
+                except FileNotFoundError: pass
+                self.assert_rejected(root, manifest)
+
+    def test_quarantine_rejects_malformed_manifest_and_access_log(self):
+        cases = [("top", lambda m: m.__setitem__("files", "bad")), ("nested", lambda m: m["files"].__setitem__(0, "bad")),
+                 ("nested type", lambda m: m["files"][0].__setitem__("size", True)),
+                 ("outside log", lambda m: m.__setitem__("access_log", "/tmp/access.log")),
+                 ("noncanonical log", lambda m: m.__setitem__("access_log", m["access_log"].replace("/access.log", "/./access.log")))]
+        for label, mutate in cases:
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as td:
+                root, manifest, *_ = self._fixture(Path(td)); mutate(manifest); self.assert_rejected(root, manifest)
+
+    def test_quarantine_rejects_control_metadata_and_fstat_race(self):
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td) / "q"; root.mkdir(mode=0o700)
-            (root / "access.log").write_bytes(b""); (root / "access.log").chmod(0o600)
-            data = b"x"; (root / "payload").write_bytes(data); (root / "payload").chmod(0o600)
-            m = {"schema":"d4-quarantine-1", "root":str(root.resolve()), "owner_uid":os.getuid(), "disposition":"pending", "files":[{"path":"payload","sha256":hashlib.sha256(data).hexdigest(),"size":1,"mode":384,"nlink":1,"kind":"regular"}], "file_count":1,"byte_total":1,"hash_algorithm":"sha256","manifest_sha256":"","access_log":str((root/"access.log").resolve())}
-            m["manifest_sha256"] = surface_closure._canonical_digest(m, "manifest_sha256")
-            (root / "manifest.json").write_text(json.dumps(m, sort_keys=True, separators=(",", ":")))
-            (root / "manifest.json").chmod(0o600)
-            (root / "payload").write_bytes(b"tampered")
-            with self.assertRaises(surface_closure.SurfaceError): surface_closure.validate_quarantine(root, m)
+            root, manifest, manifest_path, log, target, _ = self._fixture(Path(td))
+            manifest_path.write_text(manifest_path.read_text().replace("d4-quarantine-1", "wrong")); self.assert_rejected(root, manifest)
+            manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
+            manifest_path.chmod(0o644); self.assert_rejected(root, manifest)
+            manifest_path.chmod(0o600); target.chmod(0o644); self.assert_rejected(root, manifest)
+            manifest_path.chmod(0o600); log.chmod(0o644); self.assert_rejected(root, manifest)
+            log.chmod(0o600)
+            target.unlink(); nested_dir = root / "nested"; nested_dir.mkdir(mode=0o700)
+            nested_target = nested_dir / "payload"; nested_target.write_bytes(b"safe"); nested_target.chmod(0o600)
+            manifest["files"][0]["path"] = "nested/payload"
+            manifest["manifest_sha256"] = surface_closure._canonical_digest(manifest, "manifest_sha256")
+            nested_dir.chmod(0o755); self.assert_rejected(root, manifest)
+            real_fstat = os.fstat
+            calls = 0
+            def racing(fd):
+                nonlocal calls
+                calls += 1; st = real_fstat(fd)
+                if calls == 8: os.utime(root / "payload", None)
+                return st
+            with mock.patch.object(surface_closure.os, "fstat", side_effect=racing):
+                self.assert_rejected(root, manifest)
+
+    def test_quarantine_snapshot_is_exact_and_input_unchanged(self):
+        with tempfile.TemporaryDirectory() as td:
+            root, manifest, *_ = self._fixture(Path(td), nested=True)
+            def tree(path):
+                return sorted((str(p.relative_to(path)), p.lstat().st_mode, p.lstat().st_size, p.read_bytes() if p.is_file() else None)
+                              for p in path.rglob("*") if not p.is_symlink())
+            before = tree(root); original = copy.deepcopy(manifest)
+            result = surface_closure.validate_quarantine(root, manifest)
+            self.assertEqual(tree(root), before); self.assertEqual(manifest, original)
+            self.assertEqual(result["file_count"], 1); self.assertEqual(result["byte_total"], 4)
 
 if __name__ == "__main__":
     unittest.main()
