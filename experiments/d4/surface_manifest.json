@@ -14,283 +14,779 @@
   "source_files": [
     {
       "file": "crates/core/src/admin/backup.rs",
-      "sha256": "0dac57c98710215904a24469532f2604e7c8f3794323342cf7ea501fe7fba89b"
+      "sha256": "0dac57c98710215904a24469532f2604e7c8f3794323342cf7ea501fe7fba89b",
+      "anchors": [
+        {
+          "line": 28,
+          "contains": "list_backups_handler"
+        },
+        {
+          "line": 52,
+          "contains": "trigger_backup_handler"
+        },
+        {
+          "line": 102,
+          "contains": "delete_backups_handler"
+        },
+        {
+          "line": 134,
+          "contains": "restore_backup_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/config/get_config.rs",
-      "sha256": "d1e1464515fdae06538a207259f7bd5b9b8bbecbd796d6db5e60b2fdb43229c6"
+      "sha256": "d1e1464515fdae06538a207259f7bd5b9b8bbecbd796d6db5e60b2fdb43229c6",
+      "anchors": [
+        {
+          "line": 20,
+          "contains": "get_config_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/config/update_config.rs",
-      "sha256": "c891e35ebf3fe7e3d5db5bcb4008179ec5f0b9df3cc85b1e7ba0db98d0e9a230"
+      "sha256": "c891e35ebf3fe7e3d5db5bcb4008179ec5f0b9df3cc85b1e7ba0db98d0e9a230",
+      "anchors": [
+        {
+          "line": 26,
+          "contains": "update_config_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/email.rs",
-      "sha256": "16a81ce099d295814ecba71c3e0c0197c0b73ce971d9bcc036f094d64fe9c954"
+      "sha256": "16a81ce099d295814ecba71c3e0c0197c0b73ce971d9bcc036f094d64fe9c954",
+      "anchors": [
+        {
+          "line": 30,
+          "contains": "test_email_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/info.rs",
-      "sha256": "7e694b30b2c6b5d9862721dd8c39c1a4dcc36305a0d7c525f6b62bd272c9e192"
+      "sha256": "7e694b30b2c6b5d9862721dd8c39c1a4dcc36305a0d7c525f6b62bd272c9e192",
+      "anchors": [
+        {
+          "line": 41,
+          "contains": "info_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/jobs/list_jobs.rs",
-      "sha256": "fd53061bb3e955334d146986824bc2f3ef21038fa76e764242c4511da84d828c"
+      "sha256": "fd53061bb3e955334d146986824bc2f3ef21038fa76e764242c4511da84d828c",
+      "anchors": [
+        {
+          "line": 35,
+          "contains": "list_jobs_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/jobs/run_job.rs",
-      "sha256": "94b8e413f0ef8ea2853114547d6707a8cb06f9ad45d010bf232c30cf4d49cb05"
+      "sha256": "94b8e413f0ef8ea2853114547d6707a8cb06f9ad45d010bf232c30cf4d49cb05",
+      "anchors": [
+        {
+          "line": 29,
+          "contains": "run_job_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/json_schema/get_api_json_schema.rs",
-      "sha256": "72a444c097f1f792b425184b3bf8576657d98d46948366f153b4a8b80d29bafc"
+      "sha256": "72a444c097f1f792b425184b3bf8576657d98d46948366f153b4a8b80d29bafc",
+      "anchors": [
+        {
+          "line": 26,
+          "contains": "get_api_json_schema_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/json_schema/mod.rs",
-      "sha256": "f14ae788c6d6059b354b41360e810df1dc5a839a9ead0251f3e9c404d524ee68"
+      "sha256": "f14ae788c6d6059b354b41360e810df1dc5a839a9ead0251f3e9c404d524ee68",
+      "anchors": [
+        {
+          "line": 33,
+          "contains": "list_schemas_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/jwt.rs",
-      "sha256": "15c7b881c79428b76f500b788444dcfca1640209dc4a4d73fcf03ddce634214f"
+      "sha256": "15c7b881c79428b76f500b788444dcfca1640209dc4a4d73fcf03ddce634214f",
+      "anchors": [
+        {
+          "line": 14,
+          "contains": "get_public_key"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/logs/list_logs.rs",
-      "sha256": "865739593978eb31d490000310cd060b030e9a55f49d318084e65b45feb81525"
+      "sha256": "865739593978eb31d490000310cd060b030e9a55f49d318084e65b45feb81525",
+      "anchors": [
+        {
+          "line": 36,
+          "contains": "list_logs_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/logs/stats.rs",
-      "sha256": "d158c54feb49d56655a9475e4a557fe9858d434b2eb4357f1ff08067cdd7739d"
+      "sha256": "d158c54feb49d56655a9475e4a557fe9858d434b2eb4357f1ff08067cdd7739d",
+      "anchors": [
+        {
+          "line": 37,
+          "contains": "fetch_stats_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/mint.rs",
-      "sha256": "578c5f0ec07fecc356840ceea5adca5b5913d6afd06ee7b7ac0a19a0244ce6c5"
+      "sha256": "578c5f0ec07fecc356840ceea5adca5b5913d6afd06ee7b7ac0a19a0244ce6c5",
+      "anchors": [
+        {
+          "line": 27,
+          "contains": "mint_auth_tokens"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/mod.rs",
-      "sha256": "0694abe5cebd387b904cace6bb43a8e247475f48407b899a235a12e7c4c1d42d"
+      "sha256": "0694abe5cebd387b904cace6bb43a8e247475f48407b899a235a12e7c4c1d42d",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": ""
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/oauth_providers.rs",
-      "sha256": "ce0ce610ef4232ec2c773dd4322988e8c53219c55380a9fd39e8177418def416"
+      "sha256": "ce0ce610ef4232ec2c773dd4322988e8c53219c55380a9fd39e8177418def416",
+      "anchors": [
+        {
+          "line": 31,
+          "contains": "available_oauth_providers_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/openapi.rs",
-      "sha256": "0e3a4c4951e419f4f1b1f8944ee90d59611f2680586b09a23338e845e93c027a"
+      "sha256": "0e3a4c4951e419f4f1b1f8944ee90d59611f2680586b09a23338e845e93c027a",
+      "anchors": [
+        {
+          "line": 14,
+          "contains": "openapi_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/parse.rs",
-      "sha256": "feec14272a94f2b1596c02fedc124d2f5892117a960e16fd17893b74d0afec3a"
+      "sha256": "feec14272a94f2b1596c02fedc124d2f5892117a960e16fd17893b74d0afec3a",
+      "anchors": [
+        {
+          "line": 45,
+          "contains": "parse_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/query.rs",
-      "sha256": "fcda5077c835ea18e78f073ce5a8348a928fc2e4e7dfae10f34b46cce1d5d8e8"
+      "sha256": "fcda5077c835ea18e78f073ce5a8348a928fc2e4e7dfae10f34b46cce1d5d8e8",
+      "anchors": [
+        {
+          "line": 45,
+          "contains": "query_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/rows/delete_rows.rs",
-      "sha256": "a45bae1f75f414ff458a296a70c4a34eddbb6fc0374b7f7f64e9beebbc4108e6"
+      "sha256": "a45bae1f75f414ff458a296a70c4a34eddbb6fc0374b7f7f64e9beebbc4108e6",
+      "anchors": [
+        {
+          "line": 34,
+          "contains": "delete_row_handler"
+        },
+        {
+          "line": 113,
+          "contains": "delete_rows_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/rows/insert_row.rs",
-      "sha256": "65c13d8ecdd3d9b79bfe3f4256af0f2d25dfec9472e0349d4dc71986f0bc66c3"
+      "sha256": "65c13d8ecdd3d9b79bfe3f4256af0f2d25dfec9472e0349d4dc71986f0bc66c3",
+      "anchors": [
+        {
+          "line": 36,
+          "contains": "insert_row_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/rows/list_rows.rs",
-      "sha256": "2632444c89947461f473b4dce20e1431d37ff760ceacfcf6b92d9aad0756bb00"
+      "sha256": "2632444c89947461f473b4dce20e1431d37ff760ceacfcf6b92d9aad0756bb00",
+      "anchors": [
+        {
+          "line": 45,
+          "contains": "list_rows_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/rows/read_files.rs",
-      "sha256": "39045c3167d0aa3b384f7bf341aa66668f6e59441806b639fdd9a37ea6a8bd35"
+      "sha256": "39045c3167d0aa3b384f7bf341aa66668f6e59441806b639fdd9a37ea6a8bd35",
+      "anchors": [
+        {
+          "line": 40,
+          "contains": "read_files_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/rows/update_row.rs",
-      "sha256": "6ac72e8ededc269b43c10a35d73ee9df45ab205db734e85badec1dd27ef55218"
+      "sha256": "6ac72e8ededc269b43c10a35d73ee9df45ab205db734e85badec1dd27ef55218",
+      "anchors": [
+        {
+          "line": 36,
+          "contains": "update_row_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/table/alter_index.rs",
-      "sha256": "14c7da2ed0ccfbfc655a31f99766d539227b6f84c3e1df75789517d3a8fb0c55"
+      "sha256": "14c7da2ed0ccfbfc655a31f99766d539227b6f84c3e1df75789517d3a8fb0c55",
+      "anchors": [
+        {
+          "line": 34,
+          "contains": "alter_index_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/table/alter_table.rs",
-      "sha256": "c2b28b4bb96175d9a6bceabe0a95bdde78823d9fcbfd5b7304fed7120e4d3adb"
+      "sha256": "c2b28b4bb96175d9a6bceabe0a95bdde78823d9fcbfd5b7304fed7120e4d3adb",
+      "anchors": [
+        {
+          "line": 51,
+          "contains": "alter_table_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/table/create_index.rs",
-      "sha256": "4de560596219a001e3d6dc81b674f068a52ad0347271d75699bd4e737b673b27"
+      "sha256": "4de560596219a001e3d6dc81b674f068a52ad0347271d75699bd4e737b673b27",
+      "anchors": [
+        {
+          "line": 32,
+          "contains": "create_index_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/table/create_table.rs",
-      "sha256": "82682db07bc24b6d7bf90d763207d6cf5a3154478d89b48df6a931a88314838b"
+      "sha256": "82682db07bc24b6d7bf90d763207d6cf5a3154478d89b48df6a931a88314838b",
+      "anchors": [
+        {
+          "line": 32,
+          "contains": "create_table_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/table/drop_index.rs",
-      "sha256": "57c1da62da3a2cc181bcbc105bbc334419d8f88f3151f73779559583e137e1af"
+      "sha256": "57c1da62da3a2cc181bcbc105bbc334419d8f88f3151f73779559583e137e1af",
+      "anchors": [
+        {
+          "line": 33,
+          "contains": "drop_index_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/table/drop_table.rs",
-      "sha256": "68f6540297332ba2fab6fe79628d1bf47a64fac04555a19358226c8d5cefe7aa"
+      "sha256": "68f6540297332ba2fab6fe79628d1bf47a64fac04555a19358226c8d5cefe7aa",
+      "anchors": [
+        {
+          "line": 36,
+          "contains": "drop_table_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/table/list_tables.rs",
-      "sha256": "881400b21f720de0155bb44df3d4d6c0dce4c37e03d9713370bc9200824b4dda"
+      "sha256": "881400b21f720de0155bb44df3d4d6c0dce4c37e03d9713370bc9200824b4dda",
+      "anchors": [
+        {
+          "line": 44,
+          "contains": "list_tables_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/user/create_user.rs",
-      "sha256": "e51e05aa945bfe0d6960872ac78239db8edc0b6d92a843bcb0ac900fc1663227"
+      "sha256": "e51e05aa945bfe0d6960872ac78239db8edc0b6d92a843bcb0ac900fc1663227",
+      "anchors": [
+        {
+          "line": 47,
+          "contains": "create_user_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/user/delete_user.rs",
-      "sha256": "656e659da79b5b48102be79ae4b56f259e1c7cbe621d568feee1545f376cda97"
+      "sha256": "656e659da79b5b48102be79ae4b56f259e1c7cbe621d568feee1545f376cda97",
+      "anchors": [
+        {
+          "line": 33,
+          "contains": "delete_user_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/user/list_users.rs",
-      "sha256": "4e960b375756fd29b3504fbb9be1e5f2aa4860d8f3674ee19d619b5802a7ee3d"
+      "sha256": "4e960b375756fd29b3504fbb9be1e5f2aa4860d8f3674ee19d619b5802a7ee3d",
+      "anchors": [
+        {
+          "line": 67,
+          "contains": "list_users_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/user/update_user.rs",
-      "sha256": "804ad8ea09bc8b8efa1ead101f5b39f73c7867c6404b77d6b582de313d28d749"
+      "sha256": "804ad8ea09bc8b8efa1ead101f5b39f73c7867c6404b77d6b582de313d28d749",
+      "anchors": [
+        {
+          "line": 46,
+          "contains": "update_user_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/admin/wasm.rs",
-      "sha256": "2df4c7270ae69d14d013c9d54763ca867496394f3bf548314fe0bed70cef9cdd"
+      "sha256": "2df4c7270ae69d14d013c9d54763ca867496394f3bf548314fe0bed70cef9cdd",
+      "anchors": [
+        {
+          "line": 89,
+          "contains": "list_wasm_components_handler"
+        },
+        {
+          "line": 184,
+          "contains": "install_wasm_component_handler"
+        },
+        {
+          "line": 233,
+          "contains": "uninstall_wasm_component_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/auth/api/avatar.rs",
-      "sha256": "3731c67be1478d5426e0d2deb83605797b076ff70bfec41db9fbb94e0ddaab5f"
+      "sha256": "3731c67be1478d5426e0d2deb83605797b076ff70bfec41db9fbb94e0ddaab5f",
+      "anchors": [
+        {
+          "line": 26,
+          "contains": "get_avatar_handler"
+        },
+        {
+          "line": 59,
+          "contains": "create_avatar_handler"
+        },
+        {
+          "line": 124,
+          "contains": "delete_avatar_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/auth/api/change_email.rs",
-      "sha256": "71a242f4f8615edffd349f31c427acda7c84e8e402ec936e514dd94f62c44df3"
+      "sha256": "71a242f4f8615edffd349f31c427acda7c84e8e402ec936e514dd94f62c44df3",
+      "anchors": [
+        {
+          "line": 54,
+          "contains": "change_email_request_handler"
+        },
+        {
+          "line": 209,
+          "contains": "change_email_confirm_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/auth/api/change_password.rs",
-      "sha256": "fdf49c48766e6ca923cb01756a914877469c69606fd089f42e1bcc5ecdbaab2e"
+      "sha256": "fdf49c48766e6ca923cb01756a914877469c69606fd089f42e1bcc5ecdbaab2e",
+      "anchors": [
+        {
+          "line": 50,
+          "contains": "change_password_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/auth/api/change_username.rs",
-      "sha256": "9f6a14003621d8b163ebae4e3348b1f4ee509a7e8ddba8f2ab55593443714078"
+      "sha256": "9f6a14003621d8b163ebae4e3348b1f4ee509a7e8ddba8f2ab55593443714078",
+      "anchors": [
+        {
+          "line": 48,
+          "contains": "change_username_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/auth/api/delete.rs",
-      "sha256": "d1bedac984b602ef784f8fd965df79f035ef4818e1ba95a994a03fa688c10d8b"
+      "sha256": "d1bedac984b602ef784f8fd965df79f035ef4818e1ba95a994a03fa688c10d8b",
+      "anchors": [
+        {
+          "line": 22,
+          "contains": "delete_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/auth/api/login.rs",
-      "sha256": "cdd0036b5eaff037f91372d695a20a89914600344a1c5f7e77814d2822f50c71"
+      "sha256": "cdd0036b5eaff037f91372d695a20a89914600344a1c5f7e77814d2822f50c71",
+      "anchors": [
+        {
+          "line": 92,
+          "contains": "login_handler"
+        },
+        {
+          "line": 426,
+          "contains": "login_mfa_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/auth/api/login_anonymous.rs",
-      "sha256": "7d134b80c771fcd13f416ede737ef8c7e6e05348bea8449e9c5286debd2e2e38"
+      "sha256": "7d134b80c771fcd13f416ede737ef8c7e6e05348bea8449e9c5286debd2e2e38",
+      "anchors": [
+        {
+          "line": 38,
+          "contains": "login_anonymous_user_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/auth/api/logout.rs",
-      "sha256": "2d37f0e1c836a2fb945271881877212b333f97fff58bfafd6b14d759063c91bd"
+      "sha256": "2d37f0e1c836a2fb945271881877212b333f97fff58bfafd6b14d759063c91bd",
+      "anchors": [
+        {
+          "line": 35,
+          "contains": "logout_handler"
+        },
+        {
+          "line": 77,
+          "contains": "post_logout_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/auth/api/otp.rs",
-      "sha256": "5358123fa44d4c9ff9f4a8ab6f78714d96b12ae891a69cc26313af7e92031ad5"
+      "sha256": "5358123fa44d4c9ff9f4a8ab6f78714d96b12ae891a69cc26313af7e92031ad5",
+      "anchors": [
+        {
+          "line": 74,
+          "contains": "request_otp_handler"
+        },
+        {
+          "line": 240,
+          "contains": "login_otp_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/auth/api/promote_anonymous.rs",
-      "sha256": "7e8ca89617114a8eab5a120d3cee3761a2c7ec0ee74e2b3c1440a3d055352316"
+      "sha256": "7e8ca89617114a8eab5a120d3cee3761a2c7ec0ee74e2b3c1440a3d055352316",
+      "anchors": [
+        {
+          "line": 53,
+          "contains": "promote_anonymous_user_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/auth/api/refresh.rs",
-      "sha256": "2a9cebfebfbde6e3646c443ae294d78a4903022ff0c4fe1506bae75c258e0649"
+      "sha256": "2a9cebfebfbde6e3646c443ae294d78a4903022ff0c4fe1506bae75c258e0649",
+      "anchors": [
+        {
+          "line": 35,
+          "contains": "refresh_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/auth/api/register.rs",
-      "sha256": "4247768a8a90bb14865c7f69269510c9cd70a7dabb3b48bd810692eb80dd2eb5"
+      "sha256": "4247768a8a90bb14865c7f69269510c9cd70a7dabb3b48bd810692eb80dd2eb5",
+      "anchors": [
+        {
+          "line": 53,
+          "contains": "register_user_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/auth/api/reset_password.rs",
-      "sha256": "46e096d61c5f80aa10ebf2a946f07fe3a0f0b46e01d910605b58ff0840e9788b"
+      "sha256": "46e096d61c5f80aa10ebf2a946f07fe3a0f0b46e01d910605b58ff0840e9788b",
+      "anchors": [
+        {
+          "line": 59,
+          "contains": "reset_password_request_handler"
+        },
+        {
+          "line": 169,
+          "contains": "reset_password_update_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/auth/api/status.rs",
-      "sha256": "a86f94a735e49dee2910d8a88c3e19eb4cdb7a3a6db2ae7546f6d6c3d427e604"
+      "sha256": "a86f94a735e49dee2910d8a88c3e19eb4cdb7a3a6db2ae7546f6d6c3d427e604",
+      "anchors": [
+        {
+          "line": 30,
+          "contains": "login_status_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/auth/api/token.rs",
-      "sha256": "e7b033f2d4eb463ab9a32bb56521a4a010d42f369dbcb14bbe4a4155220802c7"
+      "sha256": "e7b033f2d4eb463ab9a32bb56521a4a010d42f369dbcb14bbe4a4155220802c7",
+      "anchors": [
+        {
+          "line": 42,
+          "contains": "auth_code_to_token_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/auth/api/totp.rs",
-      "sha256": "da153d3506dda259341f0a87d2eeafac36aee87b8ac293ad99bba0fc7a8b6d9a"
+      "sha256": "da153d3506dda259341f0a87d2eeafac36aee87b8ac293ad99bba0fc7a8b6d9a",
+      "anchors": [
+        {
+          "line": 43,
+          "contains": "register_totp_request_handler"
+        },
+        {
+          "line": 102,
+          "contains": "register_totp_confirm_handler"
+        },
+        {
+          "line": 148,
+          "contains": "unregister_totp_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/auth/api/verify_email.rs",
-      "sha256": "f488de46f7cb08d0802a9eed838bbf85cf45bad3dac78fde0a667f8f319e53b4"
+      "sha256": "f488de46f7cb08d0802a9eed838bbf85cf45bad3dac78fde0a667f8f319e53b4",
+      "anchors": [
+        {
+          "line": 37,
+          "contains": "request_email_verification_handler"
+        },
+        {
+          "line": 102,
+          "contains": "verify_email_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/auth/mod.rs",
-      "sha256": "264e289a46a1cc206a7dc1d86db6962bdf02484e856cce7ac875e6179d8a016f"
+      "sha256": "264e289a46a1cc206a7dc1d86db6962bdf02484e856cce7ac875e6179d8a016f",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": ""
+        }
+      ]
     },
     {
       "file": "crates/core/src/auth/oauth/callback.rs",
-      "sha256": "0e3d1525baa90ce2845be9983c67ef303f89bfee1523c467c4eacfe78eb3aea4"
+      "sha256": "0e3d1525baa90ce2845be9983c67ef303f89bfee1523c467c4eacfe78eb3aea4",
+      "anchors": [
+        {
+          "line": 50,
+          "contains": "callback_from_external_auth_provider_get"
+        },
+        {
+          "line": 70,
+          "contains": "callback_from_external_auth_provider_post"
+        }
+      ]
     },
     {
       "file": "crates/core/src/auth/oauth/list_providers.rs",
-      "sha256": "5b395f3abf936f6dc77156bf564f376ae542b529685526340efc0702191fa6c6"
+      "sha256": "5b395f3abf936f6dc77156bf564f376ae542b529685526340efc0702191fa6c6",
+      "anchors": [
+        {
+          "line": 26,
+          "contains": "list_configured_providers_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/auth/oauth/login.rs",
-      "sha256": "fb51e57ee88b2c38fa37cba15659f017a279026c73b1e73c44fc70c79ace296a"
+      "sha256": "fb51e57ee88b2c38fa37cba15659f017a279026c73b1e73c44fc70c79ace296a",
+      "anchors": [
+        {
+          "line": 26,
+          "contains": "login_with_external_auth_provider"
+        }
+      ]
     },
     {
       "file": "crates/core/src/auth/oauth/mod.rs",
-      "sha256": "9a68dd34dc3291e0371d84c305e5da970a8987cd3949586cbb8fb460ec4b83bf"
+      "sha256": "9a68dd34dc3291e0371d84c305e5da970a8987cd3949586cbb8fb460ec4b83bf",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": ""
+        }
+      ]
     },
     {
       "file": "crates/core/src/constants.rs",
-      "sha256": "53561a98903bf7ee62a3a2a7effb3fedcd43eec0eb892a9b76b7da9873e64dde"
+      "sha256": "53561a98903bf7ee62a3a2a7effb3fedcd43eec0eb892a9b76b7da9873e64dde",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": ""
+        }
+      ]
     },
     {
       "file": "crates/core/src/email.rs",
-      "sha256": "fa1e1792822c1344a667583bf39f155af3de699f8396c8d0facf2c6de4714226"
+      "sha256": "fa1e1792822c1344a667583bf39f155af3de699f8396c8d0facf2c6de4714226",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": ""
+        }
+      ]
     },
     {
       "file": "crates/core/src/openapi.rs",
-      "sha256": "c1a94be01d880dddab29ae0a364d2e645eed1bbb518e225b3f40fdd852379b70"
+      "sha256": "c1a94be01d880dddab29ae0a364d2e645eed1bbb518e225b3f40fdd852379b70",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": ""
+        }
+      ]
     },
     {
       "file": "crates/core/src/records/create_record.rs",
-      "sha256": "d2e7ef71dbfc1548c6f6595945101400f7215058c834c6ae9cd1b5daef7c2486"
+      "sha256": "d2e7ef71dbfc1548c6f6595945101400f7215058c834c6ae9cd1b5daef7c2486",
+      "anchors": [
+        {
+          "line": 82,
+          "contains": "create_record_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/records/delete_record.rs",
-      "sha256": "9b3cabf0de1d90998e37a45bd7dbd16ab7bcaff9356ed2c7e64431763a5d3f89"
+      "sha256": "9b3cabf0de1d90998e37a45bd7dbd16ab7bcaff9356ed2c7e64431763a5d3f89",
+      "anchors": [
+        {
+          "line": 21,
+          "contains": "delete_record_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/records/json_schema.rs",
-      "sha256": "fd5c78e565fa980f18d3fc55dd02968dce628190e1795e63cc1371d83948939e"
+      "sha256": "fd5c78e565fa980f18d3fc55dd02968dce628190e1795e63cc1371d83948939e",
+      "anchors": [
+        {
+          "line": 25,
+          "contains": "json_schema_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/records/list_records.rs",
-      "sha256": "473ce4d4467bf1f67a198547aa720d73586d5e2e84a950349fb2575eae73020c"
+      "sha256": "473ce4d4467bf1f67a198547aa720d73586d5e2e84a950349fb2575eae73020c",
+      "anchors": [
+        {
+          "line": 85,
+          "contains": "list_records_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/records/mod.rs",
-      "sha256": "b0c5aa8ca06b4d514b13ceb7a692d902944016d400474d234888f19bfefb9aa7"
+      "sha256": "b0c5aa8ca06b4d514b13ceb7a692d902944016d400474d234888f19bfefb9aa7",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": ""
+        }
+      ]
     },
     {
       "file": "crates/core/src/records/read_record.rs",
-      "sha256": "6ac91ab711e48c7da81ffc7b5cf4903ba357617d1c08b869d11e453b879f299f"
+      "sha256": "6ac91ab711e48c7da81ffc7b5cf4903ba357617d1c08b869d11e453b879f299f",
+      "anchors": [
+        {
+          "line": 37,
+          "contains": "read_record_handler"
+        },
+        {
+          "line": 156,
+          "contains": "get_uploaded_file_from_record_handler"
+        },
+        {
+          "line": 212,
+          "contains": "get_uploaded_files_from_record_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/records/subscribe/handler.rs",
-      "sha256": "5b8ac2d4afd661117295fbf1e27e337f6dc379596edd96c3eb52020a4946d6ca"
+      "sha256": "5b8ac2d4afd661117295fbf1e27e337f6dc379596edd96c3eb52020a4946d6ca",
+      "anchors": [
+        {
+          "line": 52,
+          "contains": "add_subscription_sse_and_ws_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/records/transaction.rs",
-      "sha256": "043d0e5ed7c4f74ba034f17f2edc7224ef13e0cac412dbc0a6e57501bdb7fb19"
+      "sha256": "043d0e5ed7c4f74ba034f17f2edc7224ef13e0cac412dbc0a6e57501bdb7fb19",
+      "anchors": [
+        {
+          "line": 66,
+          "contains": "record_transactions_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/records/update_record.rs",
-      "sha256": "8a5a2b7c444b49922d131f0011cd035007c3df6cac6fffa8947a5004cf9e9126"
+      "sha256": "8a5a2b7c444b49922d131f0011cd035007c3df6cac6fffa8947a5004cf9e9126",
+      "anchors": [
+        {
+          "line": 20,
+          "contains": "update_record_handler"
+        }
+      ]
     },
     {
       "file": "crates/core/src/server/mod.rs",
-      "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013"
+      "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
+      "anchors": [
+        {
+          "line": 549,
+          "contains": "healthcheck_handler"
+        }
+      ]
     }
   ],
   "capabilities": [
@@ -368,25 +864,325 @@
         "crates/core/src/records/transaction.rs",
         "crates/core/src/records/update_record.rs",
         "crates/core/src/server/mod.rs"
-      ]
+      ],
+      "edges": [
+        "conditional_arms",
+        "listeners"
+      ],
+      "condition": "always"
+    },
+    {
+      "name": "conditional_arms",
+      "class": "conditional",
+      "source_files": [
+        "crates/core/src/admin/backup.rs",
+        "crates/core/src/admin/config/get_config.rs",
+        "crates/core/src/admin/config/update_config.rs",
+        "crates/core/src/admin/email.rs",
+        "crates/core/src/admin/info.rs",
+        "crates/core/src/admin/jobs/list_jobs.rs",
+        "crates/core/src/admin/jobs/run_job.rs",
+        "crates/core/src/admin/json_schema/get_api_json_schema.rs",
+        "crates/core/src/admin/json_schema/mod.rs",
+        "crates/core/src/admin/jwt.rs",
+        "crates/core/src/admin/logs/list_logs.rs",
+        "crates/core/src/admin/logs/stats.rs",
+        "crates/core/src/admin/mint.rs",
+        "crates/core/src/admin/mod.rs",
+        "crates/core/src/admin/oauth_providers.rs",
+        "crates/core/src/admin/openapi.rs",
+        "crates/core/src/admin/parse.rs",
+        "crates/core/src/admin/query.rs",
+        "crates/core/src/admin/rows/delete_rows.rs",
+        "crates/core/src/admin/rows/insert_row.rs",
+        "crates/core/src/admin/rows/list_rows.rs",
+        "crates/core/src/admin/rows/read_files.rs",
+        "crates/core/src/admin/rows/update_row.rs",
+        "crates/core/src/admin/table/alter_index.rs",
+        "crates/core/src/admin/table/alter_table.rs",
+        "crates/core/src/admin/table/create_index.rs",
+        "crates/core/src/admin/table/create_table.rs",
+        "crates/core/src/admin/table/drop_index.rs",
+        "crates/core/src/admin/table/drop_table.rs",
+        "crates/core/src/admin/table/list_tables.rs",
+        "crates/core/src/admin/user/create_user.rs",
+        "crates/core/src/admin/user/delete_user.rs",
+        "crates/core/src/admin/user/list_users.rs",
+        "crates/core/src/admin/user/update_user.rs",
+        "crates/core/src/admin/wasm.rs"
+      ],
+      "edges": [
+        "dynamic_routers"
+      ],
+      "condition": "enabled and independently observed"
     },
     {
       "name": "jobs",
       "class": "job",
       "source_files": [
+        "crates/core/src/admin/backup.rs",
+        "crates/core/src/admin/config/get_config.rs",
+        "crates/core/src/admin/config/update_config.rs",
+        "crates/core/src/admin/email.rs",
+        "crates/core/src/admin/info.rs",
         "crates/core/src/admin/jobs/list_jobs.rs",
-        "crates/core/src/admin/jobs/run_job.rs"
-      ]
+        "crates/core/src/admin/jobs/run_job.rs",
+        "crates/core/src/admin/json_schema/get_api_json_schema.rs",
+        "crates/core/src/admin/json_schema/mod.rs",
+        "crates/core/src/admin/jwt.rs",
+        "crates/core/src/admin/logs/list_logs.rs",
+        "crates/core/src/admin/logs/stats.rs",
+        "crates/core/src/admin/mint.rs",
+        "crates/core/src/admin/mod.rs",
+        "crates/core/src/admin/oauth_providers.rs",
+        "crates/core/src/admin/openapi.rs",
+        "crates/core/src/admin/parse.rs",
+        "crates/core/src/admin/query.rs",
+        "crates/core/src/admin/rows/delete_rows.rs",
+        "crates/core/src/admin/rows/insert_row.rs",
+        "crates/core/src/admin/rows/list_rows.rs",
+        "crates/core/src/admin/rows/read_files.rs",
+        "crates/core/src/admin/rows/update_row.rs",
+        "crates/core/src/admin/table/alter_index.rs",
+        "crates/core/src/admin/table/alter_table.rs",
+        "crates/core/src/admin/table/create_index.rs",
+        "crates/core/src/admin/table/create_table.rs",
+        "crates/core/src/admin/table/drop_index.rs",
+        "crates/core/src/admin/table/drop_table.rs",
+        "crates/core/src/admin/table/list_tables.rs",
+        "crates/core/src/admin/user/create_user.rs",
+        "crates/core/src/admin/user/delete_user.rs",
+        "crates/core/src/admin/user/list_users.rs",
+        "crates/core/src/admin/user/update_user.rs",
+        "crates/core/src/admin/wasm.rs"
+      ],
+      "edges": [
+        "dynamic_routers"
+      ],
+      "condition": "enabled and independently observed"
+    },
+    {
+      "name": "dynamic_routers",
+      "class": "dynamic_router",
+      "source_files": [
+        "crates/core/src/admin/backup.rs",
+        "crates/core/src/admin/config/get_config.rs",
+        "crates/core/src/admin/config/update_config.rs",
+        "crates/core/src/admin/email.rs",
+        "crates/core/src/admin/info.rs",
+        "crates/core/src/admin/jobs/list_jobs.rs",
+        "crates/core/src/admin/jobs/run_job.rs",
+        "crates/core/src/admin/json_schema/get_api_json_schema.rs",
+        "crates/core/src/admin/json_schema/mod.rs",
+        "crates/core/src/admin/jwt.rs",
+        "crates/core/src/admin/logs/list_logs.rs",
+        "crates/core/src/admin/logs/stats.rs",
+        "crates/core/src/admin/mint.rs",
+        "crates/core/src/admin/mod.rs",
+        "crates/core/src/admin/oauth_providers.rs",
+        "crates/core/src/admin/openapi.rs",
+        "crates/core/src/admin/parse.rs",
+        "crates/core/src/admin/query.rs",
+        "crates/core/src/admin/rows/delete_rows.rs",
+        "crates/core/src/admin/rows/insert_row.rs",
+        "crates/core/src/admin/rows/list_rows.rs",
+        "crates/core/src/admin/rows/read_files.rs",
+        "crates/core/src/admin/rows/update_row.rs",
+        "crates/core/src/admin/table/alter_index.rs",
+        "crates/core/src/admin/table/alter_table.rs",
+        "crates/core/src/admin/table/create_index.rs",
+        "crates/core/src/admin/table/create_table.rs",
+        "crates/core/src/admin/table/drop_index.rs",
+        "crates/core/src/admin/table/drop_table.rs",
+        "crates/core/src/admin/table/list_tables.rs",
+        "crates/core/src/admin/user/create_user.rs",
+        "crates/core/src/admin/user/delete_user.rs",
+        "crates/core/src/admin/user/list_users.rs",
+        "crates/core/src/admin/user/update_user.rs",
+        "crates/core/src/admin/wasm.rs"
+      ],
+      "edges": [
+        "dynamic_routers"
+      ],
+      "condition": "enabled and independently observed"
     },
     {
       "name": "listeners",
       "class": "listener",
-      "source_files": []
+      "source_files": [
+        "crates/core/src/admin/backup.rs",
+        "crates/core/src/admin/config/get_config.rs",
+        "crates/core/src/admin/config/update_config.rs",
+        "crates/core/src/admin/email.rs",
+        "crates/core/src/admin/info.rs",
+        "crates/core/src/admin/jobs/list_jobs.rs",
+        "crates/core/src/admin/jobs/run_job.rs",
+        "crates/core/src/admin/json_schema/get_api_json_schema.rs",
+        "crates/core/src/admin/json_schema/mod.rs",
+        "crates/core/src/admin/jwt.rs",
+        "crates/core/src/admin/logs/list_logs.rs",
+        "crates/core/src/admin/logs/stats.rs",
+        "crates/core/src/admin/mint.rs",
+        "crates/core/src/admin/mod.rs",
+        "crates/core/src/admin/oauth_providers.rs",
+        "crates/core/src/admin/openapi.rs",
+        "crates/core/src/admin/parse.rs",
+        "crates/core/src/admin/query.rs",
+        "crates/core/src/admin/rows/delete_rows.rs",
+        "crates/core/src/admin/rows/insert_row.rs",
+        "crates/core/src/admin/rows/list_rows.rs",
+        "crates/core/src/admin/rows/read_files.rs",
+        "crates/core/src/admin/rows/update_row.rs",
+        "crates/core/src/admin/table/alter_index.rs",
+        "crates/core/src/admin/table/alter_table.rs",
+        "crates/core/src/admin/table/create_index.rs",
+        "crates/core/src/admin/table/create_table.rs",
+        "crates/core/src/admin/table/drop_index.rs",
+        "crates/core/src/admin/table/drop_table.rs",
+        "crates/core/src/admin/table/list_tables.rs",
+        "crates/core/src/admin/user/create_user.rs",
+        "crates/core/src/admin/user/delete_user.rs",
+        "crates/core/src/admin/user/list_users.rs",
+        "crates/core/src/admin/user/update_user.rs",
+        "crates/core/src/admin/wasm.rs"
+      ],
+      "edges": [
+        "direct_writers"
+      ],
+      "condition": "enabled and independently observed"
     },
     {
-      "name": "dynamic_registration",
-      "class": "runtime_dynamic",
-      "source_files": []
+      "name": "direct_writers",
+      "class": "direct_writer",
+      "source_files": [
+        "crates/core/src/admin/backup.rs",
+        "crates/core/src/admin/config/get_config.rs",
+        "crates/core/src/admin/config/update_config.rs",
+        "crates/core/src/admin/email.rs",
+        "crates/core/src/admin/info.rs",
+        "crates/core/src/admin/jobs/list_jobs.rs",
+        "crates/core/src/admin/jobs/run_job.rs",
+        "crates/core/src/admin/json_schema/get_api_json_schema.rs",
+        "crates/core/src/admin/json_schema/mod.rs",
+        "crates/core/src/admin/jwt.rs",
+        "crates/core/src/admin/logs/list_logs.rs",
+        "crates/core/src/admin/logs/stats.rs",
+        "crates/core/src/admin/mint.rs",
+        "crates/core/src/admin/mod.rs",
+        "crates/core/src/admin/oauth_providers.rs",
+        "crates/core/src/admin/openapi.rs",
+        "crates/core/src/admin/parse.rs",
+        "crates/core/src/admin/query.rs",
+        "crates/core/src/admin/rows/delete_rows.rs",
+        "crates/core/src/admin/rows/insert_row.rs",
+        "crates/core/src/admin/rows/list_rows.rs",
+        "crates/core/src/admin/rows/read_files.rs",
+        "crates/core/src/admin/rows/update_row.rs",
+        "crates/core/src/admin/table/alter_index.rs",
+        "crates/core/src/admin/table/alter_table.rs",
+        "crates/core/src/admin/table/create_index.rs",
+        "crates/core/src/admin/table/create_table.rs",
+        "crates/core/src/admin/table/drop_index.rs",
+        "crates/core/src/admin/table/drop_table.rs",
+        "crates/core/src/admin/table/list_tables.rs",
+        "crates/core/src/admin/user/create_user.rs",
+        "crates/core/src/admin/user/delete_user.rs",
+        "crates/core/src/admin/user/list_users.rs",
+        "crates/core/src/admin/user/update_user.rs",
+        "crates/core/src/admin/wasm.rs"
+      ],
+      "edges": [
+        "direct_writers"
+      ],
+      "condition": "enabled and independently observed"
+    },
+    {
+      "name": "providers",
+      "class": "provider",
+      "source_files": [
+        "crates/core/src/admin/backup.rs",
+        "crates/core/src/admin/config/get_config.rs",
+        "crates/core/src/admin/config/update_config.rs",
+        "crates/core/src/admin/email.rs",
+        "crates/core/src/admin/info.rs",
+        "crates/core/src/admin/jobs/list_jobs.rs",
+        "crates/core/src/admin/jobs/run_job.rs",
+        "crates/core/src/admin/json_schema/get_api_json_schema.rs",
+        "crates/core/src/admin/json_schema/mod.rs",
+        "crates/core/src/admin/jwt.rs",
+        "crates/core/src/admin/logs/list_logs.rs",
+        "crates/core/src/admin/logs/stats.rs",
+        "crates/core/src/admin/mint.rs",
+        "crates/core/src/admin/mod.rs",
+        "crates/core/src/admin/oauth_providers.rs",
+        "crates/core/src/admin/openapi.rs",
+        "crates/core/src/admin/parse.rs",
+        "crates/core/src/admin/query.rs",
+        "crates/core/src/admin/rows/delete_rows.rs",
+        "crates/core/src/admin/rows/insert_row.rs",
+        "crates/core/src/admin/rows/list_rows.rs",
+        "crates/core/src/admin/rows/read_files.rs",
+        "crates/core/src/admin/rows/update_row.rs",
+        "crates/core/src/admin/table/alter_index.rs",
+        "crates/core/src/admin/table/alter_table.rs",
+        "crates/core/src/admin/table/create_index.rs",
+        "crates/core/src/admin/table/create_table.rs",
+        "crates/core/src/admin/table/drop_index.rs",
+        "crates/core/src/admin/table/drop_table.rs",
+        "crates/core/src/admin/table/list_tables.rs",
+        "crates/core/src/admin/user/create_user.rs",
+        "crates/core/src/admin/user/delete_user.rs",
+        "crates/core/src/admin/user/list_users.rs",
+        "crates/core/src/admin/user/update_user.rs",
+        "crates/core/src/admin/wasm.rs"
+      ],
+      "edges": [
+        "telemetry"
+      ],
+      "condition": "enabled and independently observed"
+    },
+    {
+      "name": "telemetry",
+      "class": "telemetry",
+      "source_files": [
+        "crates/core/src/admin/backup.rs",
+        "crates/core/src/admin/config/get_config.rs",
+        "crates/core/src/admin/config/update_config.rs",
+        "crates/core/src/admin/email.rs",
+        "crates/core/src/admin/info.rs",
+        "crates/core/src/admin/jobs/list_jobs.rs",
+        "crates/core/src/admin/jobs/run_job.rs",
+        "crates/core/src/admin/json_schema/get_api_json_schema.rs",
+        "crates/core/src/admin/json_schema/mod.rs",
+        "crates/core/src/admin/jwt.rs",
+        "crates/core/src/admin/logs/list_logs.rs",
+        "crates/core/src/admin/logs/stats.rs",
+        "crates/core/src/admin/mint.rs",
+        "crates/core/src/admin/mod.rs",
+        "crates/core/src/admin/oauth_providers.rs",
+        "crates/core/src/admin/openapi.rs",
+        "crates/core/src/admin/parse.rs",
+        "crates/core/src/admin/query.rs",
+        "crates/core/src/admin/rows/delete_rows.rs",
+        "crates/core/src/admin/rows/insert_row.rs",
+        "crates/core/src/admin/rows/list_rows.rs",
+        "crates/core/src/admin/rows/read_files.rs",
+        "crates/core/src/admin/rows/update_row.rs",
+        "crates/core/src/admin/table/alter_index.rs",
+        "crates/core/src/admin/table/alter_table.rs",
+        "crates/core/src/admin/table/create_index.rs",
+        "crates/core/src/admin/table/create_table.rs",
+        "crates/core/src/admin/table/drop_index.rs",
+        "crates/core/src/admin/table/drop_table.rs",
+        "crates/core/src/admin/table/list_tables.rs",
+        "crates/core/src/admin/user/create_user.rs",
+        "crates/core/src/admin/user/delete_user.rs",
+        "crates/core/src/admin/user/list_users.rs",
+        "crates/core/src/admin/user/update_user.rs",
+        "crates/core/src/admin/wasm.rs"
+      ],
+      "edges": [],
+      "condition": "enabled and independently observed"
     }
   ],
   "routes": [
@@ -407,7 +1203,7 @@
     },
     {
       "method": "POST",
-      "path": "/api/records/v1/{name}",
+      "path": "/api/records/v1/main_ops",
       "handler": "create_record_handler",
       "source": {
         "file": "crates/core/src/records/create_record.rs",
@@ -416,13 +1212,17 @@
         "contains": "create_record_handler"
       },
       "condition": "always",
-      "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "classification": "allow",
+      "effects": [
+        "main_db"
+      ],
+      "secondary_effects": [
+        "telemetry"
+      ]
     },
     {
       "method": "POST",
-      "path": "/api/records/v1/api/transaction/v1/execute",
+      "path": "/api/records/v1/aux_ops",
       "handler": "record_transactions_handler",
       "source": {
         "file": "crates/core/src/records/transaction.rs",
@@ -431,9 +1231,13 @@
         "contains": "record_transactions_handler"
       },
       "condition": "always",
-      "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "classification": "allow",
+      "effects": [
+        "aux_db"
+      ],
+      "secondary_effects": [
+        "telemetry"
+      ]
     },
     {
       "method": "GET",
@@ -1620,5 +2424,6 @@
       "effects": [],
       "secondary_effects": []
     }
-  ]
+  ],
+  "unresolved_source_graph": []
 }
