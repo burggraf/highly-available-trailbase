@@ -295,12 +295,41 @@ class SurfaceManifestTests(unittest.TestCase):
         self.assertEqual(manifest["graph_accounting"]["providers"], surface_closure.EXPECTED_ACCOUNTING["providers"])
 
 
+class AuthorizationClosureTests(unittest.TestCase):
+    def setUp(self):
+        self.manifest = surface_closure.load_manifest(MANIFEST)
+        self.secret = b"opaque.secret-token_ABC-123"
+
+    def request(self, target=b"/api/records/v1/main_ops", headers=None):
+        headers = headers or ((b"Content-Type", b"application/json"), (b"Authorization", b"Bearer " + self.secret))
+        return surface_closure.ClosureRequest(b"POST", target, tuple(headers), b'{"op_key":"x","payload":"y"}')
+
+    def test_main_requires_bearer_and_redacts_secret(self):
+        binding = surface_closure.bind_request(self.request(), self.manifest)
+        self.assertIsNotNone(binding)
+        self.assertNotIn(self.secret.decode(), repr(binding))
+        for headers in (
+            ((b"Content-Type", b"application/json"),),
+            ((b"Content-Type", b"application/json"), (b"Authorization", b"Bearer " + self.secret), (b"authorization", b"Bearer " + self.secret)),
+            ((b"Content-Type", b"application/json"), (b"Authorization", b"Basic " + self.secret)),
+            ((b"Content-Type", b"application/json"), (b"Authorization", b"Bearer  " + self.secret)),
+            ((b"Content-Type", b"application/json"), (b"Cookie", b"x=y"), (b"Authorization", b"Bearer " + self.secret)),
+        ):
+            with self.subTest(headers=headers):
+                with self.assertRaises(surface_closure.SurfaceError): surface_closure.bind_request(self.request(headers=headers), self.manifest)
+
+    def test_logout_allows_content_type_only(self):
+        req = self.request(b"/api/auth/v1/logout", ((b"Content-Type", b"application/json"),))
+        req = surface_closure.ClosureRequest(req.method, req.target, req.headers, b'{"refresh_token":"' + b"A" * 86 + b'"}')
+        self.assertEqual(surface_closure.bind_request(req, self.manifest).operation_kind, "logout_session")
+
+
 class ClosureRequestCompatibilityTests(unittest.TestCase):
     def setUp(self):
         self.manifest = surface_closure.load_manifest(MANIFEST)
 
     def request(self, body=b'{"op_key":"x","payload":"y"}', target=b"/api/records/v1/main_ops"):
-        return surface_closure.ClosureRequest(b"POST", target, ((b"Content-Type", b"application/json"),), body)
+        return surface_closure.ClosureRequest(b"POST", target, ((b"Content-Type", b"application/json"), (b"Authorization", b"Bearer adapter-test-token")), body)
 
     def test_surrounding_json_whitespace_is_accepted(self):
         binding = surface_closure.bind_request(self.request(b' \t{"op_key":"x","payload":"y"}\n '), self.manifest)
@@ -441,7 +470,8 @@ class SurfaceClosureTests(unittest.TestCase):
     def test_exact_rules_and_binding(self):
         manifest = surface_closure.load_manifest(MANIFEST)
         def req(target, body=b'{"op_key":"x","payload":"y"}'):
-            return surface_closure.ClosureRequest(b"POST", target, ((b"Content-Type", b"application/json"),), body)
+            headers = ((b"Content-Type", b"application/json"),) if target.endswith(b"/logout") else ((b"Content-Type", b"application/json"), (b"Authorization", b"Bearer adapter-test-token"))
+            return surface_closure.ClosureRequest(b"POST", target, headers, body)
         self.assertEqual(surface_closure.bind_request(req(b"/api/records/v1/main_ops"), manifest).database, "main")
         self.assertEqual(surface_closure.bind_request(req(b"/api/records/v1/aux_ops"), manifest).database, "aux")
         self.assertEqual(manifest["exact_allow_rules"]["POST /api/records/v1/main_ops"]["upstream"], "POST /api/records/v1/{name}")
@@ -527,7 +557,7 @@ class ClosureRequestTests(unittest.TestCase):
     MAIN_BODY = b'{"op_key":"native-main_ops","payload":"must-survive"}'
     AUX_BODY = b'{"op_key":"native-aux_ops","payload":"must-survive"}'
     LOGOUT_BODY = b'{"refresh_token":"' + b"A" * 86 + b'"}'
-    HEADERS = ((b"content-type", b"application/json"),)
+    HEADERS = ((b"content-type", b"application/json"), (b"Authorization", b"Bearer adapter-test-token"))
 
     @classmethod
     def setUpClass(cls):

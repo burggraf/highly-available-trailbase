@@ -180,6 +180,9 @@ class ClosureRequest:
     headers: tuple[tuple[bytes, bytes], ...]
     body: bytes
 
+    def __repr__(self) -> str:
+        return f"ClosureRequest(method={self.method!r}, target={self.target!r}, headers=<redacted>, body=<redacted>)"
+
 @dataclass(frozen=True)
 class Binding:
     operation_kind: str
@@ -420,14 +423,25 @@ def bind_request(request: ClosureRequest, manifest: dict[str, Any]) -> Binding |
     target = request.target
     if not target.isascii() or not target.startswith(b"/api/") or any(c < 0x20 or c == 0x7f for c in target) or any(x in target for x in (b"?", b"#", b"%", b"\\")) or b"//" in target or any(part in (b".", b"..") for part in target.split(b"/")) or target.endswith(b"/"):
         raise SurfaceError("invalid target")
-    if len(request.headers) != 1 or type(request.headers[0]) is not tuple or len(request.headers[0]) != 2:
+    if any(type(header) is not tuple or len(header) != 2 or type(header[0]) is not bytes or type(header[1]) is not bytes for header in request.headers):
         raise SurfaceError("invalid headers")
-    name, value = request.headers[0]
-    if type(name) is not bytes or type(value) is not bytes or name.lower() != b"content-type" or name != name.strip(b" \\t") or any(c < 0x20 or c == 0x7f for c in name + value) or value != b"application/json":
-        raise SurfaceError("invalid content type")
     allowed = {b"/api/records/v1/main_ops": ("create_record", "main"), b"/api/records/v1/aux_ops": ("create_record", "aux"), b"/api/auth/v1/logout": ("logout_session", "session")}
     if request.target not in allowed: return None
     kind, database = allowed[target]
+    folded = [name.lower() for name, _ in request.headers]
+    if len(set(folded)) != len(folded): raise SurfaceError("duplicate headers")
+    content_types = [value for name, value in zip(folded, (v for _, v in request.headers)) if name == b"content-type"]
+    if (len(content_types) != 1 or any(c < 0x20 or c == 0x7f for name, value in request.headers for c in name + value)
+            or any(name != name.strip(b" \\t") for name, _ in request.headers) or content_types[0] != b"application/json"):
+        raise SurfaceError("invalid content type")
+    auth = [value for name, value in zip(folded, (v for _, v in request.headers)) if name == b"authorization"]
+    if kind != "logout_session":
+        if len(request.headers) != 2 or len(auth) != 1:
+            raise SurfaceError("invalid authorization")
+        token = auth[0][len(b"Bearer "): ] if auth[0].startswith(b"Bearer ") else b""
+        if not re.fullmatch(rb"[A-Za-z0-9._~-]{1,4096}", token): raise SurfaceError("invalid authorization")
+    elif len(request.headers) != 1:
+        raise SurfaceError("invalid logout headers")
     obj = _strict_json(request.body)
     if kind == "logout_session":
         if set(obj) != {"refresh_token"} or type(obj["refresh_token"]) is not str or not re.fullmatch(r"[A-Za-z0-9]{86}", obj["refresh_token"]): raise SurfaceError("invalid logout body")
