@@ -13,7 +13,7 @@ The finding classes used below are exactly: `correct now`, `documentation correc
 - The runbook now states the current envelope is manual D0–D3 only, D4 is infeasible on the stock runtime, and automatic HA is not provided.
 - Its OBSERVATION checklist is limited to existing demo/status surfaces and explicitly treats the private `connect_demo.py` helper and installed `hat` aliases as not repository-verified.
 - Restore verification is explicitly not non-disruptive: source review/preparation is separated from authorized actions that create files, processes, sessions, or application requests. The manual drill gate requires fresh authorization, stop conditions, no blind retry, escalation, timeout uncertainty, and evidence retention.
-- `hat ingress-check` is read-only admission; `reconcile_existing` is service-changing because it may create/remove control metadata and stop/start ingress. `inspect-cold` and `inspect-frozen` are non-service-changing but may create dispatcher control metadata, so neither is strictly read-only.
+- `hat ingress-check` is read-only admission: incomplete verified-D3 serving/rejoin-tail requires the maintenance marker, valid D3 proof, retained route writer/epoch, and matching route hash, without permit/boot/PID; only `route_pending`/`verify_pending` require the exact permit/current boot/PID/birth/config hash and journal route facts. `reconcile_existing` is service-changing because it may create/remove control metadata and stop/start ingress. `inspect-cold` and `inspect-frozen` are non-service-changing but may create dispatcher control metadata, so neither is strictly read-only.
 
 These are documentation corrections only; no private helper, alias, endpoint, evidence, or command was executed by this audit.
 
