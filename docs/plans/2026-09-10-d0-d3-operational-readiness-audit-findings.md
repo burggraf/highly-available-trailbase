@@ -8,6 +8,15 @@ A command is **read-only** only when the complete checked-in command path does n
 
 The finding classes used below are exactly: `correct now`, `documentation correction`, `contract missing`, `operational qualification missing`, and `out of scope`.
 
+## Exact documentation corrections
+
+- The runbook now states the current envelope is manual D0–D3 only, D4 is infeasible on the stock runtime, and automatic HA is not provided.
+- Its OBSERVATION checklist is limited to existing demo/status surfaces and explicitly treats the private `connect_demo.py` helper and installed `hat` aliases as not repository-verified.
+- Restore verification is explicitly not non-disruptive: source review/preparation is separated from authorized actions that create files, processes, sessions, or application requests. The manual drill gate requires fresh authorization, stop conditions, no blind retry, escalation, timeout uncertainty, and evidence retention.
+- `hat ingress-check` is read-only admission; `reconcile_existing` is service-changing because it may create/remove control metadata and stop/start ingress. `inspect-cold` and `inspect-frozen` are non-service-changing but may create dispatcher control metadata, so neither is strictly read-only.
+
+These are documentation corrections only; no private helper, alias, endpoint, evidence, or command was executed by this audit.
+
 ## Operator command inventory
 
 ### Runbook and controller commands
@@ -50,8 +59,8 @@ The runbook’s “provider inspect only” is correctly scoped by its next sent
 | Action | Class | Additional precondition/input | Intent, replay, failure evidence | Supporting tests | Finding |
 | --- | --- | --- | --- | --- | --- |
 | `probe` | Read-only | Healthy local node; static/disabled node service, restart=no, legacy writable units masked. | Bypasses node action records; repeatable; exit/stderr only at node, controller command record remotely. | `tests/test_control_io.py`; `tests/test_recover_driver.py` | `correct now` |
-| `inspect-cold` | Mutating (dispatcher metadata only; inspected payload is read-only) | Cold cgroup, no known mutator, safe service policy, absent/stale authority, matching cold config. | No action record, but the full dispatcher may create `STATE` and `STATE/lock`; repeatable only after that metadata exists safely. | `tests/test_recovery_node.py`; `tests/test_rejoin_native_boundaries.py` | `documentation correction` |
-| `inspect-frozen` | Mutating (dispatcher metadata only; inspected payload is read-only) | Standby role/current boot; completed bound freeze record; no later restore/prepare/activate; unchanged frozen logical signature. | No action record, but dispatcher may create/open control metadata. Repeats the check; exit/stderr plus controller command record. | `tests/test_transition_guards.py`; `tests/test_transitions.py` | `documentation correction` |
+| `inspect-cold` | Non-service-changing; may create control metadata (not strictly read-only) | Cold cgroup, no known mutator, safe service policy, absent/stale authority, matching cold config. | No action record, but the full dispatcher may create `STATE` and `STATE/lock`; repeatable only after that metadata exists safely. | `tests/test_recovery_node.py`; `tests/test_rejoin_native_boundaries.py` | `documentation correction` |
+| `inspect-frozen` | Non-service-changing; may create control metadata (not strictly read-only) | Standby role/current boot; completed bound freeze record; no later restore/prepare/activate; unchanged frozen logical signature. | No action record, but dispatcher may create/open control metadata. Repeats the check; exit/stderr plus controller command record. | `tests/test_transition_guards.py`; `tests/test_transitions.py` | `documentation correction` |
 | `quiesce` | Mutating | Writer role/current boot; healthy writer; current authority; exact empty payload. | Action intent precedes signal. Stops TrailBase, proves mutators stopped, syncs all DBs, stops uploader, retains/revokes activation. No replay. | `tests/test_node.py`; `tests/test_transition_guards.py` | `correct now` |
 | `freeze` | Mutating | Standby/current boot; complete positive cut; healthy same-epoch follower caught up to cut. | Intent precedes service stop and SQLite copies. No replay; subprocess output is retained. | `tests/test_transition_guards.py`; `tests/test_transitions.py` | `correct now` |
 | `restore` | Mutating | Standby/current boot; same complete cut as a completed freeze; empty cgroup; unused fresh-restore workspace. | Intent precedes finite restore; rejected follower is retained. No replay. | `tests/test_transition_guards.py`; `tests/test_transitions.py` | `correct now` |
@@ -62,6 +71,12 @@ The runbook’s “provider inspect only” is correctly scoped by its next sent
 | `rejoin` | Mutating | Writer/current boot in cold quarantine; reserved new epoch exactly `d1-OPERATION`; absent/stale authority; unchanged boot/config/replica identity. | Intent precedes retaining authority/config/replica/data/metadata, creating empty data, rewriting standby epoch, and starting followers. No replay. | `tests/test_rejoin_native_boundaries.py`; `tests/test_recovery_node_regressions.py`; `tests/test_native_standby_contract.py` | `correct now` |
 
 The source-level `inspect_cold()` function is observational, but the installed dispatcher envelope is not guaranteed filesystem-read-only because it creates/opens control metadata before dispatch. Documentation and future checklists should call it “non-service-changing inspection” rather than “read-only command” unless the metadata precondition is explicitly established. The same qualification applies to `inspect-frozen`.
+
+## Unresolved assumptions (blockers)
+
+- **BLOCKER — live observation:** present A/B/C service state, installed aliases, SSH/tunnel behavior, and private helper behavior are not repository-verifiable; no current-state claim is established here.
+- **BLOCKER — restore/drill authorization:** restore verification and D2/D3 drills require a fresh owner authorization, bounded scope/timeout, and an evidence destination; source review alone cannot establish operational readiness.
+- **BLOCKER — qualification:** D4 on the stock runtime, automatic HA, abrupt physical-loss behavior, sustained capacity, and physical fault-domain redundancy remain unqualified; the runbook makes no such claim.
 
 ## Runbook/status comparison and prioritized findings
 

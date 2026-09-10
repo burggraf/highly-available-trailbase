@@ -4,6 +4,17 @@
 
 This is a persistent disposable **manual recovery demo, not automatic HA**. D1, reconciled D2 and reconciled D3 have real HTTP/auth and independent restore proof. A clean one-shot handover/recovery has not been demonstrated. Unchanged legacy tests have historical intermittent failures, retained below. Provider shutdown may flush gracefully; abrupt physical power loss and production readiness are not qualified.
 
+## Current operating envelope and safety checklist
+
+- **Envelope:** manual D0–D3 only. D4 is infeasible on the stock runtime; no automatic HA, election, promotion, or failover is provided.
+- **OBSERVATION (non-disruptive):** use only the existing demo page, `docs/status.md`, `hat status` on A/B, and `systemctl status hat-demo.service` already described below. Record the observed time, role/epoch, positions, health/refusal text, and command output; these are observations, not freshness/RPO or promotion proof. The private `connect_demo.py` helper and installed `hat` aliases are not repository-verified, so do not infer their exact behavior from this checkout.
+- **Restore verification (not non-disruptive):**
+  - Preparation/read-only source review: confirm the approved cut, epoch, source/target identities, protected baseline, oracle/support identity, route and auth prerequisites, and an unused evidence/workspace path. Review the existing restore procedure and its guards; do not treat this review as a restore.
+  - Actions requiring fresh explicit authorization: any restore or integrity check that creates files, starts/stops processes, opens sessions, or sends application requests (including auth, writes, or restore reads). These actions are service/evidence mutations, not observations.
+- **Manual drill gate:** before any D2/D3 drill, obtain fresh explicit authorization naming the operation, target, scope, cut, timeout, and evidence destination. Stop on any precondition mismatch, refusal, unexpected state, failed guard, timeout, or ambiguous result; a timeout is uncertain completion, not permission to retry. Do not blindly retry or reactivate. Preserve logs/ledgers and escalate to the owner for a bounded decision; retain successful and failed evidence.
+
+Restore/source-review details and the historical evidence remain in [Checks and delivery evidence](#checks-and-delivery-evidence), [D2](#d2-controller-and-interrupted-operation-boundary), and [D3](#d3-commands-and-completed-recovery).
+
 ## Access the running demo
 
 Open **http://127.0.0.1:18080/** on the operator workstation. The current Pi-managed `d1-private-demo-access` process keeps an SSH tunnel to C's loopback HAProxy listener open. The UI shows A/B role, epoch, per-database positions, observation time and refusal reasons.
@@ -93,9 +104,9 @@ An isolated real test proved the service's default `Type=simple` returned before
 
 The restricted `hat reconcile-verify <operation>` accepted only the original pending verification prefix, pre-write HTTP failure and absent new-write ledger. It revalidated fencing, B's boot/epoch/health, route hash and baseline, independently rechecked the baseline, archived the second failure and used native readiness before the original verification. All auth/records, new writes and independent fresh-write restore checks passed. The same journal now has all ten phases complete and maintenance removed. Both failures and continuation evidence are retained. Neither reconciliation command is a generic retry/force mechanism or applicable to arbitrary future failures.
 
-Ingress startup executes `hat ingress-check`: unfinished routing requires completed baseline evidence, route intent, exact config hash, and the original live controller PID/start time on the same boot. Maintenance remains durable until journal completion. Interrupted operations close ingress and refuse replay. An already-completed operation can reconcile only its exact matching maintenance marker and route hash, without starting a new promotion. Neither case provides automatic failover or general recovery.
+Ingress startup executes `hat ingress-check`: this is a read-only admission check and does not itself change service state. Unfinished routing requires completed baseline evidence, route intent, exact config hash, and the original live controller PID/start time on the same boot. Maintenance remains durable until journal completion. Interrupted operations close ingress and refuse replay. An already-completed operation can reconcile only its exact matching maintenance marker and route hash, without starting a new promotion. `reconcile_existing` is different: it is service-changing because it may create/remove maintenance metadata and stop/start ingress under the journal lock. Neither case provides automatic failover or general recovery.
 
-A/B's `transition.py` performs quiesce, freeze, finite-restore fallback, prepare and activate under root-only operation records. Rejected follower data and prior epoch data/metadata are retained. Preparation copies only the three validated databases, not follower sidecars. Do not invoke these phases manually or reactivate A. D3/rejoin still needs its separate disruptive-test approval.
+A/B's `transition.py` performs quiesce, freeze, finite-restore fallback, prepare and activate under root-only operation records. `inspect-cold` and `inspect-frozen` are non-service-changing inspections, but their dispatcher envelope may create control metadata; they are not strictly read-only. Rejected follower data and prior epoch data/metadata are retained. Preparation copies only the three validated databases, not follower sidecars. Do not invoke these phases manually or reactivate A. D3/rejoin still needs its separate disruptive-test approval.
 
 ## D3 commands and completed recovery
 
