@@ -14,6 +14,7 @@ ALLOWED = {("POST", "/api/records/v1/main_ops"): "main", ("POST", "/api/records/
 TOP_LEVEL = {"schema_version", "source", "source_scopes", "source_files", "capabilities", "graph_accounting", "unresolved_source_graph", "routes", "section_counts", "debug_only_routes", "exact_allow_rules", "listener_route_instances"}
 SAFE_PATH = re.compile(r"^(?!/)(?!$)(?!.*\\)(?!.*(?:^|/)\.{1,2}(?:/|$))[^\x00]+$")
 SOURCE_SCOPES = ["crates/core/src", "crates/wasm-runtime-axum/src", "crates/wasm-runtime-common/src", "crates/wasm-runtime-guest/src", "crates/wasm-runtime-host/src"]
+PINNED_SEMANTIC_FINGERPRINT = "6258275d38d9128f157778c72eed989dda99dd8642249fdf4e16427e847b8755"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 REQUIRED_JOBS = ("Backup", "Heartbeat", "LogCleaner", "AuthCleaner", "QueryOptimizer", "FileDeletions")
 REQUIRED_NON_ROUTE = {
@@ -231,6 +232,37 @@ def _regular_file(path: Path, name: str) -> bool:
     except (OSError, UnicodeError, RuntimeError) as exc:
         raise SurfaceError(f"{name}: cannot inspect path") from exc
 
+def _lstat(path: Path, name: str):
+    try:
+        return path.lstat()
+    except (OSError, UnicodeError, RuntimeError) as exc:
+        raise SurfaceError(f"{name}: cannot inspect path") from exc
+
+def _source_path(source_root: Path, relative: str, name: str) -> tuple[Path, int]:
+    path = source_root
+    parts = Path(relative).parts
+    for index, part in enumerate(parts):
+        path /= part
+        mode = _lstat(path, name).st_mode
+        if stat.S_ISLNK(mode):
+            raise SurfaceError(f"{name}: symlink is not allowed")
+        if index < len(parts) - 1 and not stat.S_ISDIR(mode):
+            raise SurfaceError(f"{name}: source path component is not a directory")
+    return path, mode
+
+def _semantic_fingerprint(manifest: dict[str, Any]) -> str:
+    def normalized(value, path=()):
+        if type(value) is dict:
+            return {
+                key: normalized(item, path + (key,))
+                for key, item in value.items()
+                if key != "sha256" and not (path == ("source",) and key in {"root", "provenance"})
+            }
+        if type(value) is list:
+            return [normalized(item, path) for item in value]
+        return value
+    return hashlib.sha256(json.dumps(normalized(manifest), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
 def _tagged_source(v: Any, name: str) -> None:
     v = _dict(v, name); _keys(v, {"file","sha256","line","contains"}, name)
     _str(v["file"], name); _safe_relative(v["file"], f"{name}.file"); _hex(v["sha256"], name)
@@ -349,6 +381,7 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
     accounting = _dict(m["graph_accounting"], "graph_accounting")
     _keys(accounting, set(EXPECTED_ACCOUNTING), "graph_accounting")
     if any(accounting[k] != v for k, v in EXPECTED_ACCOUNTING.items()): raise SurfaceError("source accounting mismatch")
+    if _semantic_fingerprint(m) != PINNED_SEMANTIC_FINGERPRINT: raise SurfaceError("semantic fingerprint mismatch")
 
 def _validate_debug(m, inventory):
     debug = _list(m["debug_only_routes"], "debug_only_routes")
@@ -422,14 +455,12 @@ def verify_source(source_root: Path, provenance_path: Path, manifest: dict[str, 
         if type(s["regular_files"]) is not int or s["regular_files"] <= 0 or type(s["expanded_bytes"]) is not int or s["expanded_bytes"] <= 0: raise SurfaceError("invalid provenance sizes")
     if seen != {"trailbase","litestream"}: raise SurfaceError("missing provenance source")
     if source_root.name != manifest["source"]["root"]: raise SurfaceError("source root mismatch")
-    try:
-        if not source_root.is_dir(): raise SurfaceError("source root is missing or not a directory")
-    except (OSError, UnicodeError, RuntimeError) as exc:
-        raise SurfaceError("source root cannot be inspected") from exc
+    root_mode = _lstat(source_root, "source root").st_mode
+    if stat.S_ISLNK(root_mode) or not stat.S_ISDIR(root_mode): raise SurfaceError("source root is missing or not a directory")
     expected = {e["file"]: e for e in manifest["source_files"]}
     for name,e in expected.items():
-        path=source_root/name
-        if not _regular_file(path, name) or hashlib.sha256(_read_bytes(path, name)).hexdigest()!=e["sha256"]: raise SurfaceError(f"missing or tampered source: {name}")
+        path, mode = _source_path(source_root, name, name)
+        if not stat.S_ISREG(mode) or hashlib.sha256(_read_bytes(path, name)).hexdigest()!=e["sha256"]: raise SurfaceError(f"missing or tampered source: {name}")
         lines=_read_text(path, name).splitlines()
         for a in e["anchors"]:
             if a["line"] > len(lines) or a["contains"] not in lines[a["line"]-1]: raise SurfaceError(f"bad source anchor: {name}")
@@ -439,10 +470,22 @@ def verify_source(source_root: Path, provenance_path: Path, manifest: dict[str, 
         _inventory_anchor({k:v for k,v in expected.items()}, r["source"], "listener source")
     for c in manifest["capabilities"]:
         _inventory_anchor({k:v for k,v in expected.items()}, c["source"], "capability source")
-    try:
-        actual={str(x.relative_to(source_root)) for scope in SOURCE_SCOPES for x in (source_root/scope).rglob("*.rs") if _regular_file(x, "source enumeration")}
-    except (OSError, UnicodeError, RuntimeError, ValueError) as exc:
-        raise SurfaceError("source enumeration failed") from exc
+    actual = set()
+    for scope in SOURCE_SCOPES:
+        directory, mode = _source_path(source_root, scope, "source enumeration")
+        if not stat.S_ISDIR(mode): raise SurfaceError("source scope is not a directory")
+        pending = [(directory, scope)]
+        while pending:
+            directory, relative = pending.pop()
+            try:
+                children = list(directory.iterdir())
+            except (OSError, UnicodeError, RuntimeError) as exc:
+                raise SurfaceError("source enumeration failed") from exc
+            for child in children:
+                child_relative = f"{relative}/{child.name}"
+                _, child_mode = _source_path(source_root, child_relative, "source enumeration")
+                if stat.S_ISDIR(child_mode): pending.append((child, child_relative))
+                elif stat.S_ISREG(child_mode) and child.suffix == ".rs": actual.add(child_relative)
     if actual != set(expected): raise SurfaceError("source inventory does not exactly match configured scopes")
 
 if __name__ == "__main__":
