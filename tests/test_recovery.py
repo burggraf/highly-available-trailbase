@@ -50,4 +50,53 @@ class RecoveryTests(unittest.TestCase):
             with sqlite3.connect(root/'main.db') as conn:conn.execute("UPDATE hat_ops SET payload='corrupt'")
             with self.assertRaises(ValueError):m.classify_fault(events,root)
 
+    def test_acceptance_request_contract_is_canonical_and_bound(self):
+        m=self.module()
+        operation={'id':'a'*32,'source':'A','target':'B','source_epoch':'d1-source','new_epoch':'d1-'+'a'*32}
+        authority={'schema':'hat-restore-input-authority-1','operation':operation['id'],'origin':'d2-preflight',
+                   'ledger':{'path':'/var/lib/hat-demo/ledger.jsonl','device':1,'inode':2,'mode':384,'uid':0,'links':1,'bytes':10,'sha256':'a'*64},
+                   'support':{name:'b'*64 for name in ('config.textproto','migrations/main/U100__hat_ops.sql','migrations/aux/U100__hat_ops.sql','secrets/keys/private_key.pem','secrets/keys/public_key.pem')},
+                   'binaries':{'trail':'c'*64,'litestream':'d'*64}}
+        request={'schema':'hat-restore-acceptance-1','operation':operation['id'],'phase':'compare','source':'A','target':'B',
+                 'epoch':'d1-source','positions':{'main':1,'session':2,'aux':3},'profile':'comparison',
+                 'inputs':{'replica_config_sha256':'e'*64,'ledger_sha256':'a'*64,'ledger_authority':authority,
+                           'restore_points':{db:{'source':'/var/lib/hat-demo/depot/data/'+db+'.db','position':pos} for db,pos in zip(('main','session','aux'),(1,2,3))},
+                           'support':authority['support'],'binaries':authority['binaries']}}
+        raw=m.canonical_json(request)
+        self.assertEqual(raw,m.canonical_json(json.loads(raw)))
+        self.assertEqual(m.validate_acceptance_request(request,operation),request)
+        self.assertNotIn('secret',m.canonical_json(request).decode())
+        for patch in ({'profile':'baseline'},{'epoch':'d1-wrong'},{'operation':'b'*32},
+                      {'positions':request['positions']|{'main':True}},
+                      {'inputs':request['inputs']|{'extra':1}}):
+            with self.assertRaises(ValueError):m.validate_acceptance_request(request|patch,operation)
+
+    def test_acceptance_phase_matrix_and_result_are_exact(self):
+        m=self.module(); operation={'id':'a'*32,'source':'A','target':'B','source_epoch':'d1-source','new_epoch':'d1-'+'a'*32}
+        self.assertEqual(m.derive_restore_profile(operation,'compare',False),('comparison','d1-source',5))
+        self.assertEqual(m.derive_restore_profile(operation,'baseline',False),('baseline','d1-'+'a'*32,7))
+        for phase,fault in (('compare',True),('reconciled-compare',False),('bogus',False)):
+            with self.assertRaises(ValueError):m.derive_restore_profile(operation,phase,fault)
+        with self.assertRaises(ValueError):m.derive_restore_profile({'id':'b'*32,'source':'B','target':'A','source_epoch':'d1-s','new_epoch':'d1-'+('b'*32)},'compare',False)
+
+    def test_fault_submitted_set_and_zero_loss_contract(self):
+        m=self.module()
+        events=[{'event':'submitted','api':'main_ops','row':{'op_key':'d3-a','payload':'x'},'time_ns':1},
+                {'event':'acknowledged','api':'main_ops','row':{'op_key':'d3-a','payload':'x'},'id':'1','time_ns':2}]
+        self.assertEqual(m.fault_operations(events),['main_ops/d3-a'])
+        result={'recovered':['main_ops/d3-a'],'lost':[],'ambiguous':[],'unacknowledged_recovered':[],'rejected':[]}
+        self.assertEqual(m.validate_fault_outcomes(result,events),result)
+        for bad in (result|{'lost':['main_ops/d3-a']},result|{'recovered':[]},result|{'extra':[]}):
+            with self.assertRaises(ValueError):m.validate_fault_outcomes(bad,events)
+        self.assertEqual(m.validate_fault_outcomes({k:[] for k in ('recovered','lost','ambiguous','unacknowledged_recovered','rejected')},[]),
+                         {k:[] for k in ('recovered','lost','ambiguous','unacknowledged_recovered','rejected')})
+
+    def test_acceptance_result_rejects_legacy_and_mismatch(self):
+        m=self.module(); operation={'id':'a'*32,'source':'A','target':'B','source_epoch':'d1-source','new_epoch':'d1-'+'a'*32}
+        request={'schema':'hat-restore-acceptance-1','operation':operation['id'],'phase':'compare','source':'A','target':'B','epoch':'d1-source','positions':{'main':1,'session':1,'aux':1},'profile':'comparison','inputs':{}}
+        db={name:{'position':1,'sha256':'a'*64,'integrity':'PASS','foreign_keys':'PASS'} for name in ('main','session','aux')}
+        result={'schema':'hat-restore-acceptance-1','request':request,'request_sha256':'x'*64,'databases':db,'signature':{name:'b'*64 for name in ('main','session','aux')},'checks':{'records':'PASS','authentication':'PASS'}}
+        with self.assertRaises(ValueError):m.validate_acceptance_result(result,request)
+        with self.assertRaises(ValueError):m.validate_acceptance_result(result|{'auth_and_records':'PASS'},request)
+
 if __name__=='__main__':unittest.main()
