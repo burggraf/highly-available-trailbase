@@ -1828,398 +1828,1172 @@
   ],
   "capabilities": [
     {
-      "name": "router_wiring",
+      "name": "root",
       "class": "router",
       "source_files": [
-        "crates/core/src/admin/backup.rs",
-        "crates/core/src/admin/config/get_config.rs",
-        "crates/core/src/admin/config/update_config.rs",
-        "crates/core/src/admin/email.rs",
-        "crates/core/src/admin/info.rs",
-        "crates/core/src/admin/jobs/list_jobs.rs",
-        "crates/core/src/admin/jobs/run_job.rs",
-        "crates/core/src/admin/json_schema/get_api_json_schema.rs",
-        "crates/core/src/admin/json_schema/mod.rs",
-        "crates/core/src/admin/jwt.rs",
-        "crates/core/src/admin/logs/list_logs.rs",
-        "crates/core/src/admin/logs/stats.rs",
-        "crates/core/src/admin/mint.rs",
-        "crates/core/src/admin/mod.rs",
-        "crates/core/src/admin/oauth_providers.rs",
-        "crates/core/src/admin/openapi.rs",
-        "crates/core/src/admin/parse.rs",
-        "crates/core/src/admin/query.rs",
-        "crates/core/src/admin/rows/delete_rows.rs",
-        "crates/core/src/admin/rows/insert_row.rs",
-        "crates/core/src/admin/rows/list_rows.rs",
-        "crates/core/src/admin/rows/read_files.rs",
-        "crates/core/src/admin/rows/update_row.rs",
-        "crates/core/src/admin/table/alter_index.rs",
-        "crates/core/src/admin/table/alter_table.rs",
-        "crates/core/src/admin/table/create_index.rs",
-        "crates/core/src/admin/table/create_table.rs",
-        "crates/core/src/admin/table/drop_index.rs",
-        "crates/core/src/admin/table/drop_table.rs",
-        "crates/core/src/admin/table/list_tables.rs",
-        "crates/core/src/admin/user/create_user.rs",
-        "crates/core/src/admin/user/delete_user.rs",
-        "crates/core/src/admin/user/list_users.rs",
-        "crates/core/src/admin/user/update_user.rs",
-        "crates/core/src/admin/wasm.rs",
-        "crates/core/src/auth/api/avatar.rs",
-        "crates/core/src/auth/api/change_email.rs",
-        "crates/core/src/auth/api/change_password.rs",
-        "crates/core/src/auth/api/change_username.rs",
-        "crates/core/src/auth/api/delete.rs",
-        "crates/core/src/auth/api/login.rs",
-        "crates/core/src/auth/api/login_anonymous.rs",
-        "crates/core/src/auth/api/logout.rs",
-        "crates/core/src/auth/api/otp.rs",
-        "crates/core/src/auth/api/promote_anonymous.rs",
-        "crates/core/src/auth/api/refresh.rs",
-        "crates/core/src/auth/api/register.rs",
-        "crates/core/src/auth/api/reset_password.rs",
-        "crates/core/src/auth/api/status.rs",
-        "crates/core/src/auth/api/token.rs",
-        "crates/core/src/auth/api/totp.rs",
-        "crates/core/src/auth/api/verify_email.rs",
-        "crates/core/src/auth/mod.rs",
-        "crates/core/src/auth/oauth/callback.rs",
-        "crates/core/src/auth/oauth/list_providers.rs",
-        "crates/core/src/auth/oauth/login.rs",
-        "crates/core/src/auth/oauth/mod.rs",
-        "crates/core/src/constants.rs",
-        "crates/core/src/email.rs",
-        "crates/core/src/openapi.rs",
-        "crates/core/src/records/create_record.rs",
-        "crates/core/src/records/delete_record.rs",
-        "crates/core/src/records/json_schema.rs",
-        "crates/core/src/records/list_records.rs",
-        "crates/core/src/records/mod.rs",
-        "crates/core/src/records/read_record.rs",
-        "crates/core/src/records/subscribe/handler.rs",
-        "crates/core/src/records/transaction.rs",
-        "crates/core/src/records/update_record.rs",
         "crates/core/src/server/mod.rs"
       ],
       "edges": [
-        "conditional_arms",
-        "listeners"
+        "router:server",
+        "router:auth",
+        "router:oauth",
+        "router:records",
+        "router:transaction",
+        "router:admin",
+        "router:wasm",
+        "router:custom"
       ],
-      "condition": "always"
+      "condition": "source-reviewed",
+      "resolution": "static"
     },
     {
-      "name": "conditional_arms",
+      "name": "router:server",
+      "class": "router",
+      "source_files": [
+        "crates/core/src/server/mod.rs"
+      ],
+      "edges": [
+        "router:auth",
+        "router:records",
+        "router:admin",
+        "listener:main",
+        "listener:admin"
+      ],
+      "condition": "source-reviewed",
+      "resolution": "static"
+    },
+    {
+      "name": "router:auth",
+      "class": "router",
+      "source_files": [
+        "crates/core/src/auth/mod.rs"
+      ],
+      "edges": [
+        "router:oauth",
+        "conditional:auth-disabled",
+        "writer:provider",
+        "route:GET /api/auth/v1/avatar/{b64_user_id}",
+        "route:POST /api/auth/v1/avatar",
+        "route:DELETE /api/auth/v1/avatar",
+        "route:POST /api/auth/v1/change_username",
+        "route:POST /api/auth/v1/otp/request",
+        "route:POST /api/auth/v1/otp/login",
+        "route:POST /api/auth/v1/token",
+        "route:GET /api/auth/v1/verify_email/trigger",
+        "route:GET /api/auth/v1/verify_email/confirm/{email_verification_token}",
+        "route:POST /api/auth/v1/register",
+        "route:POST /api/auth/v1/promote_anonymous",
+        "route:GET /api/auth/v1/totp/register",
+        "route:POST /api/auth/v1/totp/confirm",
+        "route:POST /api/auth/v1/totp/unregister",
+        "route:DELETE /api/auth/v1/delete",
+        "route:POST /api/auth/v1/change_password",
+        "route:GET /api/auth/v1/logout",
+        "route:POST /api/auth/v1/logout",
+        "route:POST /api/auth/v1/login_anonymous",
+        "route:GET /api/auth/v1/status",
+        "route:POST /api/auth/v1/login",
+        "route:POST /api/auth/v1/login_mfa",
+        "route:POST /api/auth/v1/change_email/request",
+        "route:GET /api/auth/v1/change_email/confirm/{email_verification_code}",
+        "route:POST /api/auth/v1/reset_password/request",
+        "route:POST /api/auth/v1/reset_password/update",
+        "route:POST /api/auth/v1/refresh"
+      ],
+      "condition": "source-reviewed",
+      "resolution": "static"
+    },
+    {
+      "name": "router:oauth",
+      "class": "router",
+      "source_files": [
+        "crates/core/src/admin/backup.rs"
+      ],
+      "edges": [
+        "route:GET /api/auth/v1/oauth/{provider}/callback",
+        "route:POST /api/auth/v1/oauth/{provider}/callback",
+        "route:GET /api/auth/v1/oauth/{provider}/login",
+        "route:GET /api/auth/v1/oauth/providers",
+        "route:GET /api/_admin/oauth_providers"
+      ],
+      "condition": "source-reviewed",
+      "resolution": "static"
+    },
+    {
+      "name": "router:records",
+      "class": "router",
+      "source_files": [
+        "crates/core/src/records/mod.rs"
+      ],
+      "edges": [
+        "router:transaction",
+        "writer:db",
+        "route:GET /api/records/v1/{name}",
+        "route:POST /api/records/v1/main_ops",
+        "route:POST /api/records/v1/aux_ops",
+        "route:GET /api/records/v1/{name}/{record}",
+        "route:GET /api/records/v1/{name}/{record}/file/{column_name}",
+        "route:GET /api/records/v1/{name}/{record}/files/{column_name}/{file_name}",
+        "route:PATCH /api/records/v1/{name}/{record}",
+        "route:GET /api/records/v1/{name}/schema",
+        "route:DELETE /api/records/v1/{name}/{record}",
+        "route:GET /api/records/v1/{name}/subscribe/{record}",
+        "route:GET /api/_admin/openapi.json",
+        "route:POST /api/_admin/query",
+        "route:GET /api/_admin/backups",
+        "route:POST /api/_admin/backups/trigger",
+        "route:DELETE /api/_admin/backups/delete",
+        "route:PATCH /api/_admin/backups/restore",
+        "route:GET /api/_admin/public_key",
+        "route:POST /api/_admin/parse",
+        "route:GET /api/_admin/info",
+        "route:POST /api/_admin/mint",
+        "route:POST /api/_admin/email/test",
+        "route:GET /api/_admin/wasm",
+        "route:POST /api/_admin/wasm/install",
+        "route:POST /api/_admin/wasm/uninstall",
+        "route:GET /api/_admin/config",
+        "route:POST /api/_admin/config",
+        "route:GET /api/_admin/schema/{record_api_name}/schema.json",
+        "route:GET /api/_admin/schema",
+        "route:POST /api/_admin/user",
+        "route:GET /api/_admin/user",
+        "route:PATCH /api/_admin/user",
+        "route:DELETE /api/_admin/user",
+        "route:PATCH /api/_admin/table/{table_name}",
+        "route:GET /api/_admin/table/{table_name}/rows",
+        "route:GET /api/_admin/table/{table_name}/files",
+        "route:DELETE /api/_admin/table/{table_name}",
+        "route:DELETE /api/_admin/table/{table_name}/rows",
+        "route:POST /api/_admin/table/{table_name}",
+        "route:GET /api/_admin/logs/list",
+        "route:GET /api/_admin/logs/stats",
+        "route:PATCH /api/_admin/index",
+        "route:POST /api/_admin/index",
+        "route:DELETE /api/_admin/index",
+        "route:GET /api/_admin/tables",
+        "route:DELETE /api/_admin/table",
+        "route:POST /api/_admin/table",
+        "route:PATCH /api/_admin/table",
+        "route:GET /api/_admin/jobs",
+        "route:POST /api/_admin/job/run",
+        "route:GET /api/api/healthcheck"
+      ],
+      "condition": "source-reviewed",
+      "resolution": "static"
+    },
+    {
+      "name": "router:transaction",
+      "class": "router",
+      "source_files": [
+        "crates/core/src/admin/backup.rs"
+      ],
+      "edges": [],
+      "condition": "source-reviewed",
+      "resolution": "static"
+    },
+    {
+      "name": "router:admin",
+      "class": "router",
+      "source_files": [
+        "crates/core/src/admin/mod.rs"
+      ],
+      "edges": [
+        "router:wasm",
+        "conditional:admin-disabled",
+        "job:backup",
+        "job:runtime",
+        "writer:files",
+        "writer:config",
+        "writer:object",
+        "telemetry:logs"
+      ],
+      "condition": "source-reviewed",
+      "resolution": "static"
+    },
+    {
+      "name": "router:wasm",
+      "class": "router",
+      "source_files": [
+        "crates/core/src/wasm/mod.rs"
+      ],
+      "edges": [
+        "dynamic:wasm-manifest"
+      ],
+      "condition": "source-reviewed",
+      "resolution": "static"
+    },
+    {
+      "name": "router:custom",
+      "class": "router",
+      "source_files": [
+        "crates/core/src/admin/backup.rs"
+      ],
+      "edges": [
+        "dynamic:custom-router"
+      ],
+      "condition": "source-reviewed",
+      "resolution": "static"
+    },
+    {
+      "name": "conditional:auth-disabled",
       "class": "conditional",
       "source_files": [
-        "crates/core/src/admin/backup.rs",
-        "crates/core/src/admin/config/get_config.rs",
-        "crates/core/src/admin/config/update_config.rs",
-        "crates/core/src/admin/email.rs",
-        "crates/core/src/admin/info.rs",
-        "crates/core/src/admin/jobs/list_jobs.rs",
-        "crates/core/src/admin/jobs/run_job.rs",
-        "crates/core/src/admin/json_schema/get_api_json_schema.rs",
-        "crates/core/src/admin/json_schema/mod.rs",
-        "crates/core/src/admin/jwt.rs",
-        "crates/core/src/admin/logs/list_logs.rs",
-        "crates/core/src/admin/logs/stats.rs",
-        "crates/core/src/admin/mint.rs",
-        "crates/core/src/admin/mod.rs",
-        "crates/core/src/admin/oauth_providers.rs",
-        "crates/core/src/admin/openapi.rs",
-        "crates/core/src/admin/parse.rs",
-        "crates/core/src/admin/query.rs",
-        "crates/core/src/admin/rows/delete_rows.rs",
-        "crates/core/src/admin/rows/insert_row.rs",
-        "crates/core/src/admin/rows/list_rows.rs",
-        "crates/core/src/admin/rows/read_files.rs",
-        "crates/core/src/admin/rows/update_row.rs",
-        "crates/core/src/admin/table/alter_index.rs",
-        "crates/core/src/admin/table/alter_table.rs",
-        "crates/core/src/admin/table/create_index.rs",
-        "crates/core/src/admin/table/create_table.rs",
-        "crates/core/src/admin/table/drop_index.rs",
-        "crates/core/src/admin/table/drop_table.rs",
-        "crates/core/src/admin/table/list_tables.rs",
-        "crates/core/src/admin/user/create_user.rs",
-        "crates/core/src/admin/user/delete_user.rs",
-        "crates/core/src/admin/user/list_users.rs",
-        "crates/core/src/admin/user/update_user.rs",
-        "crates/core/src/admin/wasm.rs"
+        "crates/core/src/auth/mod.rs"
       ],
-      "edges": [
-        "dynamic_routers"
-      ],
-      "condition": "enabled and independently observed"
+      "edges": [],
+      "condition": "source-reviewed",
+      "resolution": "static"
     },
     {
-      "name": "jobs",
+      "name": "conditional:admin-disabled",
+      "class": "conditional",
+      "source_files": [
+        "crates/core/src/admin/mod.rs"
+      ],
+      "edges": [],
+      "condition": "source-reviewed",
+      "resolution": "static"
+    },
+    {
+      "name": "job:backup",
       "class": "job",
       "source_files": [
-        "crates/core/src/admin/backup.rs",
-        "crates/core/src/admin/config/get_config.rs",
-        "crates/core/src/admin/config/update_config.rs",
-        "crates/core/src/admin/email.rs",
-        "crates/core/src/admin/info.rs",
-        "crates/core/src/admin/jobs/list_jobs.rs",
-        "crates/core/src/admin/jobs/run_job.rs",
-        "crates/core/src/admin/json_schema/get_api_json_schema.rs",
-        "crates/core/src/admin/json_schema/mod.rs",
-        "crates/core/src/admin/jwt.rs",
-        "crates/core/src/admin/logs/list_logs.rs",
-        "crates/core/src/admin/logs/stats.rs",
-        "crates/core/src/admin/mint.rs",
-        "crates/core/src/admin/mod.rs",
-        "crates/core/src/admin/oauth_providers.rs",
-        "crates/core/src/admin/openapi.rs",
-        "crates/core/src/admin/parse.rs",
-        "crates/core/src/admin/query.rs",
-        "crates/core/src/admin/rows/delete_rows.rs",
-        "crates/core/src/admin/rows/insert_row.rs",
-        "crates/core/src/admin/rows/list_rows.rs",
-        "crates/core/src/admin/rows/read_files.rs",
-        "crates/core/src/admin/rows/update_row.rs",
-        "crates/core/src/admin/table/alter_index.rs",
-        "crates/core/src/admin/table/alter_table.rs",
-        "crates/core/src/admin/table/create_index.rs",
-        "crates/core/src/admin/table/create_table.rs",
-        "crates/core/src/admin/table/drop_index.rs",
-        "crates/core/src/admin/table/drop_table.rs",
-        "crates/core/src/admin/table/list_tables.rs",
-        "crates/core/src/admin/user/create_user.rs",
-        "crates/core/src/admin/user/delete_user.rs",
-        "crates/core/src/admin/user/list_users.rs",
-        "crates/core/src/admin/user/update_user.rs",
-        "crates/core/src/admin/wasm.rs"
+        "crates/core/src/admin/backup.rs"
       ],
-      "edges": [
-        "dynamic_routers"
-      ],
-      "condition": "enabled and independently observed"
+      "edges": [],
+      "condition": "source-reviewed",
+      "resolution": "static"
     },
     {
-      "name": "dynamic_routers",
+      "name": "job:runtime",
+      "class": "job",
+      "source_files": [
+        "crates/core/src/admin/jobs/run_job.rs"
+      ],
+      "edges": [],
+      "condition": "source-reviewed",
+      "resolution": "static"
+    },
+    {
+      "name": "dynamic:wasm-manifest",
       "class": "dynamic_router",
       "source_files": [
-        "crates/core/src/admin/backup.rs",
-        "crates/core/src/admin/config/get_config.rs",
-        "crates/core/src/admin/config/update_config.rs",
-        "crates/core/src/admin/email.rs",
-        "crates/core/src/admin/info.rs",
-        "crates/core/src/admin/jobs/list_jobs.rs",
-        "crates/core/src/admin/jobs/run_job.rs",
-        "crates/core/src/admin/json_schema/get_api_json_schema.rs",
-        "crates/core/src/admin/json_schema/mod.rs",
-        "crates/core/src/admin/jwt.rs",
-        "crates/core/src/admin/logs/list_logs.rs",
-        "crates/core/src/admin/logs/stats.rs",
-        "crates/core/src/admin/mint.rs",
-        "crates/core/src/admin/mod.rs",
-        "crates/core/src/admin/oauth_providers.rs",
-        "crates/core/src/admin/openapi.rs",
-        "crates/core/src/admin/parse.rs",
-        "crates/core/src/admin/query.rs",
-        "crates/core/src/admin/rows/delete_rows.rs",
-        "crates/core/src/admin/rows/insert_row.rs",
-        "crates/core/src/admin/rows/list_rows.rs",
-        "crates/core/src/admin/rows/read_files.rs",
-        "crates/core/src/admin/rows/update_row.rs",
-        "crates/core/src/admin/table/alter_index.rs",
-        "crates/core/src/admin/table/alter_table.rs",
-        "crates/core/src/admin/table/create_index.rs",
-        "crates/core/src/admin/table/create_table.rs",
-        "crates/core/src/admin/table/drop_index.rs",
-        "crates/core/src/admin/table/drop_table.rs",
-        "crates/core/src/admin/table/list_tables.rs",
-        "crates/core/src/admin/user/create_user.rs",
-        "crates/core/src/admin/user/delete_user.rs",
-        "crates/core/src/admin/user/list_users.rs",
-        "crates/core/src/admin/user/update_user.rs",
-        "crates/core/src/admin/wasm.rs"
-      ],
-      "edges": [
-        "dynamic_routers"
-      ],
-      "condition": "enabled and independently observed"
-    },
-    {
-      "name": "listeners",
-      "class": "listener",
-      "source_files": [
-        "crates/core/src/admin/backup.rs",
-        "crates/core/src/admin/config/get_config.rs",
-        "crates/core/src/admin/config/update_config.rs",
-        "crates/core/src/admin/email.rs",
-        "crates/core/src/admin/info.rs",
-        "crates/core/src/admin/jobs/list_jobs.rs",
-        "crates/core/src/admin/jobs/run_job.rs",
-        "crates/core/src/admin/json_schema/get_api_json_schema.rs",
-        "crates/core/src/admin/json_schema/mod.rs",
-        "crates/core/src/admin/jwt.rs",
-        "crates/core/src/admin/logs/list_logs.rs",
-        "crates/core/src/admin/logs/stats.rs",
-        "crates/core/src/admin/mint.rs",
-        "crates/core/src/admin/mod.rs",
-        "crates/core/src/admin/oauth_providers.rs",
-        "crates/core/src/admin/openapi.rs",
-        "crates/core/src/admin/parse.rs",
-        "crates/core/src/admin/query.rs",
-        "crates/core/src/admin/rows/delete_rows.rs",
-        "crates/core/src/admin/rows/insert_row.rs",
-        "crates/core/src/admin/rows/list_rows.rs",
-        "crates/core/src/admin/rows/read_files.rs",
-        "crates/core/src/admin/rows/update_row.rs",
-        "crates/core/src/admin/table/alter_index.rs",
-        "crates/core/src/admin/table/alter_table.rs",
-        "crates/core/src/admin/table/create_index.rs",
-        "crates/core/src/admin/table/create_table.rs",
-        "crates/core/src/admin/table/drop_index.rs",
-        "crates/core/src/admin/table/drop_table.rs",
-        "crates/core/src/admin/table/list_tables.rs",
-        "crates/core/src/admin/user/create_user.rs",
-        "crates/core/src/admin/user/delete_user.rs",
-        "crates/core/src/admin/user/list_users.rs",
-        "crates/core/src/admin/user/update_user.rs",
-        "crates/core/src/admin/wasm.rs"
-      ],
-      "edges": [
-        "direct_writers"
-      ],
-      "condition": "enabled and independently observed"
-    },
-    {
-      "name": "direct_writers",
-      "class": "direct_writer",
-      "source_files": [
-        "crates/core/src/admin/backup.rs",
-        "crates/core/src/admin/config/get_config.rs",
-        "crates/core/src/admin/config/update_config.rs",
-        "crates/core/src/admin/email.rs",
-        "crates/core/src/admin/info.rs",
-        "crates/core/src/admin/jobs/list_jobs.rs",
-        "crates/core/src/admin/jobs/run_job.rs",
-        "crates/core/src/admin/json_schema/get_api_json_schema.rs",
-        "crates/core/src/admin/json_schema/mod.rs",
-        "crates/core/src/admin/jwt.rs",
-        "crates/core/src/admin/logs/list_logs.rs",
-        "crates/core/src/admin/logs/stats.rs",
-        "crates/core/src/admin/mint.rs",
-        "crates/core/src/admin/mod.rs",
-        "crates/core/src/admin/oauth_providers.rs",
-        "crates/core/src/admin/openapi.rs",
-        "crates/core/src/admin/parse.rs",
-        "crates/core/src/admin/query.rs",
-        "crates/core/src/admin/rows/delete_rows.rs",
-        "crates/core/src/admin/rows/insert_row.rs",
-        "crates/core/src/admin/rows/list_rows.rs",
-        "crates/core/src/admin/rows/read_files.rs",
-        "crates/core/src/admin/rows/update_row.rs",
-        "crates/core/src/admin/table/alter_index.rs",
-        "crates/core/src/admin/table/alter_table.rs",
-        "crates/core/src/admin/table/create_index.rs",
-        "crates/core/src/admin/table/create_table.rs",
-        "crates/core/src/admin/table/drop_index.rs",
-        "crates/core/src/admin/table/drop_table.rs",
-        "crates/core/src/admin/table/list_tables.rs",
-        "crates/core/src/admin/user/create_user.rs",
-        "crates/core/src/admin/user/delete_user.rs",
-        "crates/core/src/admin/user/list_users.rs",
-        "crates/core/src/admin/user/update_user.rs",
-        "crates/core/src/admin/wasm.rs"
-      ],
-      "edges": [
-        "direct_writers"
-      ],
-      "condition": "enabled and independently observed"
-    },
-    {
-      "name": "providers",
-      "class": "provider",
-      "source_files": [
-        "crates/core/src/admin/backup.rs",
-        "crates/core/src/admin/config/get_config.rs",
-        "crates/core/src/admin/config/update_config.rs",
-        "crates/core/src/admin/email.rs",
-        "crates/core/src/admin/info.rs",
-        "crates/core/src/admin/jobs/list_jobs.rs",
-        "crates/core/src/admin/jobs/run_job.rs",
-        "crates/core/src/admin/json_schema/get_api_json_schema.rs",
-        "crates/core/src/admin/json_schema/mod.rs",
-        "crates/core/src/admin/jwt.rs",
-        "crates/core/src/admin/logs/list_logs.rs",
-        "crates/core/src/admin/logs/stats.rs",
-        "crates/core/src/admin/mint.rs",
-        "crates/core/src/admin/mod.rs",
-        "crates/core/src/admin/oauth_providers.rs",
-        "crates/core/src/admin/openapi.rs",
-        "crates/core/src/admin/parse.rs",
-        "crates/core/src/admin/query.rs",
-        "crates/core/src/admin/rows/delete_rows.rs",
-        "crates/core/src/admin/rows/insert_row.rs",
-        "crates/core/src/admin/rows/list_rows.rs",
-        "crates/core/src/admin/rows/read_files.rs",
-        "crates/core/src/admin/rows/update_row.rs",
-        "crates/core/src/admin/table/alter_index.rs",
-        "crates/core/src/admin/table/alter_table.rs",
-        "crates/core/src/admin/table/create_index.rs",
-        "crates/core/src/admin/table/create_table.rs",
-        "crates/core/src/admin/table/drop_index.rs",
-        "crates/core/src/admin/table/drop_table.rs",
-        "crates/core/src/admin/table/list_tables.rs",
-        "crates/core/src/admin/user/create_user.rs",
-        "crates/core/src/admin/user/delete_user.rs",
-        "crates/core/src/admin/user/list_users.rs",
-        "crates/core/src/admin/user/update_user.rs",
-        "crates/core/src/admin/wasm.rs"
-      ],
-      "edges": [
-        "telemetry"
-      ],
-      "condition": "enabled and independently observed"
-    },
-    {
-      "name": "telemetry",
-      "class": "telemetry",
-      "source_files": [
-        "crates/core/src/admin/backup.rs",
-        "crates/core/src/admin/config/get_config.rs",
-        "crates/core/src/admin/config/update_config.rs",
-        "crates/core/src/admin/email.rs",
-        "crates/core/src/admin/info.rs",
-        "crates/core/src/admin/jobs/list_jobs.rs",
-        "crates/core/src/admin/jobs/run_job.rs",
-        "crates/core/src/admin/json_schema/get_api_json_schema.rs",
-        "crates/core/src/admin/json_schema/mod.rs",
-        "crates/core/src/admin/jwt.rs",
-        "crates/core/src/admin/logs/list_logs.rs",
-        "crates/core/src/admin/logs/stats.rs",
-        "crates/core/src/admin/mint.rs",
-        "crates/core/src/admin/mod.rs",
-        "crates/core/src/admin/oauth_providers.rs",
-        "crates/core/src/admin/openapi.rs",
-        "crates/core/src/admin/parse.rs",
-        "crates/core/src/admin/query.rs",
-        "crates/core/src/admin/rows/delete_rows.rs",
-        "crates/core/src/admin/rows/insert_row.rs",
-        "crates/core/src/admin/rows/list_rows.rs",
-        "crates/core/src/admin/rows/read_files.rs",
-        "crates/core/src/admin/rows/update_row.rs",
-        "crates/core/src/admin/table/alter_index.rs",
-        "crates/core/src/admin/table/alter_table.rs",
-        "crates/core/src/admin/table/create_index.rs",
-        "crates/core/src/admin/table/create_table.rs",
-        "crates/core/src/admin/table/drop_index.rs",
-        "crates/core/src/admin/table/drop_table.rs",
-        "crates/core/src/admin/table/list_tables.rs",
-        "crates/core/src/admin/user/create_user.rs",
-        "crates/core/src/admin/user/delete_user.rs",
-        "crates/core/src/admin/user/list_users.rs",
-        "crates/core/src/admin/user/update_user.rs",
         "crates/core/src/admin/wasm.rs"
       ],
       "edges": [],
-      "condition": "enabled and independently observed"
+      "condition": "source-reviewed",
+      "resolution": "static"
+    },
+    {
+      "name": "dynamic:custom-router",
+      "class": "dynamic_router",
+      "source_files": [
+        "crates/core/src/server/mod.rs"
+      ],
+      "edges": [],
+      "condition": "source-reviewed",
+      "resolution": "static"
+    },
+    {
+      "name": "listener:main",
+      "class": "listener",
+      "source_files": [
+        "crates/core/src/server/mod.rs"
+      ],
+      "edges": [],
+      "condition": "source-reviewed",
+      "resolution": "static"
+    },
+    {
+      "name": "listener:admin",
+      "class": "listener",
+      "source_files": [
+        "crates/core/src/server/mod.rs"
+      ],
+      "edges": [],
+      "condition": "source-reviewed",
+      "resolution": "static"
+    },
+    {
+      "name": "writer:db",
+      "class": "direct_writer",
+      "source_files": [
+        "crates/core/src/records/mod.rs"
+      ],
+      "edges": [],
+      "condition": "source-reviewed",
+      "resolution": "static"
+    },
+    {
+      "name": "writer:files",
+      "class": "direct_writer",
+      "source_files": [
+        "crates/core/src/admin/rows/read_files.rs"
+      ],
+      "edges": [],
+      "condition": "source-reviewed",
+      "resolution": "static"
+    },
+    {
+      "name": "writer:config",
+      "class": "direct_writer",
+      "source_files": [
+        "crates/core/src/admin/config/update_config.rs"
+      ],
+      "edges": [],
+      "condition": "source-reviewed",
+      "resolution": "static"
+    },
+    {
+      "name": "writer:object",
+      "class": "direct_writer",
+      "source_files": [
+        "crates/core/src/admin/backup.rs"
+      ],
+      "edges": [],
+      "condition": "source-reviewed",
+      "resolution": "static"
+    },
+    {
+      "name": "writer:provider",
+      "class": "provider",
+      "source_files": [
+        "crates/core/src/auth/oauth/mod.rs"
+      ],
+      "edges": [],
+      "condition": "source-reviewed",
+      "resolution": "static"
+    },
+    {
+      "name": "telemetry:logs",
+      "class": "telemetry",
+      "source_files": [
+        "crates/core/src/admin/logs/mod.rs"
+      ],
+      "edges": [],
+      "condition": "source-reviewed",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/records/v1/{name}",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/records/list_records.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/records/v1/main_ops",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/records/create_record.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/records/v1/aux_ops",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/records/transaction.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/records/v1/{name}/{record}",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/records/read_record.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/records/v1/{name}/{record}/file/{column_name}",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/records/read_record.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/records/v1/{name}/{record}/files/{column_name}/{file_name}",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/records/read_record.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:PATCH /api/records/v1/{name}/{record}",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/records/update_record.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/records/v1/{name}/schema",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/records/json_schema.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:DELETE /api/records/v1/{name}/{record}",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/records/delete_record.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/records/v1/{name}/subscribe/{record}",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/records/subscribe/handler.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/auth/v1/oauth/{provider}/callback",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/oauth/callback.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/auth/v1/oauth/{provider}/callback",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/oauth/callback.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/auth/v1/oauth/{provider}/login",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/oauth/login.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/auth/v1/oauth/providers",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/oauth/list_providers.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/auth/v1/avatar/{b64_user_id}",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/avatar.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/auth/v1/avatar",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/avatar.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:DELETE /api/auth/v1/avatar",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/avatar.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/auth/v1/change_username",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/change_username.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/auth/v1/otp/request",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/otp.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/auth/v1/otp/login",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/otp.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/auth/v1/token",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/token.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/auth/v1/verify_email/trigger",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/verify_email.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/auth/v1/verify_email/confirm/{email_verification_token}",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/verify_email.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/auth/v1/register",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/register.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/auth/v1/promote_anonymous",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/promote_anonymous.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/auth/v1/totp/register",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/totp.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/auth/v1/totp/confirm",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/totp.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/auth/v1/totp/unregister",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/totp.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:DELETE /api/auth/v1/delete",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/delete.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/auth/v1/change_password",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/change_password.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/auth/v1/logout",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/logout.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/auth/v1/logout",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/logout.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/auth/v1/login_anonymous",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/login_anonymous.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/auth/v1/status",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/status.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/auth/v1/login",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/login.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/auth/v1/login_mfa",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/login.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/auth/v1/change_email/request",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/change_email.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/auth/v1/change_email/confirm/{email_verification_code}",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/change_email.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/auth/v1/reset_password/request",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/reset_password.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/auth/v1/reset_password/update",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/reset_password.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/auth/v1/refresh",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/auth/api/refresh.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/_admin/openapi.json",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/openapi.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/_admin/query",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/query.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/_admin/backups",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/backup.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/_admin/backups/trigger",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/backup.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:DELETE /api/_admin/backups/delete",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/backup.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:PATCH /api/_admin/backups/restore",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/backup.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/_admin/public_key",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/jwt.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/_admin/parse",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/parse.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/_admin/info",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/info.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/_admin/mint",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/mint.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/_admin/email/test",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/email.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/_admin/oauth_providers",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/oauth_providers.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/_admin/wasm",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/wasm.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/_admin/wasm/install",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/wasm.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/_admin/wasm/uninstall",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/wasm.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/_admin/config",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/config/get_config.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/_admin/config",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/config/update_config.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/_admin/schema/{record_api_name}/schema.json",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/json_schema/get_api_json_schema.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/_admin/schema",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/json_schema/mod.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/_admin/user",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/user/create_user.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/_admin/user",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/user/list_users.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:PATCH /api/_admin/user",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/user/update_user.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:DELETE /api/_admin/user",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/user/delete_user.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:PATCH /api/_admin/table/{table_name}",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/rows/update_row.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/_admin/table/{table_name}/rows",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/rows/list_rows.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/_admin/table/{table_name}/files",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/rows/read_files.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:DELETE /api/_admin/table/{table_name}",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/rows/delete_rows.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:DELETE /api/_admin/table/{table_name}/rows",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/rows/delete_rows.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/_admin/table/{table_name}",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/rows/insert_row.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/_admin/logs/list",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/logs/list_logs.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/_admin/logs/stats",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/logs/stats.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:PATCH /api/_admin/index",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/table/alter_index.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/_admin/index",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/table/create_index.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:DELETE /api/_admin/index",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/table/drop_index.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/_admin/tables",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/table/list_tables.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:DELETE /api/_admin/table",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/table/drop_table.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/_admin/table",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/table/create_table.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:PATCH /api/_admin/table",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/table/alter_table.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/_admin/jobs",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/jobs/list_jobs.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:POST /api/_admin/job/run",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/admin/jobs/run_job.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/api/healthcheck",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/server/mod.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static"
     }
   ],
   "unresolved_source_graph": [],
@@ -2236,8 +3010,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -2252,11 +3031,12 @@
       "condition": "always",
       "classification": "allow",
       "effects": [
-        "main_db"
+        "allow route dispatch"
       ],
       "secondary_effects": [
-        "telemetry"
-      ]
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -2271,11 +3051,12 @@
       "condition": "always",
       "classification": "allow",
       "effects": [
-        "aux_db"
+        "allow route dispatch"
       ],
       "secondary_effects": [
-        "telemetry"
-      ]
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -2289,8 +3070,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -2304,8 +3090,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -2319,8 +3110,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "PATCH",
@@ -2334,8 +3130,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -2349,8 +3150,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "DELETE",
@@ -2364,8 +3170,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -2379,8 +3190,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -2394,8 +3210,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -2409,8 +3230,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -2424,8 +3250,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -2439,8 +3270,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -2454,8 +3290,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -2469,8 +3310,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "DELETE",
@@ -2484,8 +3330,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -2499,8 +3350,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -2514,8 +3370,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -2529,8 +3390,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -2544,8 +3410,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -2559,8 +3430,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -2574,8 +3450,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -2589,8 +3470,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -2604,8 +3490,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -2619,8 +3510,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -2634,8 +3530,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -2649,8 +3550,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "DELETE",
@@ -2664,8 +3570,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -2679,8 +3590,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -2694,8 +3610,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -2709,8 +3630,13 @@
       },
       "condition": "always",
       "classification": "allow",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "allow route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -2724,8 +3650,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -2739,8 +3670,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -2754,8 +3690,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -2769,8 +3710,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -2784,8 +3730,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -2799,8 +3750,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -2814,8 +3770,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -2829,8 +3790,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -2844,8 +3810,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -2859,8 +3830,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -2874,8 +3850,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -2889,8 +3870,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -2904,8 +3890,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "DELETE",
@@ -2919,8 +3910,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "PATCH",
@@ -2934,8 +3930,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -2949,8 +3950,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -2964,8 +3970,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -2979,8 +3990,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -2994,8 +4010,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -3009,8 +4030,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -3024,8 +4050,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -3039,8 +4070,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -3054,8 +4090,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -3069,8 +4110,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -3084,8 +4130,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -3099,8 +4150,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -3114,8 +4170,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -3129,8 +4190,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -3144,8 +4210,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -3159,8 +4230,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "PATCH",
@@ -3174,8 +4250,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "DELETE",
@@ -3189,8 +4270,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "PATCH",
@@ -3204,8 +4290,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -3219,8 +4310,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -3234,8 +4330,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "DELETE",
@@ -3249,8 +4350,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "DELETE",
@@ -3264,8 +4370,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -3279,8 +4390,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -3294,8 +4410,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -3309,8 +4430,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "PATCH",
@@ -3324,8 +4450,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -3339,8 +4470,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "DELETE",
@@ -3354,8 +4490,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -3369,8 +4510,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "DELETE",
@@ -3384,8 +4530,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -3399,8 +4550,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "PATCH",
@@ -3414,8 +4570,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -3429,8 +4590,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "POST",
@@ -3444,8 +4610,13 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     },
     {
       "method": "GET",
@@ -3459,8 +4630,135 @@
       },
       "condition": "always",
       "classification": "deny",
-      "effects": [],
-      "secondary_effects": []
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static"
     }
-  ]
+  ],
+  "graph_accounting": {
+    "routers": [
+      "router:server",
+      "router:auth",
+      "router:oauth",
+      "router:records",
+      "router:transaction",
+      "router:admin",
+      "router:wasm",
+      "router:custom"
+    ],
+    "conditional_arms": [
+      "conditional:auth-disabled",
+      "conditional:admin-disabled"
+    ],
+    "jobs": [
+      "job:backup",
+      "job:runtime"
+    ],
+    "dynamic_points": [
+      "dynamic:wasm-manifest",
+      "dynamic:custom-router"
+    ],
+    "listeners": [
+      "listener:main",
+      "listener:admin"
+    ],
+    "writers": [
+      "writer:db",
+      "writer:files",
+      "writer:config",
+      "writer:object",
+      "writer:provider"
+    ],
+    "telemetry": [
+      "telemetry:logs"
+    ],
+    "routes": [
+      "route:GET /api/records/v1/{name}",
+      "route:POST /api/records/v1/main_ops",
+      "route:POST /api/records/v1/aux_ops",
+      "route:GET /api/records/v1/{name}/{record}",
+      "route:GET /api/records/v1/{name}/{record}/file/{column_name}",
+      "route:GET /api/records/v1/{name}/{record}/files/{column_name}/{file_name}",
+      "route:PATCH /api/records/v1/{name}/{record}",
+      "route:GET /api/records/v1/{name}/schema",
+      "route:DELETE /api/records/v1/{name}/{record}",
+      "route:GET /api/records/v1/{name}/subscribe/{record}",
+      "route:GET /api/auth/v1/oauth/{provider}/callback",
+      "route:POST /api/auth/v1/oauth/{provider}/callback",
+      "route:GET /api/auth/v1/oauth/{provider}/login",
+      "route:GET /api/auth/v1/oauth/providers",
+      "route:GET /api/auth/v1/avatar/{b64_user_id}",
+      "route:POST /api/auth/v1/avatar",
+      "route:DELETE /api/auth/v1/avatar",
+      "route:POST /api/auth/v1/change_username",
+      "route:POST /api/auth/v1/otp/request",
+      "route:POST /api/auth/v1/otp/login",
+      "route:POST /api/auth/v1/token",
+      "route:GET /api/auth/v1/verify_email/trigger",
+      "route:GET /api/auth/v1/verify_email/confirm/{email_verification_token}",
+      "route:POST /api/auth/v1/register",
+      "route:POST /api/auth/v1/promote_anonymous",
+      "route:GET /api/auth/v1/totp/register",
+      "route:POST /api/auth/v1/totp/confirm",
+      "route:POST /api/auth/v1/totp/unregister",
+      "route:DELETE /api/auth/v1/delete",
+      "route:POST /api/auth/v1/change_password",
+      "route:GET /api/auth/v1/logout",
+      "route:POST /api/auth/v1/logout",
+      "route:POST /api/auth/v1/login_anonymous",
+      "route:GET /api/auth/v1/status",
+      "route:POST /api/auth/v1/login",
+      "route:POST /api/auth/v1/login_mfa",
+      "route:POST /api/auth/v1/change_email/request",
+      "route:GET /api/auth/v1/change_email/confirm/{email_verification_code}",
+      "route:POST /api/auth/v1/reset_password/request",
+      "route:POST /api/auth/v1/reset_password/update",
+      "route:POST /api/auth/v1/refresh",
+      "route:GET /api/_admin/openapi.json",
+      "route:POST /api/_admin/query",
+      "route:GET /api/_admin/backups",
+      "route:POST /api/_admin/backups/trigger",
+      "route:DELETE /api/_admin/backups/delete",
+      "route:PATCH /api/_admin/backups/restore",
+      "route:GET /api/_admin/public_key",
+      "route:POST /api/_admin/parse",
+      "route:GET /api/_admin/info",
+      "route:POST /api/_admin/mint",
+      "route:POST /api/_admin/email/test",
+      "route:GET /api/_admin/oauth_providers",
+      "route:GET /api/_admin/wasm",
+      "route:POST /api/_admin/wasm/install",
+      "route:POST /api/_admin/wasm/uninstall",
+      "route:GET /api/_admin/config",
+      "route:POST /api/_admin/config",
+      "route:GET /api/_admin/schema/{record_api_name}/schema.json",
+      "route:GET /api/_admin/schema",
+      "route:POST /api/_admin/user",
+      "route:GET /api/_admin/user",
+      "route:PATCH /api/_admin/user",
+      "route:DELETE /api/_admin/user",
+      "route:PATCH /api/_admin/table/{table_name}",
+      "route:GET /api/_admin/table/{table_name}/rows",
+      "route:GET /api/_admin/table/{table_name}/files",
+      "route:DELETE /api/_admin/table/{table_name}",
+      "route:DELETE /api/_admin/table/{table_name}/rows",
+      "route:POST /api/_admin/table/{table_name}",
+      "route:GET /api/_admin/logs/list",
+      "route:GET /api/_admin/logs/stats",
+      "route:PATCH /api/_admin/index",
+      "route:POST /api/_admin/index",
+      "route:DELETE /api/_admin/index",
+      "route:GET /api/_admin/tables",
+      "route:DELETE /api/_admin/table",
+      "route:POST /api/_admin/table",
+      "route:PATCH /api/_admin/table",
+      "route:GET /api/_admin/jobs",
+      "route:POST /api/_admin/job/run",
+      "route:GET /api/api/healthcheck"
+    ]
+  }
 }

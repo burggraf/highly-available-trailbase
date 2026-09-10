@@ -6,6 +6,30 @@ import unittest
 import surface_closure
 
 
+class SurfaceManifestTests(unittest.TestCase):
+    def test_source_artifact_mismatches_are_infeasible(self):
+        manifest = surface_closure.load_manifest(Path(__file__).with_name("surface_manifest.json"))
+        root = Path("/var/folders/d0/z9jph2ld4v9gw45bwg0f1j900000gn/T/hat-ack-contract-sources-p2anepgt/trailbase")
+        provenance = root.parent / "manifest.json"
+        if not root.is_dir() or not provenance.is_file():
+            self.skipTest("reviewed source artifact is unavailable")
+        broken = json.loads(json.dumps(manifest))
+        broken["source_files"].append({"file": "crates/core/src/extra.rs", "sha256": "0" * 64, "anchors": [{"line": 1, "contains": "x"}]})
+        with self.assertRaises(surface_closure.SurfaceError):
+            surface_closure.verify_source(root, provenance, broken)
+        broken = json.loads(json.dumps(manifest))
+        broken["routes"][0]["source"]["sha256"] = "0" * 64
+        with self.assertRaises(surface_closure.SurfaceError):
+            surface_closure.validate_manifest(broken)
+
+    def test_graph_is_one_to_one_and_reachable(self):
+        manifest = surface_closure.load_manifest(Path(__file__).with_name("surface_manifest.json"))
+        caps = manifest["capabilities"]
+        self.assertEqual(len({c["name"] for c in caps}), len(caps))
+        self.assertEqual(set(manifest["graph_accounting"]["routes"]), {f"route:{r['method']} {r['path']}" for r in manifest["routes"]})
+        with self.assertRaises(surface_closure.SurfaceError):
+            broken = json.loads(json.dumps(manifest)); broken["capabilities"][0]["edges"].append("root"); surface_closure.validate_manifest(broken)
+
 class SurfaceClosureTests(unittest.TestCase):
     def test_manifest_is_pinned_and_complete(self):
         manifest = surface_closure.load_manifest(Path(__file__).with_name("surface_manifest.json"))
