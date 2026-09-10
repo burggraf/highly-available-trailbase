@@ -80,6 +80,77 @@ The source-level `inspect_cold()` function is observational, but the installed d
 - **BLOCKER — restore/drill authorization:** restore verification and D2/D3 drills require a fresh owner authorization, bounded scope/timeout, and an evidence destination; source review alone cannot establish operational readiness.
 - **BLOCKER — qualification:** D4 on the stock runtime, automatic HA, abrupt physical-loss behavior, sustained capacity, and physical fault-domain redundancy remain unqualified; the runbook makes no such claim.
 
+## Prioritized operational risk register
+
+This register is repository-only. “Current evidence” means checked-in source, tests, and documented historical boundaries; it is not a current-live observation. Every live or mutating step requires the approval stated in its entry.
+
+### P0 — completed ingress route identity/key-set admission, newly found (`contract missing`)
+
+- **Current evidence:** `ingress_allowed` and `reconcile_existing` bind the current config hash, but the completed branch does not require exact route writer/epoch/key-set identity; the gap is also recorded in the route checks above.
+- **Why it matters:** a valid-looking route can outlive or point at the wrong authority, allowing stale or incorrectly keyed service exposure.
+- **Next repository-only step:** write the route-authority contract and threat cases, including writer, epoch, key-set, permit, boot/PID, and failure-boundary bindings; add design-level acceptance criteria before implementation.
+- **Explicit approval:** owner approval for any implementation, installed change, route opening, ingress restart, request, or live observation.
+
+### P0 — unified restore acceptance manifest/schema (`contract missing`)
+
+- **Current evidence:** the runbook requires integrity, auth/session, records/membership, and exact restore-position/proof checks, but no objective manifest binds checks to restore class, source/target/epoch/position, and retained evidence.
+- **Why it matters:** a partial or mismatched restore can be accepted as complete, or evidence from one restore can be substituted for another.
+- **Next repository-only step:** define a versioned manifest/schema and deterministic refusal rules for each restore class; review it against preserved D2/D3 evidence without performing a restore.
+- **Explicit approval:** owner approval for implementation or any restore, application request, process start, file creation, or live/mutating drill.
+
+### P1 — complete acknowledged-mutation coverage and client-ledger crash window (`contract missing`)
+
+- **Current evidence:** `hat/client.py::produce` covers generated main/aux creates only; the external ledger is fsynced after response handling, leaving a crash window, and all auth/data mutation paths are not covered.
+- **Why it matters:** an acknowledged mutation may be absent from the recoverable image or unclassified after a client crash, undermining loss refusal and recovery acceptance.
+- **Next repository-only step:** inventory every mutation path and specify receipt/ledger ordering, crash states, and proof requirements; add read-only contract tests/specs only.
+- **Explicit approval:** owner approval for client/controller changes, generated or real mutations, restore, replay, or live observation.
+
+### P1 — authoritative provider accepted-request, late-effect, and incarnation settlement (`contract missing`)
+
+- **Current evidence:** `ControlIO.command` preserves timeout as uncertain; local/provider request identifiers do not establish accepted-request identity, cancellation, late-effect settlement, or protection against a reused guest incarnation.
+- **Why it matters:** a timed-out power or control effect can arrive after authority changes and affect the wrong incarnation; retrying can duplicate an effect.
+- **Next repository-only step:** document the required provider receipt/operation/incarnation contract and refusal matrix, using only pinned repository interfaces and historical evidence.
+- **Explicit approval:** owner/provider authorization for any provider API call, power/action request, polling against private infrastructure, or implementation of the adapter.
+
+### P1 — common authority-aware admission, including direct node activation (`contract missing`)
+
+- **Current evidence:** controller paths bind operation/epoch/boot, but `node.py activate` accepts root plus fixed writer config and no distributed owner/revision/action identity; existing dispatcher validation does not close that bypass.
+- **Why it matters:** one mutation path can activate outside the common stale-owner and replay protections.
+- **Next repository-only step:** define one authority/revision/action envelope and apply it to controller, dispatcher, and direct activation paths; enumerate stale and duplicate refusal cases.
+- **Explicit approval:** owner approval for implementation, installed activation changes, service starts/stops, activation, routing, or live drills.
+
+### P1 — C/ingress single points of failure (`operational qualification missing`)
+
+- **Current evidence:** repository docs and deployment configuration describe one C ingress path; tests do not establish redundant ingress or a failure-domain handoff. Historical D2/D3 evidence is explicitly not a current-live claim.
+- **Why it matters:** loss or partition of C can make healthy node state unreachable and can prevent safe admission/verification.
+- **Next repository-only step:** specify ingress authority and failure-domain requirements, then design a repository-only observation checklist and evidence schema; do not execute it.
+- **Explicit approval:** owner approval for any tunnel, ingress reload/restart, network fault, request, or other live observation/mutation.
+
+### P1 — sustained capacity and physical fault-domain qualification (`operational qualification missing`)
+
+- **Current evidence:** short historical shared-VM samples and fixture/unit tests do not establish sustained resource headroom, host pause behavior, abrupt loss, or physical fault-domain separation.
+- **Why it matters:** overload or correlated host failure can invalidate timing, durability, and availability assumptions used by recovery.
+- **Next repository-only step:** define workload, duration, resource, pause, and physical-domain acceptance criteria plus a read-only evidence plan; no capacity run or provisioning.
+- **Explicit approval:** owner approval for load, pause/fault injection, provider operations, new resources/spending, or any mutating qualification.
+
+### P1 — certificate rotation and admin revocation (`operational qualification missing`)
+
+- **Current evidence:** the audit records TLS/RBAC boundaries, but no repository evidence proves rotation, expiry overlap, revocation, or removal of administrator access across all channels; existing TLS channels may retain RPC access after expiry.
+- **Why it matters:** stale credentials or certificates can preserve control after intended revocation, or rotation can strand recovery and ingress.
+- **Next repository-only step:** specify channel-by-channel rotation/revocation contracts, expiry behavior, and rollback/refusal tests using fixtures only.
+- **Explicit approval:** owner approval for credential/certificate changes, service reload/restart, access revocation, or private/live verification.
+
+### C — private tunnel and installed-alias unverifiability (`contract missing`)
+
+- **Current evidence:** `connect_demo.py`, installed `hat` aliases, SSH material, and present tunnel/process state are outside the repository-only audit; runbook wording correctly labels them unverifiable here.
+- **Why it matters:** an alias or tunnel can target the wrong host/service, and repository tests cannot establish the actual access boundary.
+- **Next repository-only step:** document the expected alias/tunnel contract and a sanitized, read-only verification artifact format; do not copy private values or execute the helper.
+- **Explicit approval:** owner approval for opening a tunnel, using private credentials/endpoints, contacting A/B/C, or any request through the tunnel.
+
+### Sequencing and scope boundary
+
+The next work order is: **(1) documentation corrections (done), (2) read-only contract/design work, (3) separately authorized observations, and (4) reviewed implementation and live drills**. D4 stock-runtime scope remains closed. Forking or instrumenting the stock runtime is a new decision, not an implied follow-up or authorization. Historical D2/D3 evidence remains preserved below and is not relabeled as current-live evidence.
+
 ## Runbook/status comparison and prioritized findings
 
 | Finding | Comparison and evidence | Class |

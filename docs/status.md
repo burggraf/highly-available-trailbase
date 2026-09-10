@@ -6,6 +6,10 @@ D0 checkpoint: 2026-09-08 UTC. Delivery direction approved by owner; work stays 
 | --- | --- | --- | --- |
 | D0–D3 delivered with preserved explicit reconciliations; D4 offline refusal diagnostic merged locally | D4 qualification and unresolved safety contracts | Complete acknowledged-write preservation and safe settlement of uncertain external effects are not established | No automatic recovery demonstration authorized or qualified |
 
+## Task3 operational risk summary
+
+Docs corrections are complete. The prioritized register remains **P0** for route identity/key-set admission and unified restore acceptance; subsequent blockers cover acknowledged-mutation coverage, provider late effects/incarnation, common authority (including direct activation), C/ingress availability, capacity/fault domains, certificate/admin revocation, and private tunnel/alias unverifiability. Next work is read-only contract/design review, then separately authorized observations, then reviewed implementation/live drills. **D4 stock scope remains closed; fork/instrumentation requires a new decision.** No current-live claim is made; historical D2/D3 evidence remains below. See the [full risk register](plans/2026-09-10-d0-d3-operational-readiness-audit-findings.md#prioritized-operational-risk-register).
+
 ## D4 current: offline refusal diagnostic, not automatic HA
 
 The owner approved staged isolated qualification and then local-only observation/refusal implementation. `hat/observe.py` is merged locally on `main` at `a15f6a9`; it is **not pushed, installed or connected to live services**. It accepts bounded captured JSON on stdin and inventories declared missing/uncertain/reported evidence. Reported captures remain unverified; every output refuses promotion and exposes no action capabilities. See [usage and limits](observation-only.md).
