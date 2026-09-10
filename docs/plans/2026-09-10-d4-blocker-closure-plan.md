@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3 standard library, unittest, macOS AF_UNIX/`LOCAL_PEERCRED`, descriptor-relative filesystem APIs, pinned TrailBase v0.33.11 source/binary, Litestream v0.5.17.
 
+**Ordering correction (2026-09-10):** Tasks 3 and 4 are deferred until Tasks 5 and 6 prove the required facts independently observable. Two rejected `d4-phase-socket-1` implementations remain preserved in Git and are reverted; that schema identifier is permanently refused. Build and statically review Task 5 without execution, perform Task 6's read-only feasibility decision, and stop `infeasible` if either decisive gate cannot close. Only if Task 6 closes may the owner authorize one bounded Task 5 probe execution. Only if every Task 5 receipt then closes may a new `d4-phase-socket-2` schema be derived, reviewed, and followed by Task 4. This correction takes precedence over the numeric task order below.
+
 ---
 
 ### Task 1: Pin the reviewed phase-separated contract
@@ -38,7 +40,7 @@
 6. Run surface, native-adapter, logout-adapter, admission, and runtime suites.
 7. Independently review raw-byte differentials and commit.
 
-### Task 3: Separate process phases and socket identities
+### Task 3: Derive process phases and socket identities after feasibility closes (deferred)
 
 **Files:**
 - Modify: `experiments/d4/surface_closure.py`
@@ -46,15 +48,16 @@
 - Modify: `docs/plans/2026-09-09-d4-local-surface-closure-plan.md`
 
 **Steps:**
-1. Add failing tests for exact pre-send manager/TrailBase/opener/collector cardinality and ancestry, sandbox-probe receipt, and post-send Litestream receipt.
-2. Add distinct listener pathname/listening-FD identity and accepted client/server endpoint identity; remove any accepted-endpoint/listener-path inode equality assumption. Every endpoint field names its kernel API/time, and unavailable linkage refuses.
-3. Require content-addressed evidence and external trust inventory for every parent edge, lifecycle receipt, endpoint, peer credential, raw framing/header observation, and time/order fact. Bind exact HTTP version/Host/Content-Length/body boundary and absence of transfer/chunking before bytes are sent.
-4. Reject extra/missing/overlapping roles, fixture-descendant collector, sandbox-probe substitution, unreceipted helper, stale process start, endpoint replacement, absent kernel link, any application bytes in either direction, and any Litestream pre-send presence or cross-phase/nonce reuse. Require Litestream launch strictly post-send.
-5. Implement exact pure validation and immutable bindings; no subprocess/socket/path reads.
-6. Run all D4/runtime/source/quarantine gates and independent adversarial review.
-7. Commit focused schema/test changes.
+1. Do not implement this task until Tasks 5 and 6 fully close. Permanently refuse the reverted draft identifier `d4-phase-socket-1`; use `d4-phase-socket-2` only for a schema derived from independently reviewed receipts.
+2. Add failing tests for exact pre-send manager/TrailBase/opener/collector cardinality and ancestry, sandbox-probe receipt, and post-send Litestream receipt.
+3. Add distinct listener pathname/listening-FD identity and accepted client/server endpoint identity; remove any accepted-endpoint/listener-path inode equality assumption. Every endpoint field names its kernel API/time, and unavailable linkage refuses.
+4. Require content-addressed evidence and external trust inventory for every parent edge, lifecycle receipt, endpoint, peer credential, raw framing/header observation, and time/order fact. Bind exact HTTP version/Host/Content-Length/body boundary and absence of transfer/chunking before bytes are sent.
+5. Reject extra/missing/overlapping roles, fixture-descendant collector, sandbox-probe substitution, unreceipted helper, stale process start, endpoint replacement, absent kernel link, any application bytes in either direction, and any Litestream pre-send presence or cross-phase/nonce reuse. Require Litestream launch strictly post-send.
+6. Implement exact pure validation and immutable bindings; no subprocess/socket/path reads.
+7. Run all D4/runtime/source/quarantine gates and independent adversarial review.
+8. Commit focused schema/test changes.
 
-### Task 4: Introduce descriptor-relative experimental publication
+### Task 4: Introduce descriptor-relative experimental publication (deferred)
 
 **Files:**
 - Create: `experiments/d4/fd_publish.py`
@@ -66,13 +69,14 @@
 - Modify corresponding adapter tests.
 
 **Steps:**
-1. Write failing unit tests for traversal, symlink/hardlink, wrong owner/mode/type, parent replacement, destination identity drift, duplicate name, short write, fsync failure, lock loss, cross-device/unsupported rename, and post-operation digest mismatch.
-2. Implement owner-only held-directory opening, single-component names, `O_EXCL|O_NOFOLLOW|O_CLOEXEC`, bounded writes, file/directory fsync, and immutable receipts.
-3. Implement descriptor-relative atomic rename only with retained directory FD and expected destination identity/digest; otherwise refuse.
-4. Route every admission journal, adapter artifact, and restored-image publication through the helper; retain adapter behavior and proof ordering. Spy tests must show `admission.py`, native adapter, and logout adapter have no direct security-sensitive pathname publication.
-5. Add spies proving adapters cannot use direct pathname `_write`/`os.replace` publication.
-6. Run focused tests, all D4/runtime tests, static source review, and independent race review.
-7. Commit only experimental files/tests.
+1. Do not implement this task unless Tasks 5 and 6 close and Task 3's new schema passes independent review.
+2. Write failing unit tests for traversal, symlink/hardlink, wrong owner/mode/type, parent replacement, destination identity drift, duplicate name, short write, fsync failure, lock loss, cross-device/unsupported rename, and post-operation digest mismatch.
+3. Implement owner-only held-directory opening, single-component names, `O_EXCL|O_NOFOLLOW|O_CLOEXEC`, bounded writes, file/directory fsync, and immutable receipts.
+4. Implement descriptor-relative atomic rename only with retained directory FD and expected destination identity/digest; otherwise refuse.
+5. Route every admission journal, adapter artifact, and restored-image publication through the helper; retain adapter behavior and proof ordering. Spy tests must show `admission.py`, native adapter, and logout adapter have no direct security-sensitive pathname publication.
+6. Add spies proving adapters cannot use direct pathname `_write`/`os.replace` publication.
+7. Run focused tests, all D4/runtime tests, static source review, and independent race review.
+8. Commit only experimental files/tests.
 
 ### Task 5: Qualify host primitives without TrailBase
 
@@ -81,14 +85,15 @@
 - Create bounded probe/checker/evidence files only.
 
 **Steps:**
-1. Build a static-reviewed, owner-only probe harness with no TrailBase/Litestream execution. Include `test_probe.py`, `static_check.py`, exact blocker matrix JSON, and one receipt schema per blocker.
+1. Build a static-reviewed, owner-only probe harness with no TrailBase/Litestream execution. Building and reviewing does not authorize any probe process. Include `test_probe.py`, `static_check.py`, exact blocker matrix JSON, and one receipt schema per blocker.
 2. Test tiny readiness-handshaked local processes for PID/parent/start identity, FD inventory, CLOEXEC observation, sibling provenance, collector read-only input FDs, and cleanup/reaping.
 3. Test a tiny AF_UNIX server/client for `LOCAL_PEERCRED`, listening identity, accepted endpoint identity, independent endpoint-to-listener/process linkage, and exact raw framing/header receipt. Send no TrailBase application bytes.
 4. Test a pinned `sandbox-exec` profile using clean env/cwd, enumerated FDs, controlled positive/negative paths, and denial of external/loopback/DNS/UDS/subprocess capabilities.
 5. Descriptor-bind canonical source archive/provenance and prior oracle packets.
-6. Run each probe once through its deterministic test command. For every one of the 13 blocker IDs, require exactly one content-addressed receipt with `closed|unavailable|ambiguous`; only `closed` may clear that ID.
-7. Any unavailable/ambiguous fact halts Tasks 6/7. Preserve the fresh root `pending`; every later attempt uses a new random root and never reopens or converts prior roots.
-8. Obtain independent evidence/security review and record each blocker as closed or remaining.
+6. After Task 6 independently closes, obtain a fresh bounded owner authorization receipt for the exact probe root, commands, local paths, binaries, duration/expiry, and zero external network. Without it, stop before spawn.
+7. Run each authorized probe once through its deterministic test command. For every one of the 13 blocker IDs, require exactly one content-addressed receipt with `closed|unavailable|ambiguous`; only `closed` may clear that ID.
+8. Any unavailable/ambiguous fact halts Tasks 3/4/7. Preserve the fresh root `pending`; every later attempt uses a new random root and never reopens or converts prior roots.
+9. Obtain independent evidence/security review and record each blocker as closed or remaining.
 
 ### Task 6: Decide runtime registration and telemetry feasibility
 
