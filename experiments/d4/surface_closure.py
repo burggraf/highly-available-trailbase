@@ -758,6 +758,15 @@ class PhaseSocketTrust:
     evidence_inventory: tuple[tuple[str, str], ...]
     pre_nonce: str
     post_nonce: str
+    manager_parent_pid: int = 0
+    manager_parent_start: int = 0
+    trailbase_parent_start: int = 0
+    opener_parent_start: int = 0
+    collector_parent_start: int = 0
+    pre_window_start: int = 1
+    pre_window_end: int = (1 << 63) - 1
+    peer_uid: int = 0
+    peer_groups: tuple[int, ...] = ()
 
 
 def _phase_socket_error(condition: bool, message: str) -> None:
@@ -765,16 +774,29 @@ def _phase_socket_error(condition: bool, message: str) -> None:
         raise SurfaceError(message)
 
 
-def validate_phase_socket_attestation(attestation: dict[str, Any], trust: PhaseSocketTrust) -> MappingProxyType:
+def _phase_secret_scan(value, path="phase"):
+    if isinstance(value, dict):
+        for key, child in value.items():
+            if key not in {"peer_credentials"} and any(word in key.lower() for word in ("secret", "token", "password", "cookie", "credential")):
+                raise SurfaceError(f"{path}: secret metadata")
+            _phase_secret_scan(child, f"{path}.{key}")
+    elif isinstance(value, list):
+        for i, child in enumerate(value): _phase_secret_scan(child, f"{path}[{i}]")
+    elif isinstance(value, str) and any(ord(c) >= 128 for c in value):
+        raise SurfaceError(f"{path}: non-ascii text")
+
+
+def _validate_phase_socket_attestation(attestation: dict[str, Any], trust: PhaseSocketTrust) -> MappingProxyType:
     """Validate Task 3 receipts without touching the process, socket, or filesystem APIs."""
     if type(attestation) is not dict or type(trust) is not PhaseSocketTrust:
         raise SurfaceError("phase/socket input")
     _walk_attestation(attestation)
+    _phase_secret_scan(attestation)
     required = {"schema", "pre_send", "sandbox_probe", "post_send", "evidence", "binding"}
     _phase_socket_error(set(attestation) == required and attestation["schema"] == PHASE_SOCKET_SCHEMA, "phase/socket schema")
-    pre = _ao(attestation["pre_send"], ("nonce", "started", "exited", "processes", "listener", "listening_fd", "opener_endpoint", "accepted_endpoint", "raw_framing", "bytes_before_validation"), "pre_send")
+    pre = _ao(attestation["pre_send"], ("nonce", "started", "exited", "processes", "listener", "listening_fd", "opener_endpoint", "accepted_endpoint", "linkage", "peer_credentials", "raw_framing", "held", "client_to_server_bytes", "server_to_client_bytes", "prefetched_bytes", "peeked_bytes", "drained_bytes"), "pre_send")
     probe = _ao(attestation["sandbox_probe"], ("nonce", "started", "exited", "evidence_id"), "sandbox_probe")
-    post = _ao(attestation["post_send"], ("nonce", "started", "exited", "binary", "config", "argv", "parent_pid", "parent_start", "evidence_id"), "post_send")
+    post = _ao(attestation["post_send"], ("nonce", "started", "exited", "window_start", "window_end", "binary", "config", "argv", "parent_pid", "parent_start", "evidence_id"), "post_send")
     binding = _ao(attestation["binding"], ("nonce", "evidence_id"), "binding")
     _phase_socket_error(pre["nonce"] == trust.pre_nonce and post["nonce"] == trust.post_nonce, "phase nonce trust")
     _phase_socket_error(len({pre["nonce"], probe["nonce"], post["nonce"]}) == 3, "phase nonce reuse")
@@ -785,42 +807,81 @@ def validate_phase_socket_attestation(attestation: dict[str, Any], trust: PhaseS
         _phase_socket_error(item["started"] <= item["exited"], f"{name} lifecycle")
     _phase_socket_error(probe["exited"] <= pre["started"], "sandbox ordering")
     _phase_socket_error(pre["exited"] <= post["started"], "post-send ordering")
-    _phase_socket_error(pre["bytes_before_validation"] == 0, "application bytes before validation")
+    _phase_socket_error(pre["held"] is True and all(pre[k] == 0 for k in ("client_to_server_bytes", "server_to_client_bytes", "prefetched_bytes", "peeked_bytes", "drained_bytes")), "application bytes before validation")
+    _phase_socket_error(pre["started"] >= trust.pre_window_start and pre["exited"] <= trust.pre_window_end and post["started"] >= post["window_start"] and post["exited"] <= post["window_end"], "held observation window")
     processes = _al(pre["processes"], "pre_send.processes", 4)
     _phase_socket_error(len(processes) == 4, "process cardinality")
     by_role = {}
     for p in processes:
-        _ao(p, ("role", "pid", "parent_pid", "start", "exe_sha256", "argv", "evidence_id"), "process")
+        _ao(p, ("role", "pid", "parent_pid", "parent_start", "start", "exe_sha256", "argv", "evidence_id"), "process")
         _phase_socket_error(p["role"] in {"manager", "trailbase", "opener", "collector"} and p["role"] not in by_role, "process roles")
-        _bounded(p["pid"], "process pid", 1); _bounded(p["parent_pid"], "process parent"); _bounded(p["start"], "process start", 1)
+        _bounded(p["pid"], "process pid", 1); _bounded(p["parent_pid"], "process parent"); _bounded(p["parent_start"], "process parent start"); _bounded(p["start"], "process start", 1)
         _as(p["exe_sha256"], "process executable", True); _al(p["argv"], "process argv", 64); _as(p["evidence_id"], "process evidence")
         by_role[p["role"]] = p
     _phase_socket_error(set(by_role) == {"manager", "trailbase", "opener", "collector"}, "process roles")
-    _phase_socket_error(by_role["manager"]["pid"] == trust.manager_pid and by_role["manager"]["start"] == trust.manager_start, "manager identity")
+    _phase_socket_error(by_role["manager"]["pid"] == trust.manager_pid and by_role["manager"]["start"] == trust.manager_start and by_role["manager"]["parent_pid"] == trust.manager_parent_pid and by_role["manager"]["parent_start"] == trust.manager_parent_start, "manager identity")
     for role in ("trailbase", "opener", "collector"):
         _phase_socket_error(by_role[role]["pid"] == getattr(trust, role + "_pid") and by_role[role]["start"] == getattr(trust, role + "_start"), f"{role} identity")
-        _phase_socket_error(by_role[role]["parent_pid"] == trust.manager_pid, f"{role} ancestry")
+        _phase_socket_error(by_role[role]["parent_pid"] == trust.manager_pid and by_role[role]["parent_start"] == trust.manager_start, f"{role} ancestry")
     _phase_socket_error(by_role["collector"]["pid"] != by_role["trailbase"]["pid"] and by_role["collector"]["pid"] != by_role["opener"]["pid"], "collector substitution")
+    _phase_socket_error(all(p["evidence_id"] for p in by_role.values()), "process evidence")
     for key, label in (("listener", "listener pathname"), ("listening_fd", "listening fd"), ("opener_endpoint", "opener endpoint"), ("accepted_endpoint", "accepted endpoint")):
-        obj = _ao(pre[key], ("device", "inode", "api", "observed_mono_ns", "evidence_id"), label)
+        endpoint_keys = {"listener": ("path", "owner_uid", "mode", "nlink", "device", "inode", "api", "observed_mono_ns", "evidence_id"), "listening_fd": ("fd", "pid", "device", "inode", "api", "observed_mono_ns", "evidence_id"), "opener_endpoint": ("direction", "pid", "start", "device", "inode", "api", "observed_mono_ns", "evidence_id"), "accepted_endpoint": ("direction", "pid", "start", "device", "inode", "api", "observed_mono_ns", "evidence_id")}[key]
+        obj = _ao(pre[key], endpoint_keys, label)
         _bounded(obj["device"], label + " device", 1); _bounded(obj["inode"], label + " inode", 1); _as(obj["api"], label + " api"); _bounded(obj["observed_mono_ns"], label + " time", 1); _as(obj["evidence_id"], label + " evidence")
+        if key == "listener":
+            _absolute_path(obj["path"], label + " path"); _bounded(obj["owner_uid"], label + " owner", 0); _bounded(obj["mode"], label + " mode", 0); _bounded(obj["nlink"], label + " nlink", 1)
+        if key == "listening_fd": _bounded(obj["fd"], label + " fd", 0); _bounded(obj["pid"], label + " pid", 1)
+        if key in {"opener_endpoint", "accepted_endpoint"}:
+            _phase_socket_error(obj["direction"] in {"client_to_server", "server_to_client"}, label + " direction"); _bounded(obj["pid"], label + " pid", 1); _bounded(obj["start"], label + " start", 1)
     _phase_socket_error(pre["listener"]["api"] != "synthetic" and pre["listening_fd"]["api"] != "synthetic" and pre["accepted_endpoint"]["api"] != "synthetic", "kernel linkage")
-    _phase_socket_error(pre["listener"]["device"] != pre["accepted_endpoint"]["device"] or pre["listener"]["inode"] != pre["accepted_endpoint"]["inode"], "endpoint identity conflation")
-    framing = _ao(pre["raw_framing"], ("method", "target", "headers", "http_version", "host", "content_length", "transfer_encoding", "body_start", "body_end", "nonce", "evidence_id"), "raw framing")
-    _phase_socket_error(framing["nonce"] == pre["nonce"] and framing["transfer_encoding"] is None and framing["body_end"] >= framing["body_start"], "raw framing")
+    _phase_socket_error(pre["linkage"]["listener_id"] == pre["linkage"]["accepted_id"] and pre["linkage"]["kernel_api"] and _bounded(pre["linkage"]["observed_mono_ns"], "linkage time", 1) >= pre["started"], "listener linkage")
+    _phase_socket_error(pre["opener_endpoint"]["direction"] == "client_to_server" and pre["accepted_endpoint"]["direction"] == "server_to_client", "endpoint direction")
+    peer = _ao(pre["peer_credentials"], ("uid", "gids", "api", "observed_mono_ns", "evidence_id"), "peer credentials")
+    _bounded(peer["uid"], "peer uid", 0); _al(peer["gids"], "peer groups", 64)
+    for gid in peer["gids"]: _bounded(gid, "peer gid", 0, (1 << 32) - 1)
+    _phase_socket_error(peer["uid"] == trust.peer_uid and tuple(peer["gids"]) == trust.peer_groups and peer["api"] == "LOCAL_PEERCRED" and pre["started"] <= peer["observed_mono_ns"] <= pre["exited"], "peer credentials")
+    framing = _ao(pre["raw_framing"], ("method", "target", "headers", "http_version", "host", "content_length", "transfer_encoding", "body_start", "body_end", "body_total", "body_sha256", "request_sha256", "connection_id", "connection_nonce", "phase_nonce", "evidence_id"), "raw framing")
+    headers = _al(framing["headers"], "raw headers", 64)
+    names = []
+    for header in headers:
+        _ao(header, ("name", "value"), "raw header"); _as(header["name"], "header name"); _as(header["value"], "header value")
+        _phase_socket_error(all(ord(c) < 128 for c in header["name"] + header["value"]), "header ascii"); names.append(header["name"].lower())
+    _phase_socket_error(len(names) == len(set(names)) and "transfer-encoding" not in names and "content-length" in names, "raw headers")
+    _phase_socket_error(framing["phase_nonce"] == pre["nonce"] and framing["connection_nonce"] != pre["nonce"] and framing["http_version"] == "HTTP/1.1" and framing["transfer_encoding"] is None and type(framing["content_length"]) is int and framing["content_length"] == framing["body_total"] and framing["body_end"] - framing["body_start"] == framing["body_total"] and HEX64.fullmatch(framing["body_sha256"]) and HEX64.fullmatch(framing["request_sha256"]), "raw framing")
+    _as(framing["connection_id"], "connection id"); _as(framing["connection_nonce"], "connection nonce")
     _phase_socket_error(binding["nonce"] == pre["nonce"], "binding phase")
-    _phase_socket_error(post["parent_pid"] == trust.manager_pid and post["parent_start"] == trust.manager_start, "litestream parent")
+    _phase_socket_error(post["parent_pid"] == trust.manager_pid and post["parent_start"] == trust.manager_start and post["started"] < post["exited"] and post["started"] > pre["exited"], "litestream parent")
     _phase_socket_error(post["started"] > pre["exited"], "litestream pre-send presence")
     _as(post["binary"], "litestream binary", True); _as(post["config"], "litestream config", True); _al(post["argv"], "litestream argv", 64)
     evidence_items = _al(attestation["evidence"], "evidence", 4096)
+    for x in evidence_items:
+        _ao(x, ("id", "path", "sha256", "size", "kind", "collector_source_sha256", "created_mono_ns", "phase"), "evidence")
+        _as(x["id"], "evidence id"); _safe_relative(x["path"], "evidence path"); _as(x["sha256"], "evidence hash", True); _bounded(x["size"], "evidence size"); _as(x["kind"], "evidence kind"); _as(x["collector_source_sha256"], "collector source", True); _bounded(x["created_mono_ns"], "evidence time", 1); _as(x["phase"], "evidence phase")
+    _phase_socket_error(len({x["id"] for x in evidence_items}) == len(evidence_items) and len({x["path"] for x in evidence_items}) == len(evidence_items), "evidence uniqueness")
     inventory = tuple(sorted((str(x["id"]), str(x["sha256"])) for x in evidence_items if type(x) is dict and "id" in x and "sha256" in x))
     _phase_socket_error(inventory == tuple(sorted(trust.evidence_inventory)), "evidence inventory")
     evidence_ids = {x["id"] for x in evidence_items}
     refs = [p["evidence_id"] for p in processes] + [pre[k]["evidence_id"] for k in ("listener", "listening_fd", "opener_endpoint", "accepted_endpoint")]
     refs += [framing["evidence_id"], probe["evidence_id"], post["evidence_id"], binding["evidence_id"]]
     _phase_socket_error(all(type(x) is str and x in evidence_ids for x in refs), "evidence reference")
-    _phase_socket_error(all(type(x) is dict and set(x) == {"id", "sha256"} and _as(x["id"], "evidence id") and _as(x["sha256"], "evidence hash", True) for x in evidence_items), "evidence schema")
-    return MappingProxyType({"status": "feasible", "phase_nonce": pre["nonce"]})
+    pre_refs = [p["evidence_id"] for p in processes] + [pre[k]["evidence_id"] for k in ("listener", "listening_fd", "opener_endpoint", "accepted_endpoint")] + [framing["evidence_id"], binding["evidence_id"]]
+    _phase_socket_error(all(next(x for x in evidence_items if x["id"] == ref)["phase"] == "pre_send" for ref in pre_refs), "pre evidence phase")
+    _phase_socket_error(next(x for x in evidence_items if x["id"] == probe["evidence_id"])["phase"] == "sandbox_probe", "sandbox evidence phase")
+    _phase_socket_error(next(x for x in evidence_items if x["id"] == post["evidence_id"])["phase"] == "post_send", "post evidence phase")
+    _phase_socket_error(sum(x["size"] for x in evidence_items) <= 268435456, "evidence total")
+    _phase_socket_error(all(x["phase"] in {"pre_send", "sandbox_probe", "post_send"} for x in evidence_items), "evidence phase")
+    canonical = _canonical_digest({"nonce": pre["nonce"], "connection_id": framing["connection_id"], "request_sha256": framing["request_sha256"]}, "_unused")
+    return MappingProxyType({"status": "feasible", "phase_nonce": pre["nonce"], "binding": (framing["connection_id"], framing["request_sha256"]), "digest": canonical})
+
+
+def validate_phase_socket_attestation(attestation: dict[str, Any], trust: PhaseSocketTrust) -> MappingProxyType:
+    try:
+        return _validate_phase_socket_attestation(attestation, trust)
+    except SurfaceError:
+        raise
+    except Exception as exc:
+        raise SurfaceError("malformed phase/socket attestation") from exc
 
 
 def validate_attestation(attestation, manifest, trust):
