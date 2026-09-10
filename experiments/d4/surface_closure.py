@@ -206,7 +206,10 @@ def load_manifest(path: Path | None = None) -> dict[str, Any]:
     if path is not None and not isinstance(path, Path): raise SurfaceError("manifest path must be a Path")
     try:
         with open(path or Path(__file__).with_name("surface_manifest.json"), "rb") as stream:
-            manifest = json.load(stream)
+            data = stream.read(1024 * 1024 + 1)
+        if len(data) > 1024 * 1024:
+            raise SurfaceError("manifest exceeds 1MiB")
+        manifest = json.loads(data)
     except (OSError, UnicodeError, RuntimeError, json.JSONDecodeError) as exc:
         raise SurfaceError("cannot load manifest") from exc
     validate_manifest(manifest)
@@ -392,7 +395,7 @@ def _validate_rules(m, routes):
         if x["upstream"] != upstream or x["database"] != db or upstream not in templates: raise SurfaceError("rule-to-template mismatch")
 
 def _strict_json(body: bytes) -> object:
-    if type(body) is not bytes or not body or body[:1] in b" \\t\\r\\n" or body[-1:] in b" \\t\\r\\n":
+    if type(body) is not bytes or not body:
         raise SurfaceError("invalid JSON framing")
     def pairs(items):
         out = {}
@@ -468,12 +471,14 @@ def _open_relative(fd: int, parts: tuple[str, ...], name: str) -> int:
             except OSError: pass
         raise SurfaceError(f"{name}: cannot open relative path") from exc
 
-def _fd_bytes(fd: int, name: str, identity: tuple[int, int, int] | None = None) -> bytes:
+def _fd_bytes(fd: int, name: str, identity: tuple[int, int, int] | None = None, max_bytes: int | None = None) -> bytes:
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode): raise SurfaceError(f"{name}: not a regular file")
         if identity is not None and (st.st_dev, st.st_ino, st.st_size) != identity:
             raise SurfaceError(f"{name}: descriptor identity changed")
+        if max_bytes is not None and st.st_size > max_bytes:
+            raise SurfaceError(f"{name}: exceeds size limit")
         chunks = []
         while chunk := os.read(fd, 1024 * 1024):
             chunks.append(chunk)
@@ -549,6 +554,11 @@ def verify_source(source_root: Path, provenance_path: Path, manifest: dict[str, 
 
         p = manifest["source"]["provenance"]
         if provenance_path.name != p["file"]: raise SurfaceError("provenance path mismatch")
+        try:
+            if os.fstat(provenance_fd).st_size > 1024 * 1024:
+                raise SurfaceError("provenance exceeds size limit")
+        except OSError as exc:
+            raise SurfaceError("provenance: cannot stat") from exc
         provenance_data = _fd_bytes(provenance_fd, "provenance")
         if hashlib.sha256(provenance_data).hexdigest() != p["sha256"]: raise SurfaceError("provenance manifest missing or tampered")
         try: recorded = json.loads(provenance_data.decode("utf-8"))

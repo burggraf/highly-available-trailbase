@@ -293,6 +293,22 @@ class SurfaceManifestTests(unittest.TestCase):
         self.assertEqual(manifest["graph_accounting"]["providers"], surface_closure.EXPECTED_ACCOUNTING["providers"])
 
 
+class ClosureRequestTests(unittest.TestCase):
+    def setUp(self):
+        self.manifest = surface_closure.load_manifest(MANIFEST)
+
+    def request(self, body=b'{"op_key":"x","payload":"y"}', target=b"/api/records/v1/main_ops"):
+        return surface_closure.ClosureRequest(b"POST", target, ((b"Content-Type", b"application/json"),), body)
+
+    def test_surrounding_json_whitespace_is_accepted(self):
+        binding = surface_closure.bind_request(self.request(b' \t{"op_key":"x","payload":"y"}\n '), self.manifest)
+        self.assertEqual(binding.operation_kind, "create_record")
+
+    def test_trailing_non_whitespace_is_rejected(self):
+        with self.assertRaises(surface_closure.SurfaceError):
+            surface_closure.bind_request(self.request(b'{"op_key":"x","payload":"y"}x'), self.manifest)
+
+
 class SurfaceClosureTests(unittest.TestCase):
     def assert_semantic_mutation_rejected(self, mutate):
         with tempfile.TemporaryDirectory() as td:
