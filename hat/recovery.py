@@ -184,7 +184,11 @@ def _authority(value, operation, profile):
     if value['schema'] != _AUTHORITY_SCHEMA or value['operation'] != operation['id']:
         raise ValueError('restore input authority differs')
     allowed = {'d2-preflight','d3-recovery-input','current-verify-exclusive'}
-    if value['origin'] not in allowed or (profile == 'fresh-writes') != (value['origin'] == 'current-verify-exclusive'):
+    origin=value['origin']
+    valid_origin = ((origin=='d2-preflight' and operation['source']=='A' and operation['target']=='B' and profile in ('comparison','baseline'))
+                    or (origin=='d3-recovery-input' and operation['source']=='B' and operation['target']=='A' and profile in ('recovery-comparison','baseline'))
+                    or (origin=='current-verify-exclusive' and profile=='fresh-writes'))
+    if origin not in allowed or not valid_origin:
         raise ValueError('restore input authority origin differs')
     ledger=value['ledger']
     if (not isinstance(ledger,dict) or set(ledger) != {'path','device','inode','mode','uid','links','bytes','sha256'}
@@ -196,6 +200,9 @@ def _authority(value, operation, profile):
             or type(ledger['bytes']) is not int or not 0 < ledger['bytes'] <= MAX_ARTIFACT
             or not _HEX64.fullmatch(ledger['sha256'])):
         raise ValueError('invalid restore ledger authority')
+    expected_name='new-writes.jsonl' if origin=='current-verify-exclusive' else 'ledger.jsonl'
+    if ledger['path'] != '/var/lib/hat-control/'+operation['id']+'/'+expected_name:
+        raise ValueError('restore ledger authority path differs')
     if set(value['binaries']) != {'trail','litestream'} or any(not isinstance(v,str) or not _HEX64.fullmatch(v) for v in value['binaries'].values()):
         raise ValueError('invalid restore binary authority')
     required={'config.textproto','migrations/main/U100__hat_ops.sql','migrations/aux/U100__hat_ops.sql','secrets/keys/private_key.pem','secrets/keys/public_key.pem'}
@@ -467,13 +474,23 @@ def _source_config(value, epoch):
 
 
 def _replica_config(value, epoch):
-    if not isinstance(value, str) or not 0 < len(value.encode()) <= MAX_INPUT or '\0' in value:
+    if isinstance(value, bytearray): value=bytes(value)
+    if (not isinstance(value, bytes) or not 0 < len(value) <= MAX_INPUT or b"\r" in value
+            or b"\x00" in value or value.startswith(b"\xef\xbb\xbf") or not value.endswith(b"\n")):
         raise ValueError('captured replica config is invalid')
-    for db in node.DBS:
-        if len(re.findall(r'(?m)^[ \t]*path:[ \t]*demos/' + re.escape(epoch) + '/' + db + r'[ \t]*(?:#.*)?$', value)) != 1:
-            raise ValueError('captured replica config does not bind the source epoch')
+    try: text=value.decode('utf-8')
+    except UnicodeDecodeError as exc: raise ValueError('captured replica config is invalid') from exc
+    lines=value.split(b"\n")[:-1]
+    if any(len(line)>8192 for line in lines): raise ValueError('captured replica config is invalid')
+    paths=[]
+    for line in text.split('\n')[:-1]:
+        if line.startswith((' ','\t')) or line.startswith('path:'):
+            match=re.fullmatch(r'[ \t]*path:[ \t]*([^#\s]+)[ \t]*(?:#.*)?',line)
+            if not match: raise ValueError('captured replica config is invalid')
+            paths.append(match.group(1))
+    expected={'demos/'+epoch+'/'+db for db in node.DBS}
+    if len(paths)!=3 or set(paths)!=expected: raise ValueError('captured replica config does not bind the source epoch')
     return value
-
 
 def _protected_ledger(raw):
     if not isinstance(raw, (bytes, bytearray)) or len(raw) > MAX_ARTIFACT or b"\x00" in raw or not raw.endswith(b"\n"):
