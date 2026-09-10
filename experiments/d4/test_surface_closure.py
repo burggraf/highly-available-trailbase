@@ -748,7 +748,7 @@ def valid_attestation_fixture():
     for index, listener in enumerate((listeners[0], listeners[0], listeners[0])):
         connections.append({"id": f"conn{index}", "listener_id": listener["id"], "client_pid": 10,
             "server_pid": 20, "client_uid": 501, "client_gids": [20], "server_uid": 501,
-            "server_gids": [20], "client_device": 1, "client_inode": 200 + index, "server_inode": listener["inode"],
+            "server_gids": [20], "client_device": 1, "client_inode": 200 + index, "server_device": listener["device"], "server_inode": listener["inode"],
             "accepted_mono_ns": 130 + index, "peer_source": "LOCAL_PEERCRED",
             "bytes_before_validation": 0, "evidence_id": ev("socket")})
     route_regs = []
@@ -888,6 +888,24 @@ class AttestationTests(unittest.TestCase):
                 value = copy.deepcopy(base); mutate(value)
                 with self.assertRaises(surface_closure.SurfaceError):
                     surface_closure.validate_attestation(value, manifest, resigned(value, trust))
+
+    def test_connection_cardinality_rejects_uncontrolled_manager_socket(self):
+        manifest, trust, base = valid_attestation_fixture()
+        value = copy.deepcopy(base)
+        extra = copy.deepcopy(value["connections"][0])
+        extra.update(id="conn3", client_inode=203, evidence_id="extra-socket")
+        value["connections"].append(extra)
+        value["descriptors"].append({**next(d for d in value["descriptors"] if d["pid"] == 10 and d["fd"] == 3), "fd": 6, "inode": 203})
+        value["evidence"].append({**next(e for e in value["evidence"] if e["id"] == "e1"), "id": "extra-socket", "path": "extra-socket.json"})
+        with self.assertRaises(surface_closure.SurfaceError):
+            surface_closure.validate_attestation(value, manifest, resigned(value, trust))
+
+    def test_connection_server_device_must_match_listener(self):
+        manifest, trust, base = valid_attestation_fixture()
+        value = copy.deepcopy(base)
+        value["connections"][0]["server_device"] = 2
+        with self.assertRaises(surface_closure.SurfaceError):
+            surface_closure.validate_attestation(value, manifest, resigned(value, trust))
 
     def test_registration_evidence_probe_and_telemetry_mismatches_refuse(self):
         manifest, trust, base = valid_attestation_fixture()

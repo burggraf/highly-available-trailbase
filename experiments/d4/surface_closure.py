@@ -821,7 +821,7 @@ def _validate_attestation_nested(a, trust, tree, manifest):
     specs = {
         "descriptors": ("pid fd cloexec owner_uid process_role type path inode device mode nlink source".split(), 256),
         "listeners": ("id pid role protocol sock_type path parent_ancestry uid mode device inode nlink source".split(), 2),
-        "connections": ("id listener_id client_pid server_pid client_uid client_gids server_uid server_gids client_device client_inode server_inode accepted_mono_ns peer_source bytes_before_validation evidence_id".split(), 64),
+        "connections": ("id listener_id client_pid server_pid client_uid client_gids server_uid server_gids client_device client_inode server_device server_inode accepted_mono_ns peer_source bytes_before_validation evidence_id".split(), 64),
         "listener_bindings": ("listener_id inode device pid exe_sha256 argv observed_mono_ns source evidence_id".split(), 2),
         "writable_probes": ("path uid operation result errno evidence_id".split(), 256),
         "evidence": ("id path sha256 size kind collector_source_sha256 created_mono_ns".split(), 4096),
@@ -942,14 +942,14 @@ def _validate_attestation_nested(a, trust, tree, manifest):
     for connection in connections.values():
         _as(connection["id"], "connection.id"); _al(connection["client_gids"], "client gids", 64); _al(connection["server_gids"], "server gids", 64)
         for gid in connection["client_gids"] + connection["server_gids"]: _bounded(gid, "connection gid", 0, (1 << 32) - 1)
-        for key in ("client_pid","server_pid","client_device","client_inode","server_inode","accepted_mono_ns"): _bounded(connection[key], "connection integer", 1)
+        for key in ("client_pid","server_pid","client_device","client_inode","server_device","server_inode","accepted_mono_ns"): _bounded(connection[key], "connection integer", 1)
         for key in ("client_uid","server_uid"): _bounded(connection[key], "connection uid", 0, (1 << 32) - 1)
         _bounded(connection["bytes_before_validation"], "connection bytes", 0, 0)
         listener = listeners.get(connection["listener_id"])
         if (listener is None or connection["client_pid"] != trust.manager_pid
                 or tree[connection["client_pid"]]["role"] != "manager"
                 or connection["server_pid"] != trust.fixture_pid or connection["server_uid"] != trust.service_uid
-                or tuple(connection["server_gids"]) != trust.service_groups or connection["server_inode"] != listener["inode"]
+                or tuple(connection["server_gids"]) != trust.service_groups or connection["server_device"] != listener["device"] or connection["server_inode"] != listener["inode"]
                 or connection["client_pid"] not in tree or connection["client_uid"] != tree[connection["client_pid"]]["uid"]
                 or tuple(connection["client_gids"]) != tuple(tree[connection["client_pid"]]["gids"])
                 or connection["peer_source"] != "LOCAL_PEERCRED" or connection["bytes_before_validation"] != 0
@@ -978,7 +978,8 @@ def _validate_attestation_nested(a, trust, tree, manifest):
                 or not (a["window"]["start_mono_ns"] <= control["start_mono_ns"] < control["end_mono_ns"] <= a["window"]["end_mono_ns"])): raise SurfaceError("control binding")
         evidence_ref(control["evidence_id"], {"socket"})
     if ({x["kind"] for x in controls} != expected_kinds
-            or len({x["connection_id"] for x in controls}) != 3): raise SurfaceError("control kinds")
+            or len({x["connection_id"] for x in controls}) != 3
+            or set(connections) != {x["connection_id"] for x in controls}): raise SurfaceError("control kinds")
 
     for probe in a["writable_probes"]:
         _absolute_path(probe["path"], "probe.path"); _bounded(probe["uid"], "probe.uid", 0, (1 << 32) - 1); _bounded(probe["errno"], "probe.errno", 1, (1 << 31) - 1)
