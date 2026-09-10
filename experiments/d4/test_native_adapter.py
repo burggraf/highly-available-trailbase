@@ -194,13 +194,19 @@ class NativeAdapterTests(unittest.TestCase):
 
     def test_default_command_timeout_stops_descendant_process_group(self):
         marker=self.root/'child-stopped';pidfile=self.root/'child-pid'
-        child=("import os,signal,sys,time; marker=sys.argv[1]; "
-               "signal.signal(signal.SIGTERM,lambda *_:(open(marker,'w').write('stopped'),sys.exit(0))); time.sleep(30)")
-        parent=("import subprocess,sys,time; p=subprocess.Popen([sys.executable,'-c',sys.argv[1],sys.argv[2]]); "
-                "open(sys.argv[3],'w').write(str(p.pid)); time.sleep(30)")
+        child=("import os,signal,sys,time; marker=sys.argv[1]; ready_fd=int(sys.argv[2]); "
+               "signal.signal(signal.SIGTERM,lambda *_:(open(marker,'w').write('stopped'),sys.exit(0))); "
+               "os.write(ready_fd,b'ready'); time.sleep(30)")
+        parent=("import os,subprocess,sys,time; ready_read,ready_write=os.pipe(); "
+                "p=subprocess.Popen([sys.executable,'-c',sys.argv[1],sys.argv[2],str(ready_write)], "
+                "pass_fds=(ready_write,)); os.close(ready_write); "
+                "assert os.read(ready_read,len(b'ready')) == b'ready'; os.close(ready_read); "
+                "pending=sys.argv[3]+'.pending'; open(pending,'w').write(str(p.pid)); "
+                "os.replace(pending,sys.argv[3]); time.sleep(30)")
         with self.assertRaises(subprocess.TimeoutExpired):
             native_adapter._run_group([sys.executable,'-c',parent,child,str(marker),str(pidfile)],
-                                      {'PATH':os.environ.get('PATH','/usr/bin:/bin')},0.2)
+                                      {'PATH':os.environ.get('PATH','/usr/bin:/bin')},2)
+        self.assertTrue(pidfile.is_file())
         self.assertTrue(marker.is_file())
         child_pid=int(pidfile.read_text())
         with self.assertRaises(ProcessLookupError): os.kill(child_pid,0)
