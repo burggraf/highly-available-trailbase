@@ -338,21 +338,22 @@ def current_writer(journal, ingress):
 def ingress_allowed(root, maintenance, permit, ingress, boot):
     """Boot/restart gate for exact completed, live D2 route, or verified D3 route."""
     try:
+        marker_present=maintenance.exists() or maintenance.is_symlink()
+        if marker_present: private_file(maintenance)
         path=root/'journal.db'
-        if not path.exists(): return not maintenance.exists()
+        if not path.exists(): return not marker_present
         private_file(path)
         with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)) as db:
             operation=db.execute('SELECT id,source,target,complete,new_epoch FROM operations ORDER BY rowid DESC LIMIT 1').fetchone()
-            if not operation: return not maintenance.exists()
+            if not operation: return not marker_present
             ident,source,target,complete,epoch=operation
             digest=hashlib.sha256(ingress.read_bytes()).hexdigest()
             if complete:
                 row=db.execute("SELECT evidence FROM steps WHERE operation=? AND phase='route' AND status='done'",(ident,)).fetchone()
-                return (not maintenance.exists() and row is not None
+                return (not marker_present and row is not None
                         and _exact_route(json.loads(row[0]),target,epoch,digest))
             if (source,target)==('B','A'):
-                if not re.fullmatch('[0-9a-f]{32}',ident) or not maintenance.exists(): return False
-                private_file(maintenance)
+                if not re.fullmatch('[0-9a-f]{32}',ident) or not marker_present: return False
                 if json.loads(maintenance.read_text())!={'operation':ident}: return False
                 failure=root/ident/'failure.json'
                 if _d3_serving_state(db,ident,digest,failure): return True
@@ -376,7 +377,7 @@ def ingress_allowed(root, maintenance, permit, ingress, boot):
                         and value['birth']==birth and value['config_sha']==digest)
             expected=[(i,p,s) for i,p in enumerate(PHASES[:8]) for s in ('intent','done')]+[(8,'route','intent')]
             steps=db.execute('SELECT position,phase,status,evidence FROM steps WHERE operation=? ORDER BY rowid',(ident,)).fetchall()
-            if (not maintenance.exists() or json.loads(maintenance.read_text())['operation']!=ident
+            if (not marker_present or json.loads(maintenance.read_text())['operation']!=ident
                     or (root/ident/'failure.json').exists()
                     or [step[:3] for step in steps] != expected
                     or any(value!='{}' for _,_,status,value in steps if status=='intent')):
