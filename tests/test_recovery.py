@@ -65,10 +65,12 @@ class RecoveryTests(unittest.TestCase):
         raw=m.canonical_json(request)
         self.assertEqual(raw,m.canonical_json(json.loads(raw)))
         self.assertEqual(m.validate_acceptance_request(request,operation),request)
+        self.assertEqual(m.parse_acceptance_request(raw,operation),request)
         self.assertNotIn('payload-value',m.canonical_json(request).decode())
         for patch in ({'profile':'baseline'},{'epoch':'d1-wrong'},{'operation':'b'*32},
                       {'positions':request['positions']|{'main':True}},
-                      {'inputs':request['inputs']|{'extra':1}}):
+                      {'inputs':request['inputs']|{'extra':1}},
+                      {'inputs':request['inputs']|{'ledger_authority':authority|{'ledger':authority['ledger']|{'mode':384.0}}}}):
             with self.assertRaises(ValueError):m.validate_acceptance_request(request|patch,operation)
 
     def test_acceptance_phase_matrix_and_result_are_exact(self):
