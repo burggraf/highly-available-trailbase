@@ -169,24 +169,6 @@ EXPECTED_ROUTE_CONDITIONS = {
 }
 class SurfaceError(ValueError): pass
 
-def _is_file(path: Path, name: str) -> bool:
-    try:
-        return path.is_file()
-    except (OSError, UnicodeError, RuntimeError) as exc:
-        raise SurfaceError(f"{name}: cannot inspect path") from exc
-
-def _read_bytes(path: Path, name: str) -> bytes:
-    try:
-        return path.read_bytes()
-    except (OSError, UnicodeError, RuntimeError) as exc:
-        raise SurfaceError(f"{name}: cannot read bytes") from exc
-
-def _read_text(path: Path, name: str) -> str:
-    try:
-        return path.read_text()
-    except (OSError, UnicodeError, RuntimeError) as exc:
-        raise SurfaceError(f"{name}: cannot read text") from exc
-
 def _dict(v: Any, name: str) -> dict:
     if type(v) is not dict: raise SurfaceError(f"{name}: expected object")
     return v
@@ -226,30 +208,6 @@ def _safe_relative(value: str, name: str) -> None:
 def _safe_single_name(value: str, name: str) -> None:
     _safe_relative(value, name)
     if "/" in value: raise SurfaceError(f"{name}: expected a single relative name")
-
-def _regular_file(path: Path, name: str) -> bool:
-    try:
-        return not path.is_symlink() and stat.S_ISREG(path.stat().st_mode)
-    except (OSError, UnicodeError, RuntimeError) as exc:
-        raise SurfaceError(f"{name}: cannot inspect path") from exc
-
-def _lstat(path: Path, name: str):
-    try:
-        return path.lstat()
-    except (OSError, UnicodeError, RuntimeError) as exc:
-        raise SurfaceError(f"{name}: cannot inspect path") from exc
-
-def _source_path(source_root: Path, relative: str, name: str) -> tuple[Path, int]:
-    path = source_root
-    parts = Path(relative).parts
-    for index, part in enumerate(parts):
-        path /= part
-        mode = _lstat(path, name).st_mode
-        if stat.S_ISLNK(mode):
-            raise SurfaceError(f"{name}: symlink is not allowed")
-        if index < len(parts) - 1 and not stat.S_ISDIR(mode):
-            raise SurfaceError(f"{name}: source path component is not a directory")
-    return path, mode
 
 def _manifest_sha256(manifest: dict[str, Any]) -> str:
     payload = json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -426,6 +384,7 @@ def validate_eligibility_input(manifest):
     if any(c["resolution"] == "runtime_unknown" for c in manifest["capabilities"]): raise SurfaceError("runtime_unknown capability is not eligible")
 
 def _open_at(root_fd: int, absolute: Path, name: str, directory: bool = False) -> int:
+    # resolve is only canonical-input policy; trust is on held descriptors, each child O_NOFOLLOW.
     try:
         if not absolute.is_absolute() or absolute.resolve(strict=True) != absolute:
             raise SurfaceError(f"{name}: path must be canonical absolute path")
@@ -441,17 +400,21 @@ def _open_at(root_fd: int, absolute: Path, name: str, directory: bool = False) -
         except Exception:
             os.close(fd); raise
     except SurfaceError: raise
-    except (OSError, UnicodeError, RuntimeError) as exc: raise SurfaceError(f"{name}: cannot open canonical path") from exc
+    except (OSError, UnicodeError, RuntimeError, ValueError) as exc: raise SurfaceError(f"{name}: cannot open canonical path") from exc
 
 def _open_relative(fd: int, parts: tuple[str, ...], name: str) -> int:
-    current = os.dup(fd)
+    current = None
     try:
+        current = os.dup(fd)
         for part in parts:
             child = os.open(part, os.O_RDONLY | os.O_NOFOLLOW | (os.O_DIRECTORY if part != parts[-1] else 0), dir_fd=current)
             os.close(current); current = child
         return current
-    except Exception:
-        os.close(current); raise
+    except (OSError, UnicodeError, RuntimeError, ValueError) as exc:
+        if current is not None:
+            try: os.close(current)
+            except OSError: pass
+        raise SurfaceError(f"{name}: cannot open relative path") from exc
 
 def _fd_bytes(fd: int, name: str) -> bytes:
     try:
@@ -472,6 +435,7 @@ def verify_source(source_root: Path, provenance_path: Path, manifest: dict[str, 
         root_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
     except (OSError, UnicodeError, RuntimeError) as exc:
         raise SurfaceError("cannot open OS root") from exc
+    source_fd = provenance_fd = None
     try:
         source_fd = _open_at(root_fd, source_root, "source root", True)
         provenance_fd = _open_at(root_fd, provenance_path, "provenance")
@@ -495,7 +459,9 @@ def verify_source(source_root: Path, provenance_path: Path, manifest: dict[str, 
                 expected_url = f"https://codeload.github.com/{identity[1]}/tar.gz/{identity[3]}"
                 expected_archive = {"trailbase":"78f694531b28e6f8eb7f600a6c4c63f37437b5e965a1a0a357c19dd5780fd852", "litestream":"cbfb487c66690679234ec46e28d03a2de60b795b7b4466f3444755fc4d39e7d8"}[name]
                 if s["url"] != expected_url or s["archive_sha256"] != expected_archive: raise SurfaceError("un pinned archive provenance")
-                if type(s["regular_files"]) is not int or s["regular_files"] <= 0 or type(s["expanded_bytes"]) is not int or s["expanded_bytes"] <= 0: raise SurfaceError("invalid provenance sizes")
+                expected_sizes = {"trailbase": (1512, 17610038), "litestream": (294, 3796066)}
+                if (s["regular_files"], s["expanded_bytes"]) != expected_sizes[name]: raise SurfaceError("invalid provenance sizes")
+                # Non-symlink replacements are untrusted unless pinned bytes/inventory pass.
             if seen != {"trailbase","litestream"}: raise SurfaceError("missing provenance source")
             if source_root.name != manifest["source"]["root"]: raise SurfaceError("source root mismatch")
             expected = {e["file"]: e for e in manifest["source_files"]}
@@ -532,7 +498,9 @@ def verify_source(source_root: Path, provenance_path: Path, manifest: dict[str, 
                 finally:
                     os.close(directory)
             if actual != set(expected): raise SurfaceError("source inventory does not exactly match configured scopes")
-        finally: os.close(provenance_fd); os.close(source_fd)
+        finally:
+            if provenance_fd is not None: os.close(provenance_fd)
+            if source_fd is not None: os.close(source_fd)
     except SurfaceError: raise
     except (OSError, UnicodeError, RuntimeError) as exc: raise SurfaceError("source verification failed") from exc
     finally: os.close(root_fd)

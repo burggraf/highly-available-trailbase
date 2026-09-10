@@ -37,17 +37,17 @@ def synthetic_fixture(tmp: Path):
     recorded = {"sources": [
         {"name": "trailbase", "repo": "trailbaseio/trailbase", "tag": "v0.33.11", "commit": surface_closure.COMMIT,
          "url": "https://codeload.github.com/trailbaseio/trailbase/tar.gz/f24291b894bb6c6696608e5f4c2f68666fe97686",
-         "archive_sha256": "78f694531b28e6f8eb7f600a6c4c63f37437b5e965a1a0a357c19dd5780fd852", "regular_files": 1, "expanded_bytes": 1},
+         "archive_sha256": "78f694531b28e6f8eb7f600a6c4c63f37437b5e965a1a0a357c19dd5780fd852", "regular_files": 1512, "expanded_bytes": 17610038},
         {"name": "litestream", "repo": "benbjohnson/litestream", "tag": "v0.5.17", "commit": surface_closure.LITESTREAM[3],
          "url": "https://codeload.github.com/benbjohnson/litestream/tar.gz/ccd326c175b583b5e82893a6078f06dcef5fba3f",
-         "archive_sha256": "cbfb487c66690679234ec46e28d03a2de60b795b7b4466f3444755fc4d39e7d8", "regular_files": 1, "expanded_bytes": 1},
+         "archive_sha256": "cbfb487c66690679234ec46e28d03a2de60b795b7b4466f3444755fc4d39e7d8", "regular_files": 294, "expanded_bytes": 3796066},
     ]}
     data = (json.dumps(recorded, sort_keys=True, separators=(",", ":")) + "\n").encode()
     provenance.write_bytes(data)
     manifest["source"]["root"] = root.name
     manifest["source"]["provenance"]["file"] = provenance.name
     manifest["source"]["provenance"]["sha256"] = hashlib.sha256(data).hexdigest()
-    return manifest, root, provenance
+    return manifest, root.resolve(), provenance.resolve()
 
 
 class SurfaceManifestTests(unittest.TestCase):
@@ -138,6 +138,30 @@ class SurfaceManifestTests(unittest.TestCase):
                 with self.assertRaises(surface_closure.SurfaceError):
                     surface_closure.verify_source(root, provenance, manifest)
 
+    def test_symlinked_provenance_parent_is_rejected(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            manifest, root, provenance = synthetic_fixture(tmp)
+            real = tmp / "provenance-dir"
+            real.mkdir(); provenance.rename(real / provenance.name)
+            link_parent = tmp / "linked"
+            link_parent.symlink_to(real, target_is_directory=True)
+            linked = (link_parent / provenance.name).resolve()
+            # The canonical path resolves through the symlink, but the supplied
+            # pathname remains a symlinked parent and must not be trusted.
+            with mock.patch.object(surface_closure, "PINNED_MANIFEST_SHA256", surface_closure._manifest_sha256(manifest)):
+                with self.assertRaises(surface_closure.SurfaceError):
+                    surface_closure.verify_source(root, link_parent / provenance.name, manifest)
+
+    def test_fd_faults_are_surface_errors(self):
+        with mock.patch.object(surface_closure.os, "fstat", side_effect=OSError("boom")):
+            with self.assertRaises(surface_closure.SurfaceError): surface_closure._fd_bytes(1, "file")
+        with mock.patch.object(surface_closure.os, "read", side_effect=OSError("boom")):
+            with mock.patch.object(surface_closure.os, "fstat", return_value=mock.Mock(st_mode=surface_closure.stat.S_IFREG)):
+                with self.assertRaises(surface_closure.SurfaceError): surface_closure._fd_bytes(1, "file")
+        with mock.patch.object(surface_closure.os, "open", side_effect=OSError("boom")):
+            with self.assertRaises(surface_closure.SurfaceError): surface_closure._open_relative(1, ("child",), "child")
+
     def test_graph_is_one_to_one_and_reachable(self):
         manifest = surface_closure.load_manifest(MANIFEST)
         caps = manifest["capabilities"]
@@ -168,7 +192,7 @@ class SurfaceClosureTests(unittest.TestCase):
             lambda m: m["source"].__setitem__("root", "other"),
             lambda m: m["source"]["provenance"].__setitem__("file", "other.json"),
             lambda m: m["routes"].__setitem__(0, {**m["routes"][0], "handler": "changed"}),
-            lambda m: m["capabilities"].__setitem__(0, {**m["capabilities"][0], "edges": []}),
+            lambda m: next(c for c in m["capabilities"] if c["edges"])["edges"].__setitem__(0, "route:GET /api/healthcheck"),
         ]
         for mutate in mutations:
             with self.subTest(mutation=mutate):
@@ -234,8 +258,8 @@ class SurfaceClosureTests(unittest.TestCase):
 
     def test_capability_edge_mutation_preserving_reachability_is_rejected(self):
         def mutate(m):
-            capability = m["capabilities"][0]
-            capability["edges"].append(next(c["name"] for c in m["capabilities"] if c["name"] != capability["name"] and c["name"] not in capability["edges"]))
+            capability = next(c for c in m["capabilities"] if c["edges"])
+            capability["edges"][0] = next(c["name"] for c in m["capabilities"] if c["name"] != capability["name"] and c["name"] not in capability["edges"])
         self.assert_semantic_mutation_rejected(mutate)
 
     def test_capability_source_anchor_mutation_is_rejected(self):
