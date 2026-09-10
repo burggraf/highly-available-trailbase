@@ -36,6 +36,22 @@ import client
 import node
 
 
+def _safe_timestamp(value):
+    try:
+        return datetime.datetime.fromisoformat(value.replace('Z','+00:00')).tzinfo
+    except (ValueError, TypeError, AttributeError, OverflowError, RecursionError):
+        return None
+
+
+def _safe_utc(value):
+    try:
+        if not isinstance(value,str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z',value): return False
+        datetime.datetime.strptime(value,'%Y-%m-%dT%H:%M:%SZ')
+        return True
+    except (ValueError, TypeError, OverflowError, RecursionError):
+        return False
+
+
 def restore_endpoint(plan, source, target, minimum):
     """Validate the pinned native JSON plan; the finite restore remains mandatory."""
     try:
@@ -55,13 +71,13 @@ def restore_endpoint(plan, source, target, minimum):
             a,b=node.txid(file['min_txid']),node.txid(file['max_txid'])
             key=file['level'],file['name']
             if (not low<=a<=b<=high or file['name']!=f'{a:016x}-{b:016x}.ltx' or key in seen
-                    or datetime.datetime.fromisoformat(file['timestamp'].replace('Z','+00:00')).tzinfo is None):
+                    or _safe_timestamp(file['timestamp']) is None):
                 raise ValueError('invalid plan file identity or range')
             seen.add(key);spans.append((a,b))
         if min(a for a,b in spans)!=low or max(b for a,b in spans)!=high:raise ValueError('plan endpoints disagree')
         return high
-    except (KeyError,TypeError,AttributeError,OverflowError) as exc:
-        raise ValueError('malformed native restore plan') from exc
+    except (KeyError,TypeError,AttributeError,OverflowError,ValueError,RecursionError):
+        raise ValueError('malformed native restore plan') from None
 
 
 def classify_fault(events, data):
@@ -135,12 +151,17 @@ def _unique_pairs(pairs):
 
 
 def parse_canonical_json(raw):
-    if not isinstance(raw, (bytes, bytearray)):
+    if not isinstance(raw, (bytes, bytearray)) or not 0 < len(raw) <= MAX_INPUT:
         raise ValueError('invalid canonical JSON bytes')
+    depth=0
+    for byte in bytes(raw):
+        if byte in (91,123): depth += 1
+        elif byte in (93,125): depth -= 1
+        if depth > 512 or depth < 0: raise ValueError('invalid canonical JSON bytes')
     try:
         value=json.loads(bytes(raw).decode('ascii'), object_pairs_hook=_unique_pairs)
-    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
-        raise ValueError('invalid canonical JSON bytes') from exc
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError, RecursionError, OverflowError):
+        raise ValueError('invalid canonical JSON bytes') from None
     if canonical_json(value) != bytes(raw):
         raise ValueError('noncanonical JSON bytes')
     return value
@@ -281,7 +302,7 @@ def fault_operations(events):
                 or type(start.get('time_ns')) is not int or start['time_ns']<=0
                 or not isinstance(start.get('utc'),str) or not stamp.fullmatch(start['utc'])):
             raise ValueError('invalid closed fault ledger')
-        datetime.datetime.strptime(start['utc'],'%Y-%m-%dT%H:%M:%SZ')
+        if not _safe_utc(start['utc']): raise ValueError('invalid closed fault ledger')
         submitted={};outcomes={};counts={'submitted':0,'acknowledged':0,'rejected':0,'uncertain':0};previous=start['time_ns']
         for event in events[1:-1]:
             if not isinstance(event,dict): raise ValueError('invalid fault event')
@@ -305,7 +326,7 @@ def fault_operations(events):
         if (set(stop)!={'event','submitted','acknowledged','rejected','uncertain','time_ns','utc'} or stop.get('event')!='stop'
                 or type(stop.get('time_ns')) is not int or stop['time_ns']<=previous
                 or not isinstance(stop.get('utc'),str) or not stamp.fullmatch(stop['utc'])): raise ValueError('invalid fault stop')
-        datetime.datetime.strptime(stop['utc'],'%Y-%m-%dT%H:%M:%SZ')
+        if not _safe_utc(stop['utc']): raise ValueError('invalid fault stop')
         if any(type(stop.get(k)) is not int or stop[k]!=counts[k] for k in counts) or set(submitted)!=set(outcomes):
             raise ValueError('incomplete fault ledger')
         return sorted(api+'/'+key for api,key in submitted)
