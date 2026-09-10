@@ -565,7 +565,7 @@ class ClosureRequestTests(unittest.TestCase):
 
     def request(self, *, method=b"POST", target=b"/api/records/v1/main_ops",
                 headers=None, body=None):
-        selected_headers = ((b"content-type", b"application/json"),) if target.endswith(b"/logout") else (self.HEADERS if headers is None else headers)
+        selected_headers = ((b"content-type", b"application/json"),) if isinstance(target, bytes) and target.endswith(b"/logout") else (self.HEADERS if headers is None else headers)
         return surface_closure.ClosureRequest(
             method, target, selected_headers,
             self.MAIN_BODY if body is None else body)
