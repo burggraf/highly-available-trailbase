@@ -153,17 +153,23 @@ def _unique_pairs(pairs):
 def parse_canonical_json(raw):
     if not isinstance(raw, (bytes, bytearray)) or not 0 < len(raw) <= MAX_INPUT:
         raise ValueError('invalid canonical JSON bytes')
-    depth=0
-    for byte in bytes(raw):
-        if byte in (91,123): depth += 1
-        elif byte in (93,125): depth -= 1
-        if depth > 512 or depth < 0: raise ValueError('invalid canonical JSON bytes')
     try:
         value=json.loads(bytes(raw).decode('ascii'), object_pairs_hook=_unique_pairs)
+        stack=[(value,0)]; containers=0
+        while stack:
+            item,depth=stack.pop()
+            if isinstance(item,dict): children=item.values()
+            elif isinstance(item,list): children=item
+            else: continue
+            containers += 1
+            if depth > 512 or containers > 100000: raise ValueError('invalid canonical JSON bytes')
+            stack.extend((child,depth+1) for child in children)
     except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError, RecursionError, OverflowError):
         raise ValueError('invalid canonical JSON bytes') from None
-    if canonical_json(value) != bytes(raw):
-        raise ValueError('noncanonical JSON bytes')
+    try:
+        if canonical_json(value) != bytes(raw): raise ValueError('noncanonical JSON bytes')
+    except (TypeError, ValueError, RecursionError, OverflowError):
+        raise ValueError('invalid canonical JSON bytes') from None
     return value
 
 
