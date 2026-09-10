@@ -132,6 +132,62 @@ class RecoveryGuardTests(unittest.TestCase):
                     with self.assertRaises(RuntimeError): self.m.current_writer(journal,ingress)
                     self.assertFalse(self.m.ingress_allowed(root,root/'missing',root/'missing',ingress,'boot'))
 
+    def test_completed_reconcile_refuses_every_route_authority_mutation(self):
+        mutations=(
+            ('wrong-writer',lambda op,digest:{'writer':'A','epoch':op['new_epoch'],'config_sha':digest}),
+            ('wrong-epoch',lambda op,digest:{'writer':'B','epoch':'d1-wrong','config_sha':digest}),
+            ('missing-key',lambda op,digest:{'writer':'B','epoch':op['new_epoch']}),
+            ('extra-key',lambda op,digest:{'writer':'B','epoch':op['new_epoch'],'config_sha':digest,'extra':1}),
+            ('malformed-json',lambda op,digest:'{not-json'),
+        )
+        for name,make_value in mutations:
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp).resolve(); ingress=root/'proxy.cfg'; ingress.write_text('route B\\n')
+                digest=hashlib.sha256(ingress.read_bytes()).hexdigest(); stopped=[]
+                with self.m.Journal(root) as journal:
+                    operation=journal.begin('A','B','d1-current')
+                    for phase in D2:
+                        evidence={'writer':'B','epoch':operation['new_epoch'],'config_sha':digest} if phase=='route' else {}
+                        journal.step(phase,lambda evidence=evidence:evidence)
+                    journal.finish()
+                maintenance=root/'maintenance'; maintenance.write_text(json.dumps({'operation':operation['id']})); maintenance.chmod(0o600)
+                with self.m.Journal(root) as journal:
+                    value=make_value(operation,digest)
+                    journal.db.execute("UPDATE steps SET evidence=? WHERE operation=? AND phase='route' AND status='done'",(value if isinstance(value,str) else json.dumps(value),operation['id'])); journal.db.commit()
+                    with self.assertRaises(RuntimeError): self.m.reconcile_existing(journal,maintenance,lambda:stopped.append(True),ingress)
+                self.assertTrue(maintenance.exists()); self.assertEqual(stopped,[])
+
+    def test_incomplete_d2_admission_accepts_only_exact_route_intent_boundary(self):
+        def setup():
+            root=Path(tempfile.mkdtemp()).resolve(); ingress=root/'proxy.cfg'; ingress.write_text('route A\\n')
+            with self.m.Journal(root) as journal:
+                operation=journal.begin('A','B','d1-current')
+                for phase in D2[:8]: journal.step(phase,lambda:{})
+                with self.assertRaises(RuntimeError): journal.step('route',lambda: (_ for _ in ()).throw(RuntimeError('pending')))
+            maintenance=root/'maintenance'; maintenance.write_text(json.dumps({'operation':operation['id']})); maintenance.chmod(0o600)
+            permit=root/'permit'; permit.write_text(json.dumps({'operation':operation['id'],'boot_id':'boot','pid':os.getpid(),'birth':self.m.process_identity(os.getpid()),'config_sha':hashlib.sha256(ingress.read_bytes()).hexdigest()})); permit.chmod(0o600)
+            return root,operation,ingress,maintenance,permit
+        root,operation,ingress,maintenance,permit=setup()
+        self.assertTrue(self.m.ingress_allowed(root,maintenance,permit,ingress,'boot'))
+        import shutil
+        shutil.rmtree(root)
+        cases=('missing','reordered','duplicate','extra','nonempty-intent')
+        for case in cases:
+            with self.subTest(case=case):
+                root,operation,ingress,maintenance,permit=setup()
+                with self.m.Journal(root) as journal:
+                    if case=='missing': journal.db.execute("DELETE FROM steps WHERE operation=? AND phase='quiesce'",(operation['id'],))
+                    elif case=='reordered':
+                        journal.db.execute("UPDATE steps SET phase='tmp' WHERE operation=? AND phase='preflight' AND status='intent'",(operation['id'],))
+                        journal.db.execute("UPDATE steps SET phase='preflight' WHERE operation=? AND phase='close_ingress' AND status='intent'",(operation['id'],))
+                        journal.db.execute("UPDATE steps SET phase='close_ingress' WHERE operation=? AND phase='tmp' AND status='intent'",(operation['id'],))
+                    elif case=='duplicate': journal.db.execute("INSERT INTO steps(operation,position,phase,status,evidence) SELECT operation,position,phase,status,evidence FROM steps WHERE operation=? AND phase='route'",(operation['id'],))
+                    elif case=='extra': journal.db.execute("INSERT INTO steps(operation,position,phase,status,evidence) VALUES(?,?,?,?,?)",(operation['id'],9,'verify','intent','{}'))
+                    else: journal.db.execute("UPDATE steps SET evidence='{""x"":1}' WHERE operation=? AND phase='route' AND status='intent'",(operation['id'],))
+                    journal.db.commit()
+                self.assertFalse(self.m.ingress_allowed(root,maintenance,permit,ingress,'boot'))
+                shutil.rmtree(root)
+
     def test_incomplete_d2_admission_requires_exact_route_intent_prefix(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp).resolve(); ingress=root/'proxy.cfg'; ingress.write_text('route A\\n')
