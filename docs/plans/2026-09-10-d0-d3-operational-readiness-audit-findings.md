@@ -82,7 +82,7 @@ The source-level `inspect_cold()` function is observational, but the installed d
 
 ## Prioritized operational risk register
 
-This register is repository-only. “Current evidence” means checked-in source, tests, and documented historical boundaries; it is not a current-live observation. Every live or mutating step requires the approval stated in its entry.
+This register is repository-only. “Current evidence” means checked-in source, tests, and documented historical boundaries; it is not a current-live observation. Source-level gaps are not evidence that the historical or documented deployment is presently unsafe or experiencing an incident. Every live or mutating step requires the approval stated in its entry. **P0** means a gap that must be resolved before any future exercise or acceptance because it gates admission or evidence interpretation. **P1** means prerequisite contract or qualification work; it is not an immediate exercise gate unless its entry explicitly says so.
 
 ### P0 — completed ingress route identity/key-set admission, newly found (`contract missing`)
 
@@ -149,7 +149,7 @@ This register is repository-only. “Current evidence” means checked-in source
 
 ### Sequencing and scope boundary
 
-The next work order is: **(1) documentation corrections (done), (2) read-only contract/design work, (3) separately authorized observations, and (4) reviewed implementation and live drills**. D4 stock-runtime scope remains closed. Forking or instrumenting the stock runtime is a new decision, not an implied follow-up or authorization. Historical D2/D3 evidence remains preserved below and is not relabeled as current-live evidence.
+The next work order is: **(1) documentation corrections (done), (2) read-only contract/design work, (3) separately authorized observations, and (4) reviewed implementation and live drills**. D4 stock-runtime scope remains closed. Forking or instrumenting the stock runtime is a new decision, not an implied follow-up or authorization. Historical D2/D3 evidence remains preserved below and is not relabeled as current-live evidence. This register adds no new current-live observation.
 
 ## Runbook/status comparison and prioritized findings
 
