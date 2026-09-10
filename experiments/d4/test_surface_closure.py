@@ -1093,6 +1093,16 @@ class QuarantineTests(unittest.TestCase):
                 except FileNotFoundError: pass
                 self.assert_rejected(root, manifest)
 
+    def test_quarantine_rejects_control_files_as_the_only_declared_payload(self):
+        for control in ("manifest.json", "access.log"):
+            with self.subTest(control=control), tempfile.TemporaryDirectory() as td:
+                root, manifest, manifest_path, _, target, _ = self._fixture(Path(td))
+                target.unlink()
+                manifest["files"] = [dict(manifest["files"][0], path=control)]
+                manifest["manifest_sha256"] = surface_closure._canonical_digest(manifest, "manifest_sha256")
+                manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
+                self.assert_rejected(root, manifest)
+
     def test_quarantine_rejects_malformed_manifest_and_access_log(self):
         cases = [("top", lambda m: m.__setitem__("files", "bad")), ("nested", lambda m: m["files"].__setitem__(0, "bad")),
                  ("nested type", lambda m: m["files"][0].__setitem__("size", True)),

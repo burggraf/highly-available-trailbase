@@ -1082,6 +1082,7 @@ def validate_quarantine(root, manifest):
         log=manifest["access_log"]
         if type(log) is not str or not os.path.isabs(log) or os.path.dirname(log) != canonical or os.path.basename(log) == "manifest.json": raise SurfaceError("access log")
         controls={"manifest.json", os.path.basename(log)}
+        if names & controls: raise SurfaceError("control declared as payload")
         expected_dirs={tuple(path.split("/")[:i]) for path in names|controls for i in range(1,len(path.split("/")))}
         seen=set(); entries=[]
         for name in controls:
