@@ -1,5 +1,5 @@
 import copy
-from dataclasses import FrozenInstanceError, replace, replace
+from dataclasses import FrozenInstanceError, asdict, fields, is_dataclass, replace
 import hashlib
 import json
 import os
@@ -304,6 +304,33 @@ class AuthorizationClosureTests(unittest.TestCase):
         headers = headers or ((b"Content-Type", b"application/json"), (b"Authorization", b"Bearer " + self.secret))
         return surface_closure.ClosureRequest(b"POST", target, tuple(headers), b'{"op_key":"x","payload":"y"}')
 
+    def test_binding_drops_raw_authorization_from_recursive_views(self):
+        body = json.dumps({"op_key": "x", "payload": self.secret.decode()}).encode()
+        request = self.request()
+        request = surface_closure.ClosureRequest(request.method, request.target, request.headers, body)
+        binding = surface_closure.bind_request(request, self.manifest)
+
+        def leaves(value):
+            if is_dataclass(value):
+                for field in fields(value): yield from leaves(getattr(value, field.name))
+            elif isinstance(value, dict):
+                for key, item in value.items(): yield from leaves(key); yield from leaves(item)
+            elif isinstance(value, (tuple, list)):
+                for item in value: yield from leaves(item)
+            else: yield value
+
+        for view in (tuple(leaves(binding)), asdict(binding), repr(binding)):
+            self.assertNotIn(self.secret, repr(view).encode())
+        self.assertEqual(binding.validated_request.headers, ((b"Content-Type", b"application/json"),))
+        self.assertEqual(binding.validated_request.body_sha256, hashlib.sha256(body).hexdigest())
+
+    def test_authorization_errors_never_echo_secret(self):
+        headers = ((b"Content-Type", b"application/json"),
+                   (b"Authorization", b"Basic " + self.secret))
+        with self.assertRaises(surface_closure.SurfaceError) as caught:
+            surface_closure.bind_request(self.request(headers=headers), self.manifest)
+        self.assertNotIn(self.secret, repr(caught.exception).encode())
+
     def test_main_requires_bearer_and_redacts_secret(self):
         binding = surface_closure.bind_request(self.request(), self.manifest)
         self.assertIsNotNone(binding)
@@ -586,8 +613,12 @@ class ClosureRequestTests(unittest.TestCase):
         for request, kind, database in cases:
             with self.subTest(target=request.target):
                 binding = surface_closure.bind_request(request, self.manifest)
-                self.assertEqual((binding.operation_kind, binding.database, binding.validated_request),
-                                 (kind, database, request))
+                self.assertEqual((binding.operation_kind, binding.database), (kind, database))
+                self.assertEqual(binding.validated_request,
+                                 surface_closure.ValidatedRequest(
+                                     request.method, request.target,
+                                     ((b"Content-Type", b"application/json"),),
+                                     hashlib.sha256(request.body).hexdigest()))
 
     def test_equivalent_json_and_header_name_case_bind(self):
         bodies = (

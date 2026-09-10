@@ -184,10 +184,17 @@ class ClosureRequest:
         return f"ClosureRequest(method={self.method!r}, target={self.target!r}, headers=<redacted>, body=<redacted>)"
 
 @dataclass(frozen=True)
+class ValidatedRequest:
+    method: bytes
+    target: bytes
+    headers: tuple[tuple[bytes, bytes], ...]
+    body_sha256: str
+
+@dataclass(frozen=True)
 class Binding:
     operation_kind: str
     database: str
-    validated_request: ClosureRequest
+    validated_request: ValidatedRequest
 
 def _dict(v: Any, name: str) -> dict:
     if type(v) is not dict: raise SurfaceError(f"{name}: expected object")
@@ -447,7 +454,10 @@ def bind_request(request: ClosureRequest, manifest: dict[str, Any]) -> Binding |
         if set(obj) != {"refresh_token"} or type(obj["refresh_token"]) is not str or not re.fullmatch(r"[A-Za-z0-9]{86}", obj["refresh_token"]): raise SurfaceError("invalid logout body")
     else:
         if set(obj) != {"op_key", "payload"} or any(type(obj[k]) is not str or not 1 <= len(obj[k]) <= 1024 for k in obj): raise SurfaceError("invalid operation body")
-    return Binding(kind, database, request)
+    validated = ValidatedRequest(request.method, request.target,
+                                 ((b"Content-Type", b"application/json"),),
+                                 hashlib.sha256(request.body).hexdigest())
+    return Binding(kind, database, validated)
 
 def validate_eligibility_input(manifest):
     validate_manifest(manifest)
