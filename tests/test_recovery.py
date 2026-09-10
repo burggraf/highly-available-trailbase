@@ -28,6 +28,25 @@ class RecoveryTests(unittest.TestCase):
         spec=importlib.util.spec_from_file_location('hat_recovery',ENTRY)
         value=importlib.util.module_from_spec(spec);spec.loader.exec_module(value);return value
 
+    def test_parser_and_timestamp_errors_do_not_leak_attacker_text(self):
+        m=self.module(); marker='SECRET_TIMESTAMP_MARKER'
+        plan=dict(source='/source/main.db',target_path='/fresh/main.db',replica='s3',min_txid='0000000000000001',max_txid='0000000000000003',files=[dict(level=9,name='0000000000000001-0000000000000003.ltx',min_txid='0000000000000001',max_txid='0000000000000003',size=4096,timestamp=marker)])
+        with self.assertRaises(ValueError) as caught:m.restore_endpoint(plan,'/source/main.db','/fresh/main.db',2)
+        chain=[]; cur=caught.exception
+        while cur: chain += [str(cur)]; cur=cur.__cause__ or cur.__context__
+        self.assertTrue(all(marker not in text for text in chain))
+        start={'event':'start','run_id':'d3-'+'a'*32,'source_epoch':'d1-source','time_ns':1,'utc':marker}
+        with self.assertRaises(ValueError) as caught:m.fault_operations([start,{'event':'stop','submitted':0,'acknowledged':0,'rejected':0,'uncertain':0,'time_ns':2,'utc':'2026-01-01T00:00:01Z'}])
+        self.assertNotIn(marker,str(caught.exception)); self.assertIsNone(caught.exception.__cause__)
+
+    def test_canonical_parser_bounds_and_recursion_refuse_generically(self):
+        m=self.module()
+        for raw in (b'', b'{}'*(1<<20)):
+            with self.assertRaises(ValueError):m.parse_canonical_json(raw)
+        deep=b'['*2000+b'0'+b']'*2000
+        with self.assertRaises(ValueError) as caught:m.parse_canonical_json(deep)
+        self.assertNotIn('0',str(caught.exception))
+
     def test_restore_plan_is_exact_bounded_and_not_older_than_baseline(self):
         m=self.module()
         plan=dict(source='/source/main.db',target_path='/fresh/main.db',replica='s3',min_txid='0000000000000001',max_txid='0000000000000003',files=[dict(level=9,name='0000000000000001-0000000000000003.ltx',min_txid='0000000000000001',max_txid='0000000000000003',size=4096,timestamp='2026-09-08T00:00:00Z')])
