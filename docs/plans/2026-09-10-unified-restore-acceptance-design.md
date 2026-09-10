@@ -85,9 +85,13 @@ For `recovery-comparison`, `inputs` additionally and exactly contains:
 }
 ```
 
-The operation list contains identifiers only, never payloads. All hashes use raw bytes except `fault_operations_sha256`, which hashes canonical JSON (`sort_keys=True`, compact separators, UTF-8, no NaN).
+`positions` and `restore_points` have exactly the keys `main`, `session`, and `aux`. Each restore point has exactly `source` and `position`; `source` must equal `/var/lib/hat-demo/depot/data/<db>.db`, and its integer (not boolean) `position` must equal top-level `positions[db]`.
 
-The entire request is serialized the same canonical way. The request SHA-256 is over those exact bytes. The validator rejects noncanonical bytes, duplicate keys, unknown/missing fields, booleans as integers, invalid identifiers/epochs/hashes, incomplete database/support/binary sets, unsupported matrix combinations, wrong derived epoch/profile, and fault fields outside recovery comparison.
+Operation IDs match exactly `[0-9a-f]{32}`. Epochs match exactly `d1-[a-z0-9-]{1,125}` (3–128 ASCII characters total). `source_epoch != new_epoch`; every new operation has `new_epoch == "d1-" + operation`. Comparison requests use the journal's source epoch; baseline/fresh-write requests use that exact operation-derived new epoch. Source and target are distinct and exactly the matrix direction.
+
+For recovery comparison, `inputs` also embeds `fault_operations`: the lexicographically sorted unique JSON array of every submitted identifier string derived from the sealed closed ledger. Each string is exactly `main_ops/<op_key>` or `aux_ops/<op_key>` using the already validated op-key grammar. Duplicate submissions or identifiers refuse. `fault_operation_count` equals its length, and `fault_operations_sha256` hashes its canonical JSON bytes. The list contains identifiers only, never payloads.
+
+All other hashes use raw bytes. The entire request is serialized canonically with Python `json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False).encode('ascii')`; only values representable by the schema are allowed. Request SHA-256 is over those exact bytes. The validator rejects noncanonical bytes, duplicate keys, unknown/missing fields, booleans as integers, invalid identifiers/epochs/hashes, incomplete database/support/binary sets, unsupported matrix combinations, wrong cross-field bindings, and fault fields outside recovery comparison.
 
 ## Input identity and file handling
 
@@ -106,7 +110,7 @@ Directory traversal uses component-by-component `os.open(..., dir_fd=parent_fd, 
 
 The controller writes canonical request bytes durably under the operation work directory, then writes an identical oracle-readable copy. Secret-bearing config/ledger inputs are root-owned, oracle-group-readable `0640` regular single-link files beneath root-owned non-group-writable ancestry; the hash-only request is the same. The sealed fault copy and result are oracle-owned `0600`. No file is world-accessible.
 
-The oracle independently uses the same descriptor-relative bounded reader, validates actual hashes/key sets/restore points and all three replica epoch paths against `request.epoch`, and rechecks identities after use. It replaces every security-relevant `assert` with explicit exceptions.
+The oracle independently uses the same descriptor-relative bounded reader, validates actual hashes/key sets/restore points, and parses replica config text with the existing exact grammar: for each fixed DB, exactly one line must match `(?m)^[ \\t]*path:[ \\t]*demos/<escaped request.epoch>/<db>[ \\t]*(?:#.*)?$`; missing, duplicate, alternate-epoch, or additional matching paths refuse. This replica path binding is distinct from the fixed local source path in `restore_points`. Identities are rechecked after use. It replaces every security-relevant `assert` with explicit exceptions.
 
 The oracle exclusive-creates canonical result bytes at mode `0600`, fsyncs file and directory, and never prints result or secret-bearing parse data. After command completion, the controller reads the result descriptor-relatively, verifies owner/mode/link/identity, validates it, rechecks request/input identities, and durably retains the exact bytes in the operation work directory before returning. A crash at any request copy/fsync, command, result fsync/read, retained-result fsync, or journal-commit boundary leaves refusal or a pending intent—never inferred acceptance.
 
@@ -144,15 +148,28 @@ For `recovery-comparison`, `checks` additionally and exactly contains:
 }
 ```
 
-The sealed fault ledger is the sole source of truth. Both controller and oracle independently parse its complete closed event stream, derive the exact sorted JSON array of submitted identifier strings (`"main_ops/<op_key>"` or `"aux_ops/<op_key>"`), and require its count/hash to equal the request. The result's five categories must flatten to that same array/count/hash with no overlap or omission. Semantics remain exact: acknowledged present→`recovered`, acknowledged absent→`lost`; rejected must be absent→`rejected`; uncertain/no outcome present→`unacknowledged_recovered`; uncertain/no outcome absent→`ambiguous`. Zero submissions require five empty lists, count zero, and the canonical empty-array hash. `lost` must be empty and `acknowledged_loss` must be literal `NONE`.
+The sealed fault ledger is the sole source of truth. Both controller and oracle independently parse its complete closed event stream, derive the exact `fault_operations` array defined above, and require array, count, and hash equality with the embedded request. The result embeds that full request. Its five categories must each be lexicographically sorted lists and flatten to the same unique array/count/hash with no overlap or omission. Semantics remain exact: acknowledged present→`recovered`, acknowledged absent→`lost`; rejected must be absent→`rejected`; uncertain/no outcome present→`unacknowledged_recovered`; uncertain/no outcome absent→`ambiguous`. Zero submissions require five empty lists, count zero, and the canonical empty-array hash. `lost` must be empty and `acknowledged_loss` must be literal `NONE`.
 
 The independent oracle calls this authoritative pure validator before emitting the result. The controller calls it again against the sealed ledger before returning, and later journal validation checks the self-contained request count/hash against the five result categories. No caller can accept recovery comparison without all three equalities.
 
-For all profiles, the result keys are exactly `schema`, `request`, `request_sha256`, `databases`, `signature`, and `checks`; `request` is the complete exact request object, not a summary. `databases` has exactly `main`, `session`, and `aux`; each value has exactly `position`, `sha256`, `integrity`, and `foreign_keys`. Its position equals both `request.positions[db]` and `request.inputs.restore_points[db].position`; `sha256` is the lowercase SHA-256 of the exact restored database bytes read from a retained descriptor; and the two outcomes are literal `PASS` after explicit SQLite `PRAGMA integrity_check == ('ok',)` and empty `PRAGMA foreign_key_check`.
+The normative result field table is:
 
-`signature` is exactly the three lowercase 64-hex values returned by `transition.logical_signature(data)`: after `node.validate_databases`, hash `repr` of schema rows ordered by type/name, then each table name ordered by name and every `repr(row)` sorted and newline-delimited, with the existing 64-MiB bound. The oracle computes it; controller comparison binds it to candidate state where required.
+| Field | Exact value |
+| --- | --- |
+| `schema` | literal `hat-restore-acceptance-1` |
+| `request` | complete exact validated request object |
+| `request_sha256` | lowercase 64-hex SHA-256 of canonical request bytes |
+| `databases` | exact `main`, `session`, `aux` object described below |
+| `signature` | exact `main`, `session`, `aux` lowercase 64-hex object from the normative algorithm |
+| `checks` | exact profile-specific object described below |
 
-Exact validation requires canonical schema/request hashing, exact request keys and derived matrix, exact database key set/positions, integer (not boolean) equality, valid hashes/signatures, per-database PASS outcomes, exact profile-specific check keys, and records/authentication `PASS`. The old `auth_and_records` field, `integrity: "ok"`, truthy values, missing checks, and extra fault fields refuse everywhere for new operations.
+No other result keys are accepted. Each `databases` value has exactly `position`, `sha256`, `integrity`, and `foreign_keys`. Its position equals both `request.positions[db]` and `request.inputs.restore_points[db].position`; `sha256` is the lowercase SHA-256 of the exact restored database bytes read from a retained descriptor; and the two outcomes are literal `PASS` after explicit SQLite `PRAGMA integrity_check == ('ok',)` and empty `PRAGMA foreign_key_check`.
+
+The signature algorithm is normative and is the checked-in `transition.logical_signature(data)` implementation, not a caller-selected digest: run `node.validate_databases`; for each database in fixed order `main`, `session`, `aux`, reject a file over 64 MiB; read SQLite in read-only mode with check constraints ignored; obtain `(type,name,tbl_name,sql)` schema tuples ordered by `type,name`; initialize SHA-256 with UTF-8 bytes of Python `repr(schema)`; enumerate table names ordered by name; append each table name's UTF-8 bytes; fetch all rows, convert each to Python `repr(row)`, sort those strings lexicographically, and append each UTF-8 representation plus byte `0x0a`. The lowercase hexdigest is `signature[db]`. The oracle computes it; controller comparison binds it to candidate state where required.
+
+For `comparison`, `baseline`, and `fresh-writes`, `checks` has exactly `records: "PASS"` and `authentication: "PASS"`. For `recovery-comparison`, it has exactly those fields plus `fault_outcomes` and `acknowledged_loss: "NONE"`. `fault_outcomes` has exactly the five mandatory keys `recovered`, `lost`, `ambiguous`, `unacknowledged_recovered`, and `rejected`, including empty sorted lists.
+
+Exact validation requires canonical schema/request hashing, exact request keys and derived matrix, exact database key set/positions, integer (not boolean) equality, valid hashes/signatures, per-database PASS outcomes, and exact check keys/values. The old `auth_and_records` field, `integrity: "ok"`, truthy values, missing checks/lists, unsorted or malformed identifiers, and extra fault fields refuse everywhere for new operations.
 
 ## Coordinated consumer replacement
 
