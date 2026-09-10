@@ -81,8 +81,10 @@ class RecoveryTests(unittest.TestCase):
 
     def test_fault_submitted_set_and_zero_loss_contract(self):
         m=self.module()
-        events=[{'event':'submitted','api':'main_ops','row':{'op_key':'d3-a','payload':'x'},'time_ns':1},
-                {'event':'acknowledged','api':'main_ops','row':{'op_key':'d3-a','payload':'x'},'id':'1','time_ns':2}]
+        events=[{'event':'start','run_id':'d3-'+'a'*32,'source_epoch':'d1-source','time_ns':1,'utc':'2026-01-01T00:00:00Z'},
+                {'event':'submitted','api':'main_ops','row':{'op_key':'d3-a','payload':'x'},'time_ns':2},
+                {'event':'acknowledged','api':'main_ops','row':{'op_key':'d3-a','payload':'x'},'id':'1','time_ns':3},
+                {'event':'stop','submitted':1,'acknowledged':1,'rejected':0,'uncertain':0,'time_ns':4,'utc':'2026-01-01T00:00:01Z'}]
         self.assertEqual(m.fault_operations(events),['main_ops/d3-a'])
         result={'recovered':['main_ops/d3-a'],'lost':[],'ambiguous':[],'unacknowledged_recovered':[],'rejected':[]}
         self.assertEqual(m.validate_fault_outcomes(result,events),result)
@@ -90,6 +92,20 @@ class RecoveryTests(unittest.TestCase):
             with self.assertRaises(ValueError):m.validate_fault_outcomes(bad,events)
         self.assertEqual(m.validate_fault_outcomes({k:[] for k in ('recovered','lost','ambiguous','unacknowledged_recovered','rejected')},[]),
                          {k:[] for k in ('recovered','lost','ambiguous','unacknowledged_recovered','rejected')})
+
+    def test_raw_canonical_parsers_and_nested_malformed_values_refuse(self):
+        m=self.module()
+        value={'a':1}
+        self.assertEqual(m.parse_canonical_json(m.canonical_json(value)),value)
+        for raw in (b'{"a":1,"a":2}',b'{ "a": 1}',b'\\xff'):
+            with self.assertRaises(ValueError):m.parse_canonical_json(raw)
+        operation={'id':'a'*32,'source':'A','target':'B','source_epoch':'d1-source','new_epoch':'d1-'+'a'*32}
+        bad={'schema':'hat-restore-input-authority-1','operation':operation['id'],'origin':'d2-preflight','ledger':None,'support':None,'binaries':None}
+        with self.assertRaises(ValueError):m.validate_acceptance_request({'schema':'x'},operation)
+        for epoch in ('d1-', 'd1-'+'x'*126, True):
+            with self.assertRaises(ValueError):m.derive_restore_profile(operation|{'source_epoch':epoch},'compare',False)
+        with self.assertRaises(ValueError):m.fault_operations([{'event':'garbage'}])
+        with self.assertRaises(ValueError):m.validate_fault_outcomes({'recovered':[],'lost':[],'ambiguous':[],'unacknowledged_recovered':[],'rejected':[]},[{'event':'garbage'}])
 
     def test_acceptance_result_rejects_legacy_and_mismatch(self):
         m=self.module(); operation={'id':'a'*32,'source':'A','target':'B','source_epoch':'d1-source','new_epoch':'d1-'+'a'*32}
