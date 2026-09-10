@@ -484,7 +484,7 @@ def _replica_config(value, epoch):
     if any(len(line)>8192 for line in lines): raise ValueError('captured replica config is invalid')
     paths=[]
     for line in text.split('\n')[:-1]:
-        if line.startswith((' ','\t')) or line.startswith('path:'):
+        if re.match(r'^[ \t]*path:', line):
             match=re.fullmatch(r'[ \t]*path:[ \t]*([^#\s]+)[ \t]*(?:#.*)?',line)
             if not match: raise ValueError('captured replica config is invalid')
             paths.append(match.group(1))
