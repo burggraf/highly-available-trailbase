@@ -28,10 +28,17 @@ self.assertEqual(manifest['source'], {
     'commit': 'f24291b894bb6c6696608e5f4c2f68666fe97686',
 })
 self.assertEqual(len(manifest['routes']), 82)
+self.assertEqual(len(manifest['debug_only_routes']), 1)
 self.assertIn(('DELETE', '/api/auth/v1/delete'), route_keys)
+self.assertEqual(set(manifest['section_counts'].items()), {('records',10),('auth',31),('admin',40),('server',1)})
+self.assertEqual(set(manifest['exact_allow_rules']), {
+    'POST /api/records/v1/main_ops',
+    'POST /api/records/v1/aux_ops',
+    'POST /api/auth/v1/logout',
+})
 ```
 
-Require exact top-level keys; unique `(method,path)` pairs; exact classifications `allow|deny|runtime_unknown`; exact three `allow` pairs; source-file SHA-256 and anchors shaped as `{line, contains}`; explicit condition/effects/secondary-effects on every route; and explicit capability classes for jobs, WASM/custom routers, listeners, direct DB/files/config/provider writers, and logs telemetry. A missing file, digest mismatch, out-of-range line, missing anchor text, source tag/commit mismatch, or extra router source returns `infeasible` before any callback.
+Require exact top-level keys; unique release `(method,path)` pairs; exactly 82 release templates with section counts 10/31/40/1; one separately pinned debug-only `/api/whoami`; every upstream template default denied; exactly three separate HAT `exact_allow_rules`, each mapped to a real upstream template and exact `main|aux|session` binding; source-file SHA-256 and anchors shaped as `{line, contains}`; explicit condition/effects/secondary-effects on every route; and explicit capability classes for jobs, WASM/custom routers, listeners, direct DB/files/config/provider writers, and logs telemetry. A missing file, digest mismatch, out-of-range line, missing anchor text, source tag/commit mismatch, or extra router source returns `infeasible` before any callback.
 
 **Step 2: Run the red**
 
@@ -41,13 +48,13 @@ Expected: import or manifest-not-found failure. Preserve stdout/stderr under pri
 
 **Step 3: Build the pinned manifest from the reviewed source graph**
 
-Enumerate every recursively wired route from server, auth/OAuth, records/transactions, admin, WASM/custom registration, including disabled conditional arms. Add SHA-256 for every inspected router/job/bridge source file. All non-control routes are `deny`; no workload `read` classification exists. An unresolved source graph edge, macro, generated route, or compile feature is a hard `infeasible` state and cannot be cleared by runtime observation. A source-enumerated dynamic registration point (WASM manifest, custom router, runtime job) may start as `runtime_unknown` in the static census only to describe the capability; native eligibility remains forbidden until independent content-addressed fixture attestation resolves that exact point to absent. The eligibility input must contain no unresolved `runtime_unknown`.
+Enumerate every recursively wired semantic route from release/debug server, auth/OAuth, records/transactions, admin, admin-auth listener instances, and WASM/custom registration, including disabled conditional arms. The release census must contain generic `POST /api/records/v1/{name}` and conditional `POST /api/transaction/v1/execute`, never synthetic `main_ops`/`aux_ops`; it uses exact `/api/healthcheck`. Put debug-only `GET /api/whoami` outside the 82 release list. Record `listener_route_instances` as an exact top-level field containing the three duplicated `admin_auth_router` login/status/GET-logout declarations; validate unique method/path/handler/source/condition entries and keep them separate from semantic-route count. Add SHA-256 for every inspected router/job/bridge source file. All non-control routes are `deny`; no workload `read` classification exists. An unresolved source graph edge, macro, generated route, or compile feature is a hard `infeasible` state and cannot be cleared by runtime observation. A source-enumerated dynamic registration point (WASM manifest, custom router, runtime job) may start as `runtime_unknown` in the static census only to describe the capability; native eligibility remains forbidden until independent content-addressed fixture attestation resolves that exact point to absent. The eligibility input must contain no unresolved `runtime_unknown`.
 
-Do not generate from OpenAPI alone and do not infer safety from HTTP method. The reviewed source artifact is `/var/folders/d0/z9jph2ld4v9gw45bwg0f1j900000gn/T/hat-ack-contract-sources-p2anepgt/trailbase`; its sibling `manifest.json` binds tag `v0.33.11` to commit `f24291b894bb6c6696608e5f4c2f68666fe97686`. Private/native checks must copy this inert artifact to a fresh canonical source root or stop if it is absent; they never silently refetch or substitute source.
+Do not generate from OpenAPI alone and do not infer safety from HTTP method. The reviewed source artifact's canonical path is `/private/var/folders/d0/z9jph2ld4v9gw45bwg0f1j900000gn/T/hat-ack-contract-sources-p2anepgt/trailbase`; its sibling `manifest.json` binds tag `v0.33.11` to commit `f24291b894bb6c6696608e5f4c2f68666fe97686`. Private/native checks must copy this inert artifact to a fresh canonical source root or stop if it is absent; they never silently refetch or substitute source.
 
 **Step 4: Add the smallest manifest loader/validator**
 
-`surface_closure.py` uses only `json`, `hashlib`, and `pathlib`. `verify_source(source_root, provenance_path, manifest)` recomputes every pinned file digest, validates each line/text anchor, rejects router/job/bridge source files absent from the manifest, and verifies the provenance tag/commit. Reject unknown/missing keys, duplicate routes, unsupported values, wrong source identity, missing source hashes/anchors, every unresolved source-graph item, any native-eligibility input retaining `runtime_unknown`, and any allowlist other than:
+`surface_closure.py` uses only the Python standard library. `verify_source(source_root, provenance_path, manifest)` opens a canonical source root and every descendant with held descriptor-relative `O_NOFOLLOW` traversal. It enumerates and opens the complete expected Rust file set first, binds each inventory entry to that retained descriptor/inode snapshot, then hashes and validates anchors only from those descriptors; no downstream step consumes the mutable pathnames. It verifies the provenance tag/commit and exact census facts from one retained provenance descriptor. Reject unknown/missing keys, duplicate routes, unsupported values, wrong section/debug/`listener_route_instances` count or shape, synthetic policy paths in the upstream census, wrong source identity, missing source hashes/anchors, every unresolved source-graph item, any native-eligibility input retaining `runtime_unknown`, and any exact policy rule set other than:
 
 ```python
 ALLOWED = {
@@ -57,16 +64,18 @@ ALLOWED = {
 }
 ```
 
+Each create rule references upstream `POST /api/records/v1/{name}`; logout references upstream `POST /api/auth/v1/logout`. Upstream census entries remain denied by default; exact policy specialization is evaluated only by `bind_request`.
+
 **Step 5: Run green and independently reconcile the census**
 
 From repository root, run:
 
 ```bash
 python3 experiments/d4/test_surface_closure.py
-python3 -I -B -c "from pathlib import Path; import sys; sys.path.insert(0,'experiments/d4'); import surface_closure as s; s.verify_source(Path('/var/folders/d0/z9jph2ld4v9gw45bwg0f1j900000gn/T/hat-ack-contract-sources-p2anepgt/trailbase'), Path('/var/folders/d0/z9jph2ld4v9gw45bwg0f1j900000gn/T/hat-ack-contract-sources-p2anepgt/manifest.json'), s.load_manifest())"
+python3 -I -B -c "from pathlib import Path; import sys; sys.path.insert(0,'experiments/d4'); import surface_closure as s; s.verify_source(Path('/private/var/folders/d0/z9jph2ld4v9gw45bwg0f1j900000gn/T/hat-ack-contract-sources-p2anepgt/trailbase'), Path('/private/var/folders/d0/z9jph2ld4v9gw45bwg0f1j900000gn/T/hat-ack-contract-sources-p2anepgt/manifest.json'), s.load_manifest())"
 ```
 
-Expected: PASS. Unit tests must also prove missing/tampered source, bad anchors and wrong provenance return `infeasible`. Then obtain a read-only reviewer that checks every router constructor, merge/nest edge, conditional arm, job registration and dynamic registration point against the manifest. Any omission blocks later work.
+Expected: PASS. Unit tests must also prove missing/tampered source, bad anchors and wrong provenance return `infeasible`; assert release section counts, generic create/transaction presence, exact healthcheck, debug-only whoami, three admin-auth listener instances, and absence of synthetic allow paths from upstream routes. Then obtain a read-only reviewer that checks every router constructor, merge/nest edge, conditional arm, job registration and dynamic registration point against the manifest. Any omission blocks later work.
 
 **Step 6: Commit**
 
@@ -85,7 +94,7 @@ git commit -m "Inventory pinned TrailBase mutation surfaces"
 
 Define a frozen `ClosureRequest(method: bytes, target: bytes, headers: tuple[tuple[bytes,bytes],...], body: bytes)` in tests first. Require refusal for:
 
-- every manifest route except the exact three allows;
+- every upstream manifest route (all default denied) and every request not matching one of the three separate exact policy rules;
 - non-ASCII/control method bytes, lowercase/mixed/alternate methods, and every non-exact method;
 - non-ASCII/control target bytes, query/fragment, percent escapes, backslash, dot segments, duplicate slash, case/trailing-slash variants;
 - non-ASCII/control header-name/value bytes, duplicate/continued/missing headers, header-name OWS, value OWS, name case variants, parameterized/wrong/case-varied `Content-Type`, and every unclassified forwarding header; only one case-insensitively parsed name with exact value bytes `application/json` passes;
@@ -105,7 +114,7 @@ Parse raw target before any normalization. Parse header names case-insensitively
 
 **Step 4: Prove denied requests have zero effects**
 
-Use a counting callback in tests and call it only after `bind_request` succeeds. Derive the deny matrix from the manifest and assert every denied case leaves the count at zero. This is a pure `bind_request` test: it sends **no** denied request to TrailBase. If later diagnosis requires route-level probing, use only a separate disposable source/database/filesystem copy, record every effect before discarding it, and never probe an unknown or potentially mutating route in the qualification fixture.
+Use a counting callback in tests and call it only after `bind_request` succeeds. Derive the deny matrix from upstream routes plus exact policy rules and assert every denied case leaves the count at zero. This is a pure `bind_request` test: it sends **no** denied request to TrailBase. If later diagnosis requires route-level probing, use only a separate disposable source/database/filesystem copy, record every effect before discarding it, and never probe an unknown or potentially mutating route in the qualification fixture.
 
 **Step 5: Run tests and commit**
 
