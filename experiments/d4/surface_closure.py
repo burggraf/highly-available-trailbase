@@ -620,3 +620,70 @@ if __name__ == "__main__":
     import argparse
     ap=argparse.ArgumentParser(); ap.add_argument("manifest",type=Path); ap.add_argument("source_root",type=Path); ap.add_argument("provenance",type=Path); a=ap.parse_args()
     verify_source(a.source_root,a.provenance,load_manifest(a.manifest)); print("surface closure verified: 82 routes")
+
+# Task 3: pure-data attestation/quarantine contracts.
+ATTESTATION_SCHEMA = "d4-attestation-1"
+_QUAR_SCHEMA = "d4-quarantine-1"
+
+def _canonical_digest(value, omitted):
+    body = {k: v for k, v in value.items() if k != omitted}
+    return hashlib.sha256(json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8", "strict")).hexdigest()
+
+def _walk_attestation(v, path="attestation"):
+    if isinstance(v, float) and not math.isfinite(v): raise SurfaceError(f"{path}: nonfinite")
+    if isinstance(v, dict):
+        if len(v) > 16384: raise SurfaceError(f"{path}: too many keys")
+        for k, x in v.items():
+            if type(k) is not str or not k: raise SurfaceError(f"{path}: invalid key")
+            _walk_attestation(x, f"{path}.{k}")
+    elif isinstance(v, list):
+        if len(v) > 4096: raise SurfaceError(f"{path}: too many items")
+        for i, x in enumerate(v): _walk_attestation(x, f"{path}[{i}]")
+    elif isinstance(v, str) and len(v.encode()) > 4096: raise SurfaceError(f"{path}: string limit")
+
+def validate_attestation(attestation, manifest=None, callback=None):
+    if type(attestation) is not dict: raise SurfaceError("attestation object required")
+    raw = json.dumps(attestation, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    if len(raw) > 8 * 1024 * 1024: raise SurfaceError("attestation too large")
+    _walk_attestation(attestation)
+    if attestation.get("schema") != ATTESTATION_SCHEMA: raise SurfaceError("invalid attestation schema")
+    required = {"schema","collector","manager_receipt","source","binary","config","migration","plugin","sandbox","launch","window","descriptors","listeners","connections","listener_bindings","registrations","writable_probes","evidence","uncertainty","telemetry","attestation_sha256"}
+    if set(attestation) != required: raise SurfaceError("attestation keys mismatch")
+    if not HEX64.fullmatch(attestation["attestation_sha256"]): raise SurfaceError("invalid attestation digest")
+    if _canonical_digest(attestation, "attestation_sha256") != attestation["attestation_sha256"]: raise SurfaceError("attestation digest mismatch")
+    u=attestation["uncertainty"]
+    if type(u) is not dict or set(u) != {"unknown","missing","extra","stale","self_reported_only"} or any(u[k] != [] for k in u): raise SurfaceError("uncertainty")
+    if len(attestation["listeners"]) != 2 or len(attestation["listener_bindings"]) != 2: raise SurfaceError("two listeners required")
+    if any(x.get("protocol") != "AF_UNIX" or x.get("sock_type") != "SOCK_STREAM" for x in attestation["listeners"]): raise SurfaceError("TCP listener")
+    if any(x.get("source") != "observed" for x in attestation["descriptors"] + attestation["listeners"] + attestation["listener_bindings"]): raise SurfaceError("declared observation")
+    if any(x.get("result") == "allowed" for x in attestation["writable_probes"]): raise SurfaceError("protected write")
+    if attestation["telemetry"].get("logs_only") is not True: raise SurfaceError("telemetry")
+    evidence={x.get("id") for x in attestation["evidence"]}
+    for group in ("connections","writable_probes"):
+        for x in attestation[group]:
+            if x.get("evidence_id") not in evidence: raise SurfaceError("missing evidence")
+    if any(x.get("resolution") not in {"enabled","disabled","absent"} or x.get("observed_by") == "declaration" for x in attestation["registrations"].get("conditions", [])): raise SurfaceError("unresolved condition")
+    result={"status":"feasible","listeners":tuple((x.get("id"),x.get("path"),x.get("inode")) for x in attestation["listeners"])}
+    result=MappingProxyType(result)
+    if callback is not None: callback(result)
+    return result
+
+def validate_quarantine(root, manifest):
+    root=Path(root)
+    if type(manifest) is not dict or manifest.get("schema") != _QUAR_SCHEMA: raise SurfaceError("invalid quarantine manifest")
+    required={"schema","root","owner_uid","disposition","files","file_count","byte_total","hash_algorithm","manifest_sha256","access_log"}
+    if set(manifest) != required or manifest["root"] != str(root.resolve(strict=True)): raise SurfaceError("quarantine root")
+    if manifest["hash_algorithm"] != "sha256" or manifest["disposition"] not in {"pending","retain_encrypted","owner_authorized_destroy"}: raise SurfaceError("quarantine disposition")
+    if _canonical_digest(manifest,"manifest_sha256") != manifest["manifest_sha256"]: raise SurfaceError("manifest digest")
+    if len(manifest["files"]) > 16384 or manifest["file_count"] != len(manifest["files"]): raise SurfaceError("file count")
+    if manifest["byte_total"] != sum(x["size"] for x in manifest["files"]): raise SurfaceError("byte total")
+    if manifest["byte_total"] > 268435456: raise SurfaceError("quarantine size")
+    for entry in manifest["files"]:
+        if set(entry) != {"path","sha256","size","mode","nlink","kind"} or entry["kind"] != "regular" or entry["mode"] != 0o600 or entry["nlink"] != 1: raise SurfaceError("invalid payload entry")
+        p=root/entry["path"]
+        if not p.is_file() or p.is_symlink() or p.resolve() != p: raise SurfaceError("invalid payload path")
+        st=p.stat()
+        if st.st_uid != manifest["owner_uid"] or stat.S_IMODE(st.st_mode) != 0o600 or st.st_nlink != 1: raise SurfaceError("payload metadata")
+        with p.open("rb") as f: data=f.read()
+        if len(data) != entry["size"] or hashlib.sha256(data).hexdigest() != entry["sha256"]: raise SurfaceError("payload tamper")
+    return True
