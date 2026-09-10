@@ -98,7 +98,7 @@ Define a frozen `ClosureRequest(method: bytes, target: bytes, headers: tuple[tup
 - non-ASCII/control method bytes, lowercase/mixed/alternate methods, and every non-exact method;
 - non-ASCII/control target bytes, query/fragment, percent escapes, backslash, dot segments, duplicate slash, case/trailing-slash variants;
 - non-ASCII/control header-name/value bytes, duplicate/continued/missing headers, header-name OWS, value OWS, name case variants, parameterized/wrong/case-varied `Content-Type`, and every unclassified forwarding header; only one case-insensitively parsed name with exact value bytes `application/json` passes;
-- invalid UTF-8, duplicate JSON keys, non-finite values, trailing bytes, wrong keys/types/limits, arrays, multipart and form bodies.
+- invalid UTF-8, duplicate JSON keys, non-finite values, trailing non-whitespace bytes, wrong keys/types/limits, arrays, multipart and form bodies. Preserve existing adapter semantics by accepting otherwise valid JSON with surrounding whitespace, either key order, internal whitespace, and equivalent escapes.
 
 Retain exact request bytes from successful main, aux and logout native controls and require all three to pass.
 
@@ -110,7 +110,7 @@ Expected: request-validator tests fail because `ClosureRequest`/`bind_request` a
 
 **Step 3: Implement the minimum pure validator**
 
-Parse raw target before any normalization. Parse header names case-insensitively from the tuple while retaining duplicate detection. Reuse the existing strict JSON duplicate/non-finite approach and existing operation schemas; do not impose sorted/compact JSON serialization. Return only an immutable `(operation_kind,database,validated_request)` binding. No listener, opener, subprocess, filesystem mutation, journal or generic forwarder.
+Parse raw target before any normalization. Parse header names case-insensitively from the tuple while retaining duplicate detection. Reuse the existing strict JSON duplicate/non-finite approach and existing operation schemas; do not impose sorted/compact JSON serialization. `ClosureRequest` is the post-framing pure boundary: the later listener task must independently reject ambiguous request lines, HTTP versions, Host/authority, Content-Length, Transfer-Encoding, chunking, and incomplete bodies before constructing it; no framing claim is made by this pure Task 2 validator. Return only an immutable `(operation_kind,database,validated_request)` binding. No listener, opener, subprocess, filesystem mutation, journal or generic forwarder.
 
 **Step 4: Prove denied requests have zero effects**
 
