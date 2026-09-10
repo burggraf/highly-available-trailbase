@@ -60,6 +60,19 @@
 2. Run all experiment/runtime regressions, `git diff --check`, and assert no changes to `hat/`, `deploy/` or existing `tests/`.
 3. Commit, fast-forward `main`, verify merged tests and clean the worktree. Do not push or deploy.
 
+## Completion record
+
+The adapter implementation was committed as `79b40e7`. A native WAL-header failure then exposed that `sqlite3.Connection.deserialize()` could not consume the finite restored session image. A failing WAL-mode regression was added before replacing deserialization with read-only immutable SQLite access through the retained `O_NOFOLLOW` descriptor; that correction is `6b04284`. The descriptor supplies both the image digest and the inode used for membership, with identity rechecked afterward. This `/dev/fd` mechanism is intentionally Unix-specific and remains experiment-only.
+
+Two reviewed native roots failed safely and remain preserved:
+
+- `al-b7IqYpxqHjNa` stopped before login because the harness treated an informational `lsof` file-descriptor field as an extra listener. Cleanup passed. A failing parser regression preceded the correction; exact one-record PID/address list checks still reject duplicate or additional listeners.
+- `al-iOihV5yF0DF1` stopped after predecessor restore but before the logout HTTP request because deserialization rejected the valid WAL-mode image. The journal retained `forward_uncertain`; source and replicator exited cleanly. Read-only diagnosis confirmed pre-login/predecessor membership `0/1` and no logout attempt.
+
+After static and code reviews, fresh run `al-WMqSG4vWaCsm` passed. Native evidence shows session membership `0→1→0`, equal file/replica proof positions advancing `1→2→3`, pre-login/predecessor/successor refresh statuses `401/200/401`, and an independent retained-session refresh `200`. The journal released the exact empty logout HTTP 200 only after the successor proof. One adapter HTTP event occurred; duplicate identity and malformed proof checks refused without replay. Oracle DB/WAL hashes were unchanged across refresh checks. All five processes exited 0, were reaped without forced kill or log overflow, and their process groups, TCP listeners and Unix socket disappeared.
+
+The shell initially created the sanitized one-line stdout and empty stderr as `0644` beneath the canonical `0700` root. They were immediately tightened to `0600`; this resolved P2 packaging issue did not affect semantic evidence. Future harness launches set `umask 077` before redirection. Independent evidence review `fc4f7ac8-1d48-464c-a8e2-634dbb527a65` approved sanitized local recording/integration only. Final local regressions cover 10 logout adapter, 18 native adapter, 14 protocol and 107 runtime tests.
+
 ## Stop boundary
 
-No login/refresh adapter, GET/cookie logout, account/admin mutation, remote storage, production listener, VPS/live data, deployment, automatic recovery, distributed authority, policy relaxation or paid resources. No second native attempt without explicit approval. Passing proves only the bounded local nominal logout transition—not response-loss settlement, existing JWT invalidation, complete auth/ACK coverage, remote durability or HA.
+No login/refresh adapter, GET/cookie logout, account/admin mutation, remote storage, production listener, VPS/live data, deployment, automatic recovery, distributed authority, policy relaxation or paid resources. Owner authorization permitted fresh reruns only after each failed root was preserved and diagnosed; it does not broaden this scope. Passing proves only the bounded local nominal logout transition—not response-loss settlement, existing JWT invalidation, complete auth/ACK coverage, remote durability or HA.
