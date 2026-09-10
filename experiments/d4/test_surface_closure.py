@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -1133,6 +1134,27 @@ class QuarantineTests(unittest.TestCase):
                 calls += 1; st = real_fstat(fd)
                 if calls == 8: os.utime(root / "payload", None)
                 return st
+            with mock.patch.object(surface_closure.os, "fstat", side_effect=racing):
+                self.assert_rejected(root, manifest)
+
+    def test_quarantine_rejects_nested_directory_change_during_validation(self):
+        with tempfile.TemporaryDirectory() as td:
+            root, manifest, *_ = self._fixture(Path(td), nested=True)
+            nested_inode = (root / "nested").stat().st_ino
+            real_fstat = os.fstat
+            nested_calls = 0
+            def racing(fd):
+                nonlocal nested_calls
+                st = real_fstat(fd)
+                if st.st_ino != nested_inode:
+                    return st
+                nested_calls += 1
+                if nested_calls == 1:
+                    return st
+                fields = {name: getattr(st, name) for name in
+                          ("st_dev", "st_ino", "st_uid", "st_mode", "st_nlink", "st_size", "st_mtime_ns", "st_ctime_ns")}
+                fields["st_mtime_ns"] += 1
+                return SimpleNamespace(**fields)
             with mock.patch.object(surface_closure.os, "fstat", side_effect=racing):
                 self.assert_rejected(root, manifest)
 

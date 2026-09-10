@@ -1084,7 +1084,7 @@ def validate_quarantine(root, manifest):
         controls={"manifest.json", os.path.basename(log)}
         if names & controls: raise SurfaceError("control declared as payload")
         expected_dirs={tuple(path.split("/")[:i]) for path in names|controls for i in range(1,len(path.split("/")))}
-        seen=set(); entries=[]
+        seen=set(); entries=[]; directories=[]
         for name in controls:
             fd=os.open(name, os.O_RDONLY|os.O_NOFOLLOW, dir_fd=root_fd); fds.append(fd); pre=meta(os.fstat(fd))
             if pre[-1] != stat.S_IFREG or pre[2] != uid or pre[3] != 0o600 or pre[4] != 1: raise SurfaceError("control metadata")
@@ -1103,6 +1103,7 @@ def validate_quarantine(root, manifest):
                     rel=prefix+(name,); fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|getattr(os,"O_NONBLOCK",0),dir_fd=dfd); fds.append(fd); pre=meta(os.fstat(fd)); key="/".join(rel)
                     if pre[-1] == stat.S_IFDIR:
                         if pre[2]!=uid or pre[3]!=0o700 or rel not in expected_dirs: raise SurfaceError("directory metadata")
+                        directories.append((fd, pre, key))
                         walk(fd,rel)
                     elif pre[-1] == stat.S_IFREG:
                         if key in controls:
@@ -1117,6 +1118,8 @@ def validate_quarantine(root, manifest):
                     else: raise SurfaceError("special entry")
         walk(root_fd)
         if seen != names|controls: raise SurfaceError("missing entry")
+        for directory_fd, before, key in directories:
+            stable(directory_fd, before, "quarantine directory " + key, regular=False)
         if meta(os.fstat(parent_fd)) != meta(parent_pre) or meta(os.fstat(root_fd)) != meta(root_pre): raise SurfaceError("quarantine identity")
         return MappingProxyType({"feasible":True,"root":canonical,"root_device":root_pre.st_dev,"root_inode":root_pre.st_ino,"file_count":len(files),"byte_total":manifest["byte_total"],"entries":tuple(entries)})
     except SurfaceError: raise
