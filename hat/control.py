@@ -310,6 +310,11 @@ def _d3_serving_state(db, ident, digest, failure):
     return True
 
 
+def _exact_route(value, writer, epoch, digest):
+    return (isinstance(value, dict) and set(value)=={'writer','epoch','config_sha'}
+            and value == {'writer':writer,'epoch':epoch,'config_sha':digest})
+
+
 def current_writer(journal, ingress):
     """Return writer authority only from a complete operation and its exact live route."""
     journal.check_authority()
@@ -325,8 +330,7 @@ def current_writer(journal, ingress):
     try: route=json.loads(next(e for _,phase,status,e in steps if phase=='route' and status=='done'))
     except (StopIteration,TypeError,ValueError) as exc: raise RuntimeError('completed route evidence is malformed') from exc
     digest=hashlib.sha256(ingress.read_bytes()).hexdigest()
-    if (not isinstance(route,dict) or set(route)!={'writer','epoch','config_sha'}
-            or route!={'writer':target,'epoch':epoch,'config_sha':digest}):
+    if not _exact_route(route,target,epoch,digest):
         raise RuntimeError('completed route differs from writer authority')
     return {'operation':ident,'writer':target,'epoch':epoch}
 
@@ -344,7 +348,8 @@ def ingress_allowed(root, maintenance, permit, ingress, boot):
             digest=hashlib.sha256(ingress.read_bytes()).hexdigest()
             if complete:
                 row=db.execute("SELECT evidence FROM steps WHERE operation=? AND phase='route' AND status='done'",(ident,)).fetchone()
-                return not maintenance.exists() and row is not None and json.loads(row[0])['config_sha']==digest
+                return (not maintenance.exists() and row is not None
+                        and _exact_route(json.loads(row[0]),target,epoch,digest))
             if (source,target)==('B','A'):
                 if not re.fullmatch('[0-9a-f]{32}',ident) or not maintenance.exists(): return False
                 private_file(maintenance)
@@ -369,10 +374,12 @@ def ingress_allowed(root, maintenance, permit, ingress, boot):
                 birth=process_identity(value['pid'])
                 return (value['operation']==ident and value['boot_id']==boot and birth is not None
                         and value['birth']==birth and value['config_sha']==digest)
+            expected=[(i,p,s) for i,p in enumerate(PHASES[:8]) for s in ('intent','done')]+[(8,'route','intent')]
+            steps=db.execute('SELECT position,phase,status,evidence FROM steps WHERE operation=? ORDER BY rowid',(ident,)).fetchall()
             if (not maintenance.exists() or json.loads(maintenance.read_text())['operation']!=ident
                     or (root/ident/'failure.json').exists()
-                    or not db.execute("SELECT 1 FROM steps WHERE operation=? AND phase='baseline' AND status='done'",(ident,)).fetchone()
-                    or not db.execute("SELECT 1 FROM steps WHERE operation=? AND phase='route' AND status='intent'",(ident,)).fetchone()):
+                    or [step[:3] for step in steps] != expected
+                    or any(value!='{}' for _,_,status,value in steps if status=='intent')):
                 return False
             private_file(permit); value=json.loads(permit.read_text())
             birth=process_identity(value['pid'])
@@ -402,7 +409,9 @@ def reconcile_existing(journal, maintenance, stop_ingress, ingress):
     if completed:
         ident,target=completed
         route=journal.db.execute("SELECT evidence FROM steps WHERE operation=? AND phase='route' AND status='done'",(ident,)).fetchone()
-        if (target!='B' or not route or json.loads(route[0])['config_sha']!=hashlib.sha256(ingress.read_bytes()).hexdigest()):
+        digest=hashlib.sha256(ingress.read_bytes()).hexdigest()
+        if (target!='B' or not route
+                or not _exact_route(json.loads(route[0]),target,journal.db.execute('SELECT new_epoch FROM operations WHERE id=?',(ident,)).fetchone()[0],digest)):
             raise RuntimeError('completed route differs; reconciliation refused')
         if maintenance.exists():
             private_file(maintenance)

@@ -226,7 +226,9 @@ if __name__ == '__main__':
         with m.Journal(root) as journal:
             op=journal.begin('A','B','d1-original')
             (root/'maintenance').write_text(json.dumps({'operation':op['id']}));(root/'maintenance').chmod(0o600)
-            for phase in m.PHASES: journal.step(phase,lambda:{'config_sha':digest})
+            for phase in m.PHASES:
+                evidence={'writer':'B','epoch':op['new_epoch'],'config_sha':digest} if phase=='route' else {}
+                journal.step(phase,lambda evidence=evidence:evidence)
             journal.finish();os._exit(24)
     elif len(sys.argv)==3 and sys.argv[1]=='--crash-route':
         m=load();root=Path(sys.argv[2])
