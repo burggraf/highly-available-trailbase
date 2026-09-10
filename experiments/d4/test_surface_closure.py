@@ -565,8 +565,9 @@ class ClosureRequestTests(unittest.TestCase):
 
     def request(self, *, method=b"POST", target=b"/api/records/v1/main_ops",
                 headers=None, body=None):
+        selected_headers = ((b"content-type", b"application/json"),) if target.endswith(b"/logout") else (self.HEADERS if headers is None else headers)
         return surface_closure.ClosureRequest(
-            method, target, self.HEADERS if headers is None else headers,
+            method, target, selected_headers,
             self.MAIN_BODY if body is None else body)
 
     def assert_refused(self, request):
@@ -597,7 +598,7 @@ class ClosureRequestTests(unittest.TestCase):
             for body in bodies:
                 with self.subTest(name=name, body=body):
                     self.assertIsNotNone(surface_closure.bind_request(
-                        self.request(headers=((name, b"application/json"),), body=body), self.manifest))
+                        self.request(headers=((name, b"application/json"), (b"Authorization", b"Bearer adapter-test-token")), body=body), self.manifest))
 
     def test_method_differentials_refuse(self):
         methods = (b"post", b"Post", b"GET", b"PUT", b"PATCH", b"DELETE", b"OPTIONS",
