@@ -418,40 +418,55 @@ def _replica_config(value, epoch):
 
 
 def _protected_ledger(raw):
-    lines = raw.splitlines()
-    if not raw.endswith(b'\n') or not lines or any(not line or len(line) > 8192 for line in lines):
+    if not isinstance(raw, (bytes, bytearray)) or len(raw) > MAX_ARTIFACT or b"\x00" in raw or not raw.endswith(b"\n"):
         raise ValueError('protected ledger is incomplete or oversized')
-    rows = [_json(line) for line in lines]
-    auth = rows[0]
-    if (not isinstance(auth, dict) or set(auth) != {'auth_token', 'retained_refresh', 'revoked_refresh'}
-            or any(not isinstance(auth[name], str) or not auth[name] for name in auth)):
+    if raw.startswith(b"\xef\xbb\xbf"):
+        raise ValueError('protected ledger encoding is invalid')
+    try:
+        lines=raw.split(b"\n")[:-1]
+        if not lines or any(not line or len(line)>8192 for line in lines): raise ValueError
+        rows=[parse_canonical_json(line) for line in lines]
+    except (TypeError,ValueError,UnicodeError,json.JSONDecodeError) as exc:
+        raise ValueError('protected ledger is malformed') from exc
+    if not isinstance(rows[0],dict) or set(rows[0]) != {'auth_token','retained_refresh','revoked_refresh'} or any(type(rows[0][k]) is not str or not rows[0][k] for k in rows[0]):
         raise ValueError('protected ledger auth frame is invalid')
-    for row in rows[1:]:
-        if not isinstance(row, dict): raise ValueError('protected ledger row is invalid')
-        event = row.get('event')
-        if event in ('submitted', 'acknowledged'):
-            expected = {'event', 'api', 'row', 'time_ns'} | ({'id'} if event == 'acknowledged' else set())
-            payload = row.get('row')
-            if (set(row) != expected or row.get('api') not in ('main_ops', 'aux_ops')
-                    or not isinstance(payload, dict) or set(payload) != {'op_key', 'payload'}
-                    or not all(isinstance(payload[name], str) for name in payload)
-                    or type(row.get('time_ns')) is not int or row['time_ns'] <= 0
-                    or (event == 'acknowledged' and type(row.get('id')) not in (str, int))):
-                raise ValueError('protected ledger operation is invalid')
-        elif event == 'historical_auth':
-            if (not {'retained_refresh', 'revoked_refresh', 'retained_expected'} <= set(row)
-                    or row['retained_expected'] not in ('accepted', 'denied')
-                    or any(not isinstance(row[name], str) or not row[name]
-                           for name in ('retained_refresh', 'revoked_refresh'))):
-                raise ValueError('protected historical auth frame is invalid')
-        elif event == 'smoke_pass':
-            if set(row) != {'event'}: raise ValueError('protected smoke marker is invalid')
-        else:
-            raise ValueError('protected ledger event is invalid')
-    if {row['api'] for row in rows if row.get('event') == 'acknowledged'} != {'main_ops', 'aux_ops'}:
-        raise ValueError('protected ledger must retain main and aux records')
+    seen_keys=set(); seen_ids=set(); submitted=[]; index=1
+    for api in ('main_ops','aux_ops'):
+        if index+1 >= len(rows): raise ValueError('protected ledger current pairs are incomplete')
+        sub, ack=rows[index], rows[index+1]
+        if (set(sub) != {'event','api','row','time_ns'} or sub.get('event')!='submitted' or sub.get('api')!=api
+                or set(ack) != {'event','api','row','id','time_ns'} or ack.get('event')!='acknowledged' or ack.get('api')!=api
+                or sub.get('row') != ack.get('row') or not isinstance(sub.get('row'),dict) or set(sub['row']) != {'op_key','payload'}
+                or not isinstance(sub['row']['op_key'],str) or not re.fullmatch(r'd1-[A-Za-z0-9-]{1,125}',sub['row']['op_key'])
+                or not isinstance(sub['row']['payload'],str) or len(sub['row']['payload'])>4096
+                or type(sub.get('time_ns')) is not int or sub['time_ns']<=0 or type(ack.get('time_ns')) is not int or ack['time_ns']<=0
+                or type(ack.get('id')) not in (str,int) or not re.fullmatch(r'[1-9][0-9]{0,18}',str(ack['id']))):
+            raise ValueError('protected ledger operation is invalid')
+        key=api+'/'+sub['row']['op_key']; ident=str(ack['id'])
+        if key in seen_keys or ident in seen_ids: raise ValueError('protected ledger operation is duplicated')
+        seen_keys.add(key); seen_ids.add(ident); submitted.append(key); index += 2
+    if index >= len(rows) or rows[index] != {'event':'smoke_pass'}: raise ValueError('protected ledger smoke marker is invalid')
+    index += 1
+    while index < len(rows):
+        row=rows[index]
+        if not isinstance(row,dict): raise ValueError('protected ledger historical frame is invalid')
+        if set(row)=={'event','api','row','id','time_ns'} and row.get('event')=='acknowledged':
+            payload=row['row']
+            if (row['api'] not in ('main_ops','aux_ops') or not isinstance(payload,dict) or set(payload)!={'op_key','payload'}):
+                raise ValueError('protected ledger historical record is invalid')
+            key=row['api']+'/'+payload.get('op_key',''); ident=str(row['id'])
+            if (not isinstance(payload.get('op_key'),str) or not re.fullmatch(r'd1-[A-Za-z0-9-]{1,125}',payload['op_key'])
+                    or not isinstance(payload.get('payload'),str) or len(payload['payload'])>4096
+                    or type(row.get('time_ns')) is not int or row['time_ns']<=0 or type(row.get('id')) not in (str,int)
+                    or not re.fullmatch(r'[1-9][0-9]{0,18}',ident) or key in seen_keys or ident in seen_ids):
+                raise ValueError('protected ledger historical record is invalid')
+            seen_keys.add(key); seen_ids.add(ident)
+        elif set(row)=={'event','retained_refresh','revoked_refresh','retained_expected'} and row.get('event')=='historical_auth':
+            if (not all(type(row[k]) is str and row[k] for k in ('retained_refresh','revoked_refresh'))
+                    or row['retained_expected'] not in ('accepted','denied')): raise ValueError('protected ledger historical auth is invalid')
+        else: raise ValueError('protected ledger historical frame is invalid')
+        index += 1
     return rows
-
 
 def _load_input(path, root):
     """Load the exact D3 recovery input contract.
