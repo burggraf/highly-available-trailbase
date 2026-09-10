@@ -139,6 +139,8 @@ def _write(path, data):
 
 class NativeAdapter:
     """One-process local fixture adapter for exact collection-create operations."""
+    DATABASES = {'main', 'aux'}
+
     def __init__(self, *, root, base_url, litestream, binary_sha256, socket_path,
                  config, databases, opener=None, runner=None):
         raw_root = Path(root)
@@ -175,7 +177,7 @@ class NativeAdapter:
         if hashlib.sha256(self.litestream.read_bytes()).hexdigest() != binary_sha256:
             raise ValueError('native adapter binary differs')
         self.binary_sha256 = binary_sha256
-        if not isinstance(databases, dict) or set(databases) != {'main', 'aux'}:
+        if not isinstance(databases, dict) or set(databases) != self.DATABASES:
             raise ValueError('native adapter databases differ')
         self.databases = {name: self._path(path, regular=True) for name, path in databases.items()}
         self.evidence = self.root / 'evidence'

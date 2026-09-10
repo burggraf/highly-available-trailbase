@@ -151,6 +151,18 @@ class NativeAdapterTests(unittest.TestCase):
         for changes in cases:
             with self.subTest(changes=changes), self.assertRaises(ValueError): self.adapter(**changes)
 
+    def test_subclass_may_require_a_different_exact_database_set(self):
+        class SessionAdapter(native_adapter.NativeAdapter):
+            DATABASES = {'session'}
+        adapter = SessionAdapter(root=self.root, base_url='http://127.0.0.1:18081',
+            litestream=self.binary, binary_sha256=self.digest, socket_path=self.socket,
+            config=self.config, databases={'session':self.dbs['main']}, opener=Opener(), runner=Runner())
+        self.assertEqual(set(adapter.databases), {'session'})
+        with self.assertRaisesRegex(ValueError, 'databases differ'):
+            SessionAdapter(root=self.root, base_url='http://127.0.0.1:18081',
+                litestream=self.binary, binary_sha256=self.digest, socket_path=self.socket,
+                config=self.config, databases=self.dbs, opener=Opener(), runner=Runner())
+
     def test_symlinked_binary_database_or_path_component_refuses(self):
         linked_binary = self.root / 'linked-litestream'; linked_binary.symlink_to(self.binary)
         linked_db = self.root / 'linked-main.db'; linked_db.symlink_to(self.dbs['main'])
