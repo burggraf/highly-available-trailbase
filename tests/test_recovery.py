@@ -93,11 +93,26 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(m.validate_fault_outcomes({k:[] for k in ('recovered','lost','ambiguous','unacknowledged_recovered','rejected')},[]),
                          {k:[] for k in ('recovered','lost','ambiguous','unacknowledged_recovered','rejected')})
 
+    def test_protected_ledger_future_grammar_is_strict(self):
+        m=self.module()
+        rows=[{'auth_token':'token','retained_refresh':'keep','revoked_refresh':'drop'},
+              {'event':'submitted','api':'main_ops','row':{'op_key':'d1-main','payload':'x'},'time_ns':1},
+              {'event':'acknowledged','api':'main_ops','row':{'op_key':'d1-main','payload':'x'},'id':'1','time_ns':2},
+              {'event':'submitted','api':'aux_ops','row':{'op_key':'d1-aux','payload':'x'},'time_ns':3},
+              {'event':'acknowledged','api':'aux_ops','row':{'op_key':'d1-aux','payload':'x'},'id':'2','time_ns':4},
+              {'event':'smoke_pass'},
+              {'event':'historical_auth','retained_refresh':'old','revoked_refresh':'gone','retained_expected':'denied'}]
+        raw=b''.join(m.canonical_json(row)+b'\n' for row in rows)
+        self.assertEqual(len(m._protected_ledger(raw)),len(rows))
+        for bad in (raw.replace(b'\n',b'\r\n'),b'\xef\xbb\xbf'+raw,raw.replace(b'd1-main',b'd1-main2')+b'\x00'):
+            with self.assertRaises(ValueError):m._protected_ledger(bad)
+        with self.assertRaises(ValueError):m._protected_ledger(raw.replace(b'"smoke_pass"',b'"unexpected"'))
+
     def test_raw_canonical_parsers_and_nested_malformed_values_refuse(self):
         m=self.module()
         value={'a':1}
         self.assertEqual(m.parse_canonical_json(m.canonical_json(value)),value)
-        for raw in (b'{"a":1,"a":2}',b'{ "a": 1}',b'\\xff'):
+        for raw in (b'{"a":1,"a":2}',b'{ "a": 1}',b'\xff'):
             with self.assertRaises(ValueError):m.parse_canonical_json(raw)
         operation={'id':'a'*32,'source':'A','target':'B','source_epoch':'d1-source','new_epoch':'d1-'+'a'*32}
         bad={'schema':'hat-restore-input-authority-1','operation':operation['id'],'origin':'d2-preflight','ledger':None,'support':None,'binaries':None}
