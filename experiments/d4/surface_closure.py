@@ -1084,7 +1084,7 @@ def validate_quarantine(root, manifest):
                 raise SurfaceError("invalid payload entry")
             if type(x["size"]) is not int or x["size"] < 0 or x["size"] > 268435456 or not HEX64.fullmatch(x["sha256"]):
                 raise SurfaceError("invalid payload entry")
-            names.add(path); declared[tuple(path.split("/"))] = x
+            names.add(path); declared[path] = x
         if sum(x["size"] for x in files) != manifest["byte_total"]: raise SurfaceError("byte total")
 
         # The owner-controlled base is the root's parent. System parents (including /)
@@ -1140,7 +1140,7 @@ def validate_quarantine(root, manifest):
                     if key in seen or (st.st_dev, st.st_ino) in inode_seen: raise SurfaceError("duplicate entry")
                     seen.add(key); inode_seen.add((st.st_dev, st.st_ino))
                     if key in declared:
-                        x = declared[rel]
+                        x = declared[key]
                         if mode != 0o600 or st.st_size != x["size"] or st.st_nlink != 1 or x["nlink"] != st.st_nlink: raise SurfaceError("payload metadata")
                         data = _fd_bytes(child, "quarantine payload", max_bytes=268435456)
                         if hashlib.sha256(data).hexdigest() != x["sha256"]: raise SurfaceError("payload tamper")
