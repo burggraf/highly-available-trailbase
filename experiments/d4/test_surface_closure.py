@@ -730,6 +730,16 @@ def valid_attestation_fixture():
             descriptors.append({"pid": proc["pid"], "fd": fd, "cloexec": False, "owner_uid": proc["uid"],
                                 "process_role": proc["role"], "type": kind, "path": None,
                                 "inode": 0, "device": 0, "mode": 0, "nlink": 1, "source": "observed"})
+    for fd, listener in enumerate(listeners, 3):
+        descriptors.append({"pid": 20, "fd": fd, "cloexec": True, "owner_uid": 501,
+                            "process_role": "trailbase", "type": "uds", "path": listener["path"],
+                            "inode": listener["inode"], "device": listener["device"], "mode": 0o600,
+                            "nlink": 1, "source": "observed"})
+    for index in range(3):
+        descriptors.append({"pid": 10, "fd": index + 3, "cloexec": True, "owner_uid": 501,
+                            "process_role": "manager", "type": "uds", "path": listeners[0]["path"],
+                            "inode": 200 + index, "device": 1, "mode": 0o600, "nlink": 1,
+                            "source": "observed"})
     bindings = [{"listener_id": x["id"], "inode": x["inode"], "device": x["device"], "pid": 20,
                  "exe_sha256": trust.binary_sha256, "argv": list(trust.expected_argv),
                  "observed_mono_ns": 140, "source": "observed", "evidence_id": ev("socket")}
@@ -856,12 +866,16 @@ class AttestationTests(unittest.TestCase):
             lambda x: x["launch"]["process_tree"][2].__setitem__("parent_pid", 20),
             lambda x: x["launch"]["process_tree"][0].__setitem__("parent_pid", 30),
             lambda x: x["descriptors"][0].__setitem__("source", "declared"),
+            lambda x: x["descriptors"][0].__setitem__("mode", -1),
+            lambda x: x["descriptors"][0].__setitem__("nlink", -1),
             lambda x: x["descriptors"].append({**x["descriptors"][0], "fd": 9, "cloexec": False}),
             lambda x: x["listeners"][0].__setitem__("protocol", "AF_INET"),
             lambda x: x["listeners"][0].__setitem__("inode", 999),
             lambda x: x["listeners"][0]["parent_ancestry"][0].__setitem__("symlink", True),
             lambda x: x["listener_bindings"][0].__setitem__("inode", 999),
             lambda x: x["connections"][0].__setitem__("server_uid", 999),
+            lambda x: x["connections"][0].__setitem__("client_inode", -1),
+            lambda x: x["connections"][0].__setitem__("client_inode", 999),
             lambda x: x["connections"][0].__setitem__("bytes_before_validation", 1),
             lambda x: x["connections"][0].__setitem__("peer_source", "declared"),
         ]
@@ -883,11 +897,15 @@ class AttestationTests(unittest.TestCase):
             lambda x: x["registrations"]["dynamic_absence"].pop(),
             lambda x: x["registrations"]["dynamic_absence"][0].__setitem__("observed_absent", False),
             lambda x: x["evidence"][0].__setitem__("collector_source_sha256", "f" * 64),
+            lambda x: x["evidence"][0].__setitem__("size", -1),
+            lambda x: x["evidence"].append(copy.deepcopy(x["evidence"][0])),
             lambda x: x["evidence"].pop(0),
             lambda x: x["writable_probes"][0].__setitem__("result", "allowed"),
             lambda x: x["writable_probes"][0].__setitem__("path", "/outside"),
             lambda x: x["telemetry"]["writers"][0].__setitem__("path", "/private/q/main.db"),
             lambda x: x["telemetry"].__setitem__("logs_only", False),
+            lambda x: (x["connections"][0].update(listener_id="admin", server_inode=102),
+                       next(d for d in x["descriptors"] if d["pid"] == 10 and d["inode"] == 200).update(path="/private/q/admin.sock")),
         ]
         for index, mutate in enumerate(mutations):
             with self.subTest(index=index):
