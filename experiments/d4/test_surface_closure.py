@@ -85,7 +85,7 @@ class SurfaceManifestTests(unittest.TestCase):
 
             mutations = [
                 ("missing provenance", lambda m, p: p.unlink()),
-                ("invalid utf8", lambda m, p: p.write_bytes(b"\\xff")),
+                ("invalid utf8", lambda m, p: p.write_bytes(b"\xff")),
                 ("wrong digest", lambda m, p: m["source"]["provenance"].update(sha256="0" * 64)),
                 ("duplicate TrailBase", lambda m, p: json.loads(p.read_text())["sources"].append(json.loads(p.read_text())["sources"][0])),
                 ("extra source", lambda m, p: json.loads(p.read_text())["sources"].append({})),
