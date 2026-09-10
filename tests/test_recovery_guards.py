@@ -224,6 +224,41 @@ class RecoveryGuardTests(unittest.TestCase):
                 journal.db.execute("DELETE FROM steps WHERE operation=? AND phase='quiesce'",(operation['id'],)); journal.db.commit()
             self.assertFalse(self.m.ingress_allowed(*args))
 
+    def test_ingress_allowed_rejects_dangling_maintenance_symlink_without_journal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve(); ingress=root/'proxy.cfg'; ingress.write_text('route A\\n')
+            maintenance=root/'maintenance'; maintenance.symlink_to(root/'missing-marker')
+            self.assertFalse(self.m.ingress_allowed(root,maintenance,root/'permit',ingress,'boot'))
+
+    def test_ingress_allowed_rejects_maintenance_symlinks_for_completed_operation(self):
+        for dangling in (True,False):
+            with self.subTest(dangling=dangling), tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp).resolve(); ingress=root/'proxy.cfg'; ingress.write_text('route B\\n')
+                digest=hashlib.sha256(ingress.read_bytes()).hexdigest()
+                with self.m.Journal(root) as journal:
+                    operation=journal.begin('A','B','d1-current')
+                    for phase in D2:
+                        evidence={'writer':'B','epoch':operation['new_epoch'],'config_sha':digest} if phase=='route' else {}
+                        journal.step(phase,lambda evidence=evidence:evidence)
+                    journal.finish()
+                target=root/'marker.json'; target.write_text(json.dumps({'operation':operation['id']})); target.chmod(0o600)
+                maintenance=root/'maintenance'; maintenance.symlink_to(root/'missing-marker' if dangling else target)
+                self.assertFalse(self.m.ingress_allowed(root,maintenance,root/'permit',ingress,'boot'))
+
+    def test_ingress_allowed_rejects_maintenance_symlinks_for_incomplete_d2(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve(); ingress=root/'proxy.cfg'; ingress.write_text('route A\\n')
+            with self.m.Journal(root) as journal:
+                operation=journal.begin('A','B','d1-current')
+                for phase in D2[:8]: journal.step(phase,lambda:{})
+                with self.assertRaises(RuntimeError): journal.step('route',lambda: (_ for _ in ()).throw(RuntimeError('pending')))
+            target=root/'marker.json'; target.write_text(json.dumps({'operation':operation['id']})); target.chmod(0o600)
+            maintenance=root/'maintenance'; maintenance.symlink_to(target)
+            permit=root/'permit'; permit.write_text(json.dumps({'operation':operation['id'],'boot_id':'boot','pid':os.getpid(),'birth':self.m.process_identity(os.getpid()),'config_sha':hashlib.sha256(ingress.read_bytes()).hexdigest()})); permit.chmod(0o600)
+            self.assertFalse(self.m.ingress_allowed(root,maintenance,permit,ingress,'boot'))
+            maintenance.unlink(); maintenance.symlink_to(root/'missing-marker')
+            self.assertFalse(self.m.ingress_allowed(root,maintenance,permit,ingress,'boot'))
+
     def test_d3_bootstrap_requires_exact_boundary_and_live_private_permit(self):
         for boundary in ('route-intent','verify-intent'):
             with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as tmp:
