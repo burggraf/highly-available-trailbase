@@ -1,5 +1,6 @@
 """Fresh local native proof adapter experiment; no listener or deployment wiring."""
 from contextlib import closing
+import errno
 import hashlib
 import json
 import os
@@ -59,6 +60,13 @@ class CommandOutputLimit(RuntimeError):
         self.stdout, self.stderr = stdout, stderr
 
 
+class CommandCleanupUncertain(RuntimeError):
+    def __init__(self, stdout, stderr):
+        super().__init__('native adapter command cleanup uncertain')
+        self.stdout = bytes(stdout or b'')[:MAX_COMMAND_OUTPUT]
+        self.stderr = bytes(stderr or b'')[:MAX_COMMAND_OUTPUT]
+
+
 def _stop_group(process):
     try:
         os.killpg(process.pid, signal.SIGTERM)
@@ -73,12 +81,19 @@ def _stop_group(process):
             pass
         stdout, stderr = process.communicate(timeout=2)
     deadline = time.monotonic() + 2
+    cleanup_uncertain = False
     while True:
         try:
             os.killpg(process.pid, 0)
         except ProcessLookupError:
             return stdout, stderr
+        except PermissionError as error:
+            if error.errno != errno.EPERM:
+                raise
+            cleanup_uncertain = True
         if time.monotonic() >= deadline:
+            if cleanup_uncertain:
+                raise CommandCleanupUncertain(stdout, stderr)
             raise RuntimeError('native adapter process group survived termination')
         time.sleep(0.01)
 
@@ -295,6 +310,13 @@ class NativeAdapter:
             _write(directory / (label + '.stderr'), error.stderr or b'')
             _write(directory / (label + '.outcome.json'),
                    b'{"outcome":"timeout","completion":"uncertain"}')
+            raise RuntimeError('native adapter command uncertain') from None
+        except CommandCleanupUncertain as error:
+            self._revalidate(directory)
+            _write(directory / (label + '.stdout'), error.stdout)
+            _write(directory / (label + '.stderr'), error.stderr)
+            _write(directory / (label + '.outcome.json'),
+                   b'{"outcome":"cleanup","completion":"uncertain"}')
             raise RuntimeError('native adapter command uncertain') from None
         except CommandOutputLimit as error:
             self._revalidate(directory)
