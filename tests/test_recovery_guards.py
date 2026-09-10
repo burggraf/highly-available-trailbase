@@ -111,6 +111,42 @@ class RecoveryGuardTests(unittest.TestCase):
                 journal.db.execute("UPDATE steps SET evidence='{}' WHERE operation=? AND phase='route' AND status='done'",(operation['id'],));journal.db.commit()
                 with self.assertRaises(RuntimeError):self.m.current_writer(journal,ingress)
 
+    def test_completed_route_authority_requires_exact_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve(); ingress=root/'proxy.cfg'; ingress.write_text('route B\\n')
+            digest=hashlib.sha256(ingress.read_bytes()).hexdigest()
+            with self.m.Journal(root) as journal:
+                operation=journal.begin('A','B','d1-current')
+                for phase in D2:
+                    evidence={'writer':'B','epoch':operation['new_epoch'],'config_sha':digest} if phase=='route' else {}
+                    journal.step(phase,lambda evidence=evidence:evidence)
+                journal.finish()
+            route=root/'journal.db'
+            mutations=({'writer':'A','epoch':operation['new_epoch'],'config_sha':digest},
+                       {'writer':'B','epoch':'wrong','config_sha':digest},
+                       {'writer':'B','epoch':operation['new_epoch']},
+                       {'writer':'B','epoch':operation['new_epoch'],'config_sha':digest,'extra':1})
+            for value in mutations:
+                with self.subTest(value=value), self.m.Journal(root) as journal:
+                    journal.db.execute("UPDATE steps SET evidence=? WHERE operation=? AND phase='route' AND status='done'",(json.dumps(value),operation['id'])); journal.db.commit()
+                    with self.assertRaises(RuntimeError): self.m.current_writer(journal,ingress)
+                    self.assertFalse(self.m.ingress_allowed(root,root/'missing',root/'missing',ingress,'boot'))
+
+    def test_incomplete_d2_admission_requires_exact_route_intent_prefix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve(); ingress=root/'proxy.cfg'; ingress.write_text('route A\\n')
+            with self.m.Journal(root) as journal:
+                operation=journal.begin('A','B','d1-current')
+                for phase in D2[:8]: journal.step(phase,lambda:{})
+                with self.assertRaises(RuntimeError): journal.step('route',lambda: (_ for _ in ()).throw(RuntimeError('pending')))
+            maintenance=root/'maintenance'; maintenance.write_text(json.dumps({'operation':operation['id']})); maintenance.chmod(0o600)
+            permit=root/'permit'; permit.write_text(json.dumps({'operation':operation['id'],'boot_id':'boot','pid':os.getpid(),'birth':self.m.process_identity(os.getpid()),'config_sha':hashlib.sha256(ingress.read_bytes()).hexdigest()})); permit.chmod(0o600)
+            args=(root,maintenance,permit,ingress,'boot')
+            self.assertFalse(self.m.ingress_allowed(*args))
+            with self.m.Journal(root) as journal:
+                journal.db.execute("DELETE FROM steps WHERE operation=? AND phase='quiesce'",(operation['id'],)); journal.db.commit()
+            self.assertFalse(self.m.ingress_allowed(*args))
+
     def test_d3_bootstrap_requires_exact_boundary_and_live_private_permit(self):
         for boundary in ('route-intent','verify-intent'):
             with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as tmp:
