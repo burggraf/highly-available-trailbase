@@ -15,6 +15,8 @@ ALLOWED = {
 REQUIRED_ROUTE_KEYS = {"method", "path", "handler", "source", "condition", "classification", "effects", "secondary_effects"}
 REQUIRED_SOURCE_KEYS = {"file", "sha256", "line", "contains"}
 REQUIRED_SOURCE_FILE_KEYS = {"file", "sha256", "anchors"}
+SOURCE_SCOPES = ["crates/core/src", "crates/wasm-runtime-axum/src", "crates/wasm-runtime-common/src", "crates/wasm-runtime-guest/src", "crates/wasm-runtime-host/src"]
+HEX64 = __import__('re').compile(r'^[0-9a-f]{64}$')
 REQUIRED_CAPABILITY_KEYS = {"name", "class", "source_files", "edges", "condition"}
 REQUIRED_CLASSES = {"router", "conditional", "job", "dynamic_router", "listener", "direct_writer", "provider", "telemetry"}
 
@@ -37,18 +39,20 @@ def load_manifest(path: Path | None = None) -> dict[str, Any]:
     return manifest
 
 def validate_manifest(manifest: dict[str, Any]) -> None:
-    if set(manifest) != {"schema_version", "source", "source_files", "capabilities", "unresolved_source_graph", "routes"}:
+    if not isinstance(manifest, dict) or set(manifest) != {"schema_version", "source", "source_scopes", "source_files", "capabilities", "unresolved_source_graph", "routes"}:
         raise SurfaceError("manifest has unexpected or missing top-level keys")
-    if manifest["schema_version"] != 1 or manifest["unresolved_source_graph"]:
+    if type(manifest["schema_version"]) is not int or manifest["schema_version"] != 1 or not isinstance(manifest["unresolved_source_graph"], list) or manifest["unresolved_source_graph"]:
         raise SurfaceError("source graph is unresolved")
+    if any(type(x) is not str or not x for x in manifest["unresolved_source_graph"]): raise SurfaceError("invalid source graph")
+    if manifest["source_scopes"] != SOURCE_SCOPES or any(type(x) is not str for x in manifest["source_scopes"]): raise SurfaceError("invalid source scopes")
     source = manifest["source"]
     if not isinstance(source, dict) or set(source) != {"name", "repo", "tag", "commit", "root", "provenance"}:
         raise SurfaceError("invalid source tag")
+    if any(type(source[k]) is not str or not source[k] for k in ("name","repo","tag","commit","root")) : raise SurfaceError("invalid source fields")
     if (source["name"], source["repo"], source["tag"], source["commit"]) != ("trailbase", "trailbaseio/trailbase", "v0.33.11", COMMIT):
         raise SurfaceError("source is not the pinned TrailBase")
     provenance = source["provenance"]
-    if not isinstance(provenance, dict) or set(provenance) != {"file", "sha256"}:
-        raise SurfaceError("invalid provenance")
+    if not isinstance(provenance, dict) or set(provenance) != {"file", "sha256"} or type(provenance.get("file")) is not str or not HEX64.fullmatch(provenance.get("sha256", "")): raise SurfaceError("invalid provenance")
     entries = manifest["source_files"]
     if not isinstance(entries, list) or not entries:
         raise SurfaceError("source file inventory is empty")
@@ -56,10 +60,10 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         if not isinstance(entry, dict):
             raise SurfaceError("invalid source file entry")
         _keys(entry, REQUIRED_SOURCE_FILE_KEYS, "source file")
-        if not isinstance(entry["file"], str) or not isinstance(entry["sha256"], str) or not isinstance(entry["anchors"], list) or not entry["anchors"]:
+        if type(entry["file"]) is not str or not entry["file"].endswith('.rs') or not HEX64.fullmatch(entry["sha256"]) or not isinstance(entry["anchors"], list) or not entry["anchors"]:
             raise SurfaceError("invalid source file tag")
         for anchor in entry["anchors"]:
-            if not isinstance(anchor, dict) or set(anchor) != {"line", "contains"} or not isinstance(anchor["line"], int) or not isinstance(anchor["contains"], str):
+            if not isinstance(anchor, dict) or set(anchor) != {"line", "contains"} or type(anchor["line"]) is not int or anchor["line"] < 1 or type(anchor["contains"]) is not str or not anchor["contains"]:
                 raise SurfaceError("invalid source anchor")
     inventory = {x["file"] for x in entries}
     if len(inventory) != len(entries):
@@ -72,7 +76,7 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         if not isinstance(route, dict):
             raise SurfaceError("invalid route")
         _keys(route, REQUIRED_ROUTE_KEYS, "route")
-        if route["method"] not in {"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"} or route["classification"] not in {"allow", "deny", "runtime_unknown"}:
+        if type(route["method"]) is not str or type(route["path"]) is not str or not route["path"] or any(type(route[k]) is not str or not route[k] for k in ("handler","condition","classification")) or route["method"] not in {"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"} or route["classification"] not in {"allow", "deny", "runtime_unknown"} or not isinstance(route["effects"], list) or not isinstance(route["secondary_effects"], list) or any(type(x) is not str for x in route["effects"]+route["secondary_effects"]):
             raise SurfaceError("invalid route classification or method")
         pair = (route["method"], route["path"])
         if route["classification"] == "allow" and pair not in ALLOWED:
@@ -80,6 +84,7 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         if not isinstance(route["source"], dict):
             raise SurfaceError("invalid route source")
         _keys(route["source"], REQUIRED_SOURCE_KEYS, "route source")
+        if type(route["source"]["file"]) is not str or not HEX64.fullmatch(route["source"]["sha256"]) or type(route["source"]["line"]) is not int or route["source"]["line"] < 1 or type(route["source"]["contains"]) is not str or not route["source"]["contains"]: raise SurfaceError("invalid route source")
         if route["source"]["file"] not in inventory:
             raise SurfaceError("route source absent from inventory")
         pairs.append(pair)
@@ -121,7 +126,11 @@ def verify_source(source_root: Path, provenance_path: Path, manifest: dict[str, 
         recorded = json.loads(provenance_path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
         raise SurfaceError("invalid provenance manifest") from exc
-    if recorded.get("tag") != manifest["source"]["tag"] or recorded.get("commit") != manifest["source"]["commit"]:
+    sources = recorded.get("sources")
+    if not isinstance(sources, list) or len([x for x in sources if isinstance(x, dict) and x.get("name") == "trailbase"]) != 1: raise SurfaceError("invalid provenance sources")
+    selected = [x for x in sources if x.get("name") == "trailbase"][0]
+    if set(selected) != {"name","repo","tag","commit","url","archive_sha256","regular_files","expanded_bytes"} or (selected["name"],selected["repo"],selected["tag"],selected["commit"]) != ("trailbase","trailbaseio/trailbase","v0.33.11",COMMIT) or not HEX64.fullmatch(selected["archive_sha256"]): raise SurfaceError("invalid provenance identity")
+    if selected["tag"] != manifest["source"]["tag"] or selected["commit"] != manifest["source"]["commit"]:
         raise SurfaceError("provenance tag or commit mismatch")
     if source_root.name != manifest["source"]["root"]:
         raise SurfaceError("source root does not match pinned source")
@@ -136,14 +145,14 @@ def verify_source(source_root: Path, provenance_path: Path, manifest: dict[str, 
                 raise SurfaceError(f"bad source anchor: {name}:{anchor['line']}")
     for route in manifest["routes"]:
         tag = route["source"]
+        if expected.get(tag["file"]) != tag["sha256"]: raise SurfaceError(f"route source digest mismatch: {tag['file']}")
         path = source_root / tag["file"]
         lines = path.read_text().splitlines()
         if tag["line"] < 1 or tag["line"] > len(lines) or tag["contains"] not in lines[tag["line"] - 1]:
             raise SurfaceError(f"bad source anchor: {tag['file']}:{tag['line']}")
-    relevant = {p for p in source_root.rglob("*") if p.is_file() and any(x in p.name.lower() for x in ("router", "listener", "writer", "job", "bridge"))}
-    extra = {str(p.relative_to(source_root)) for p in relevant} - set(expected)
-    if extra:
-        raise SurfaceError(f"extra relevant source: {sorted(extra)}")
+    actual = {str(p.relative_to(source_root)) for scope in SOURCE_SCOPES for p in (source_root / scope).rglob('*.rs') if p.is_file()}
+    if actual != set(expected):
+        raise SurfaceError("source inventory does not exactly match configured scopes")
 
 if __name__ == "__main__":
     import argparse

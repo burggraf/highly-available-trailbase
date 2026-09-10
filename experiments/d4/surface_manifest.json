@@ -11,6 +11,13 @@
       "sha256": "bdc9568b3c46233f9d1c15d970af30c7ca8a26120b734c76c7f2bb90d4903d0a"
     }
   },
+  "source_scopes": [
+    "crates/core/src",
+    "crates/wasm-runtime-axum/src",
+    "crates/wasm-runtime-common/src",
+    "crates/wasm-runtime-guest/src",
+    "crates/wasm-runtime-host/src"
+  ],
   "source_files": [
     {
       "file": "crates/core/src/admin/backup.rs",
@@ -45,6 +52,16 @@
       ]
     },
     {
+      "file": "crates/core/src/admin/config/mod.rs",
+      "sha256": "e3c437ee0c75155e23a4bada61606aaa820fe0e0c4fc8927903008a1b4a7a03c",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "pub mod get_config;"
+        }
+      ]
+    },
+    {
       "file": "crates/core/src/admin/config/update_config.rs",
       "sha256": "c891e35ebf3fe7e3d5db5bcb4008179ec5f0b9df3cc85b1e7ba0db98d0e9a230",
       "anchors": [
@@ -65,6 +82,16 @@
       ]
     },
     {
+      "file": "crates/core/src/admin/error.rs",
+      "sha256": "46d8eef6d2acc5bb3eafb5825f93bb42c746f31d20010dfe5c613c2c5e024fdf",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use axum::body::Body;"
+        }
+      ]
+    },
+    {
       "file": "crates/core/src/admin/info.rs",
       "sha256": "7e694b30b2c6b5d9862721dd8c39c1a4dcc36305a0d7c525f6b62bd272c9e192",
       "anchors": [
@@ -81,6 +108,16 @@
         {
           "line": 35,
           "contains": "list_jobs_handler"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/admin/jobs/mod.rs",
+      "sha256": "327b806dfec73de6a3fa9e47e3f95cd867d60c163ccc9d7e49f73e6c2690e507",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "pub mod list_jobs;"
         }
       ]
     },
@@ -135,6 +172,16 @@
       ]
     },
     {
+      "file": "crates/core/src/admin/logs/mod.rs",
+      "sha256": "c3357db089c3727bdd77c6e356d2f91be56600588fc377212f9dcb5c5993c3ea",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "pub mod list_logs;"
+        }
+      ]
+    },
+    {
       "file": "crates/core/src/admin/logs/stats.rs",
       "sha256": "d158c54feb49d56655a9475e4a557fe9858d434b2eb4357f1ff08067cdd7739d",
       "anchors": [
@@ -160,7 +207,7 @@
       "anchors": [
         {
           "line": 1,
-          "contains": ""
+          "contains": "mod backup;"
         }
       ]
     },
@@ -235,6 +282,16 @@
         {
           "line": 45,
           "contains": "list_rows_handler"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/admin/rows/mod.rs",
+      "sha256": "1adf5d6db1c9492a021ca50e3e910a9e1f53e29396ffe2f614194510ece3f1ba",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "pub mod delete_rows;"
         }
       ]
     },
@@ -329,6 +386,16 @@
       ]
     },
     {
+      "file": "crates/core/src/admin/table/mod.rs",
+      "sha256": "aae919d1e92706b2543193cf8a64413f88db1ee9a4a44d8019b719293e29b0d1",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "// Indexes"
+        }
+      ]
+    },
+    {
       "file": "crates/core/src/admin/user/create_user.rs",
       "sha256": "e51e05aa945bfe0d6960872ac78239db8edc0b6d92a843bcb0ac900fc1663227",
       "anchors": [
@@ -359,12 +426,32 @@
       ]
     },
     {
+      "file": "crates/core/src/admin/user/mod.rs",
+      "sha256": "1d5ce35e5914b69dd6e162270c16916e83f291facd1a8e0a4f7d7495d0c138c9",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "pub mod create_user;"
+        }
+      ]
+    },
+    {
       "file": "crates/core/src/admin/user/update_user.rs",
       "sha256": "804ad8ea09bc8b8efa1ead101f5b39f73c7867c6404b77d6b582de313d28d749",
       "anchors": [
         {
           "line": 46,
           "contains": "update_user_handler"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/admin/util.rs",
+      "sha256": "fc240db19f24ad91429c3568748b22244e4a205f6ee427fe9f5a6403e675e43a",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use trailbase_schema::json::JsonError;"
         }
       ]
     },
@@ -383,6 +470,16 @@
         {
           "line": 233,
           "contains": "uninstall_wasm_component_handler"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/app_state.rs",
+      "sha256": "1df436ac02459c82cee776012949a13ad38d690572276f5abcb3c2590191a206",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use log::*;"
         }
       ]
     },
@@ -483,6 +580,16 @@
         {
           "line": 77,
           "contains": "post_logout_handler"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/api/mod.rs",
+      "sha256": "fd8275eaf87fe56e35ce73ae87bb931a0a373c81b14b5fda4a424e9c33ab85f2",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "pub(super) mod avatar;"
         }
       ]
     },
@@ -597,12 +704,62 @@
       ]
     },
     {
+      "file": "crates/core/src/auth/auth_test.rs",
+      "sha256": "0d8c804db74faf2ead35de2227b3ff457b040d7243db3524607edef90083de58",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use axum::extract::{Extension, Json, Path, Query, State};"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/cli.rs",
+      "sha256": "39484d8a5b001fa6cd41f82aae7385bdf70f4890d983a04723888116a521bace",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use base64::prelude::*;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/error.rs",
+      "sha256": "f759b9db44e30a00e1618746186a0733a9f49e3b3e19c110cd3c9522146e3504",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use axum::body::Body;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/jwt.rs",
+      "sha256": "8c1495cfe3236fe9e2c4273ead18f9f910818514254738df8bddf837929232cd",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use crate::auth::user::DbUser;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/login_params.rs",
+      "sha256": "a99c7bb0f5cde604896957027a7a0e9e1b66d87be8f0c9482db1ee8ffecfe056",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use base64::prelude::*;"
+        }
+      ]
+    },
+    {
       "file": "crates/core/src/auth/mod.rs",
       "sha256": "264e289a46a1cc206a7dc1d86db6962bdf02484e856cce7ac875e6179d8a016f",
       "anchors": [
         {
           "line": 1,
-          "contains": ""
+          "contains": "use utoipa_axum::router::OpenApiRouter;"
         }
       ]
     },
@@ -646,7 +803,307 @@
       "anchors": [
         {
           "line": 1,
-          "contains": ""
+          "contains": "mod callback;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/oauth/oauth_test.rs",
+      "sha256": "28092f7760f65fcb81ca8766e1ac7a79a45ecc7e2fff1fce3a4507c79075d5c2",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use axum::extract::{Extension, Form, Json, Path, Query, State};"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/oauth/provider.rs",
+      "sha256": "5d9786d55d21455010238d107834bc4660006a18f9795f21688873808c3a4177",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use async_trait::async_trait;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/oauth/providers/apple.rs",
+      "sha256": "be0f39c6bbac7cdabf334e5f327c915dbb64096f7a55023a7dc9a67048fc20af",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use async_trait::async_trait;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/oauth/providers/discord.rs",
+      "sha256": "ef0e674ed29f7a84ea68880873fce607cfcb6311541a483ba16f5f2aea117623",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use serde::Deserialize;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/oauth/providers/facebook.rs",
+      "sha256": "0d52f2169f2fabe470299bcc577aa0b6a1edbd090b8e392640c78e633663818f",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use serde::Deserialize;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/oauth/providers/github.rs",
+      "sha256": "3e735d0c8a8f57529f37ad3e76c286bed31d7bf7e0f2016a40555e555c652869",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use async_trait::async_trait;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/oauth/providers/gitlab.rs",
+      "sha256": "daab86bd9fc6bb83efde153839d4d0846e3a16b3a1311fd35eea43635908a4b4",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use serde::Deserialize;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/oauth/providers/google.rs",
+      "sha256": "abc1f4e314468080e14f72fcf9b0477fb3b9fbf987639903c6203a8825ba08c5",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use serde::Deserialize;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/oauth/providers/microsoft.rs",
+      "sha256": "06803fab04455802884da24182f8c9fd431daa9f2f6592421df2d0b5612da3d3",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use serde::Deserialize;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/oauth/providers/mod.rs",
+      "sha256": "489dccb691877e8bc4d3636a2cc487f7e2c62561d58fbb0ab863783a6f806614",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "mod apple;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/oauth/providers/oidc.rs",
+      "sha256": "1468309a109df69b37350c3630644e71ad69107d5c5f27f80260b64ce3b1a3e2",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use async_trait::async_trait;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/oauth/providers/test.rs",
+      "sha256": "0ca417533ea6c2df1182134a10560582bc07c20c108c0bbc091257fa8ff11dc7",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use async_trait::async_trait;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/oauth/providers/twitch.rs",
+      "sha256": "1db5aab6f9fbb0fb3893546346b252d512e2c7c9b223596e148dabf860eb6fab",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use async_trait::async_trait;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/oauth/providers/yandex.rs",
+      "sha256": "e607057f8e3f54cecfb318cd1b8957ea344b1112c67089cdc52d0d4e2e94b675",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use serde::Deserialize;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/oauth/reqwest_client.rs",
+      "sha256": "87cf4fcc109ad7cdcda3387c023b539671afaef805e4b92e97937e8ce0c80604",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use oauth2::{AsyncHttpClient, HttpClientError, HttpRequest, HttpResponse};"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/oauth/simple_provider.rs",
+      "sha256": "dbebd872f4c5297958d2256f3148cdc886b333aeb8668aba887291308399aebf",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use async_trait::async_trait;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/oauth/state.rs",
+      "sha256": "9276d6db180429d0063715e75f4976b8bdd9261c21afc875467aac9730a96168",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use serde::{Deserialize, Serialize};"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/options.rs",
+      "sha256": "f6b69289f2ce3ef2c64bcec8bbb71ec7940afb4ed7c35f207d57db634292a770",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use scopeguard::defer;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/password.rs",
+      "sha256": "d67cbd42fff69c12473eb9cde098a677ae3aae6aebd662d30dac09fab7e6c765",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use mini_moka::sync::Cache;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/tokens.rs",
+      "sha256": "44f6b0d9fee60038116ad8fb1f09586b1606c2b1bf8d8d6845fcff0b0ea91c5f",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use axum::{"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/user.rs",
+      "sha256": "6c5bbdcafc6e7bd47b1f36e9d817011ef5e6b82e7b27e0fae3a04bb69bf256ec",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use axum::{"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/auth/util.rs",
+      "sha256": "d01c9a950f62347ba374d1fb51a2c309b7799e2c23a965785313fe0dd72e1a7b",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use base64::prelude::*;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/backup.rs",
+      "sha256": "ec5585508e0c6464e6d7c1c8a377ebed34ff3ca21b078fe4860876fde083e0df",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use std::path::PathBuf;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/config/error.rs",
+      "sha256": "d06ef4a2eb05c7293292e708a735807689ac7e3d5bfa5908baa0b0413b9f3997",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "#[derive(Debug, thiserror::Error)]"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/config/mod.rs",
+      "sha256": "b5691c9ad24b145f27e13579945bda147ca396e78c4fe8ec4c976f33f360ae09",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "pub mod error;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/config/proto.rs",
+      "sha256": "e2a7b6103a2903aab9a6875d6ce3609ed858190637bdcb425b1fe2ee880dfbb5",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use base64::prelude::*;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/config/textproto.rs",
+      "sha256": "4b00c4dc9e16a4747ea570c6dbc06bb8194444f4beb71205763e586884a0e05b",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use prost::Message;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/config/validate.rs",
+      "sha256": "ce16a15549aa555354fec833cdedeffb3fee583c1c9d001b4feda1d0456facec",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use log::*;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/config/vault.rs",
+      "sha256": "44bf5ae8a46d9e699506b4dddf56c260fb067450a631c35b4c92b95d3344853b",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use log::*;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/connection.rs",
+      "sha256": "64ec264642faebab75dd83715f312de647f7b3001dc91f71e72913058f71842b",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use parking_lot::RwLock;"
         }
       ]
     },
@@ -656,7 +1113,17 @@
       "anchors": [
         {
           "line": 1,
-          "contains": ""
+          "contains": "use chrono::Duration;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/data_dir.rs",
+      "sha256": "bc7b016dfb806fbf9497d93646893b94afa746c6a434df8ba130c7c7ad1dab10",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use log::*;"
         }
       ]
     },
@@ -666,7 +1133,137 @@
       "anchors": [
         {
           "line": 1,
-          "contains": ""
+          "contains": "use lettre::address::AddressError;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/encryption.rs",
+      "sha256": "53d224edb5d76aa3aac572438f79989f44b2758cb88ac249f0abd3b1a0192a7f",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use aes_gcm_siv::aead::{Aead, Generate, Payload};"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/extract/content_type.rs",
+      "sha256": "7c92a037888f4cb9d375eecbd79e8409efea3840c6989eb51607decd7448ad9c",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use axum::extract::{FromRequest, Request};"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/extract/either.rs",
+      "sha256": "4a0498e87616a7affd1db11539fb17b3427f6e8d82aa8631683f27c8f0efc4a2",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use axum::Json;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/extract/ip.rs",
+      "sha256": "480e9add8e28ca5f2d2786c71b68b32f431d47860977c22b2da8a1e820736aee",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use axum::extract::ConnectInfo;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/extract/mod.rs",
+      "sha256": "e5a66c190650eb305695421dae6686bd4a814747be6627b95e733beaa6caa736",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "mod content_type;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/extract/multipart.rs",
+      "sha256": "811f27232a691e2b89d792c4765fac215a91021d74310c38f9c5ffb5e84b3ac4",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "//! Parse multipart form requests"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/extract/protobuf.rs",
+      "sha256": "a7ace8dfb0608a3d0af504995330ecb7db2ef5bb914db373d59656d9efffc0df",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "//! Protocol Buffer extractor and response."
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/init_error.rs",
+      "sha256": "886131b1ccad6f2942e25375fb3f9b777144e984d1612e18a55039ba0ea3e874",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use thiserror::Error;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/lib.rs",
+      "sha256": "c32873a1e7ac63ced6aa23570233bb658f227ea523fec8393043ce7d74884697",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "#![forbid(unsafe_code, clippy::unwrap_used)]"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/listing.rs",
+      "sha256": "647e9044bd14d7be42be3dd440fe366447c397d9b3b4494ca25dec5373d39174",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use std::borrow::Cow;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/logging.rs",
+      "sha256": "97367fa728d0f7dba11d1614d6051df8db196df871c3541943a811a1b94be78c",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use axum::body::Body;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/metadata.rs",
+      "sha256": "76ad929d188e833627be81484874923326fe14ab4eea45c14b2f28682e2cbd70",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use log::*;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/migrations.rs",
+      "sha256": "6bad5230ad93b44fe3bbe834872c0fd6c354c692040110ba6205dd2b5b2aaa91",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use itertools::Itertools;"
         }
       ]
     },
@@ -676,7 +1273,7 @@
       "anchors": [
         {
           "line": 1,
-          "contains": ""
+          "contains": "use utoipa::openapi::{ContactBuilder, InfoBuilder, LicenseBuilder, OpenApi, OpenApiBuilder};"
         }
       ]
     },
@@ -697,6 +1294,46 @@
         {
           "line": 21,
           "contains": "delete_record_handler"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/records/error.rs",
+      "sha256": "0124d683e3fcd8a4379075e5f8018d8f8e41c43ffdb1f3d80c68e54c2de01454",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use axum::body::Body;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/records/expand.rs",
+      "sha256": "81e7a22b3464e7d9d22a439080aff8bf4afbd3bdfcff0840d25990ea4e0df6f1",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use itertools::Itertools;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/records/files.rs",
+      "sha256": "e0ca6bdbaeb8da9b44d84489a776131f7cc586f267a5d1d691959896b0d73105",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use axum::body::Body;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/records/filter.rs",
+      "sha256": "633ffbf14daeb64e0408e3c96a6fbdbbe4432914b3e5aa4a328e5a07bee86c11",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use regex::Regex;"
         }
       ]
     },
@@ -726,7 +1363,27 @@
       "anchors": [
         {
           "line": 1,
-          "contains": ""
+          "contains": "use trailbase_sqlite::ConnectionType;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/records/params.rs",
+      "sha256": "d3f38507d9f04bf2d8bfadac21c890b133ca49c9101bd8b3867267d21b17c14b",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use parking_lot::RwLock;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/records/read_queries.rs",
+      "sha256": "f332204df96466ec1b28a4cc0db03ebd1b1a03c7e1c8eac79b8af5fcb640753a",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use askama::Template;"
         }
       ]
     },
@@ -749,12 +1406,92 @@
       ]
     },
     {
+      "file": "crates/core/src/records/record_api.rs",
+      "sha256": "07f083d5c63f337448fdba82a18b9bcb890cd5f26d2b18e3d5eb6452be2bc7ee",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use askama::Template;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/records/subscribe/event.rs",
+      "sha256": "9e726530e6f8125e4c835bcf29624eef1ecbd6c3ea1cbc1a14fb553a3cf86ce3",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use axum::response::sse::Event as SseEvent;"
+        }
+      ]
+    },
+    {
       "file": "crates/core/src/records/subscribe/handler.rs",
       "sha256": "5b8ac2d4afd661117295fbf1e27e337f6dc379596edd96c3eb52020a4946d6ca",
       "anchors": [
         {
           "line": 52,
           "contains": "add_subscription_sse_and_ws_handler"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/records/subscribe/hook.rs",
+      "sha256": "5a52d50ceaf71cc23aa86a2c5c8c8c5ac5b6459819858d9d8ec231a0ccfaa654",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use log::*;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/records/subscribe/manager.rs",
+      "sha256": "a078c8b267597ece50dc26612fe5db1a47bfb51efc8c56f8c9261705ba860702",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use parking_lot::{Mutex, RwLock};"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/records/subscribe/mod.rs",
+      "sha256": "d9e53ddcdaa16ef4211f7f91ba39e83002c7297d5435f0124c4eade65360718f",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "pub(crate) mod event;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/records/subscribe/state.rs",
+      "sha256": "6527e6e495a130417117f6ee4aff4f06a42939fcb9d46a9893f5fd108d0d318a",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use async_channel::WeakReceiver;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/records/subscribe/tests.rs",
+      "sha256": "a6fafbba099300ca209c83c0067e60e863b35b9aa6d185f5db690ef05a368648",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use axum::extract::{Path, RawQuery, State};"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/records/test_utils.rs",
+      "sha256": "62710f550c51e17ca9d2e0af0d06adbab4aa3207785642f91f337139629362a8",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use serde::{Deserialize, Serialize};"
         }
       ]
     },
@@ -779,12 +1516,312 @@
       ]
     },
     {
+      "file": "crates/core/src/records/util.rs",
+      "sha256": "4e23bd6aab9b6ab3011ff161b4a7167db3de7d1f691c33ca034eda70253e5d70",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "#[inline]"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/records/validate.rs",
+      "sha256": "6ef1b0db11d273ec8416275adf432629354ad3c47a95a63c70930e3d6b4711b9",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use itertools::Itertools;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/records/write_queries.rs",
+      "sha256": "9deae2ae5d827ffced4083803c029cad66bf91957a223a5719431aecf90f447a",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use askama::Template;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/scheduler.rs",
+      "sha256": "46d4869fbff536ec0ac415f5b1d8424ec9e2e44353fbe1b21225adb9bb42a721",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use chrono::{DateTime, Duration, Utc};"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/schema_metadata.rs",
+      "sha256": "71d390952d2706dc308f2805ba8f33caa5df36f93754993164ff8a1d6c6a070c",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use fallible_iterator::FallibleIterator;"
+        }
+      ]
+    },
+    {
       "file": "crates/core/src/server/mod.rs",
       "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
       "anchors": [
         {
           "line": 549,
           "contains": "healthcheck_handler"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/server/serve.rs",
+      "sha256": "3242b02346243524e06d8901efbf55f65f0ac4c7dec8a912f4d78f50cbe0924f",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "//! Serve services."
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/socket_address.rs",
+      "sha256": "2e08981a5b024492c083b407fb55506b5d72b8becbd96a64d45075077a8f18eb",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use std::net::ToSocketAddrs;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/test.rs",
+      "sha256": "de325b8fc540df8b3093a1bd0deb4b470ec743ed9602246018547dc950925c61",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use axum::response::Response;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/test_utils.rs",
+      "sha256": "3df719295fda5078e65d72f18a0647cfa9dfe96e536d5679b721601187c34969",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use trailbase_sqlite::{Connection, ConnectionType};"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/transaction_recorder.rs",
+      "sha256": "8580032bcc7aafbd1ee420f7ade5ca6fd306349eeea9e1859c8c7e84052e1e51",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use log::*;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/util.rs",
+      "sha256": "9460d482a1f58f7a2bd79d786b0adce4b7e9bab73334d46b91f5bc40e4e3b9cb",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use axum::http::HeaderMap;"
+        }
+      ]
+    },
+    {
+      "file": "crates/core/src/wasm/mod.rs",
+      "sha256": "9208abb5baa1fad59c11583ad3af5f9a58b9e16588b0a10e2b9ff44bd3bdc1d4",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use std::path::PathBuf;"
+        }
+      ]
+    },
+    {
+      "file": "crates/wasm-runtime-axum/src/lib.rs",
+      "sha256": "133e11a6f6c5d607b0323ec0c447dbe322b434b32a570fd15475701b0e0bbcc4",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "#![forbid(unsafe_code, clippy::unwrap_used)]"
+        }
+      ]
+    },
+    {
+      "file": "crates/wasm-runtime-common/src/lib.rs",
+      "sha256": "1fa9823004f582c20c304884758db9c7b596c1dc00c36828200e5df0fe2749c0",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "#![forbid(unsafe_code, clippy::unwrap_used)]"
+        }
+      ]
+    },
+    {
+      "file": "crates/wasm-runtime-common/src/manifest.rs",
+      "sha256": "2182b8295057fb107a4b4f9d03aa61c4a59429223424f12c4897a4ac2f196abc",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use serde::{Deserialize, Serialize};"
+        }
+      ]
+    },
+    {
+      "file": "crates/wasm-runtime-guest/src/auth.rs",
+      "sha256": "e21742181fc1cd45992a92e784f98227c9871477970bf83b728ab5c90890169b",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use base64::engine::general_purpose::URL_SAFE_PAD_INDIFFERENT;"
+        }
+      ]
+    },
+    {
+      "file": "crates/wasm-runtime-guest/src/db.rs",
+      "sha256": "bdc3b24bd5534b6158ddea0db9831c6133eec9fede5d8e6b98d2465c3cf825e0",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use trailbase_sqlvalue::{Blob, DecodeError, SqlValue};"
+        }
+      ]
+    },
+    {
+      "file": "crates/wasm-runtime-guest/src/fetch.rs",
+      "sha256": "bd7b5603368ee54abc44257a5484c1c3ce09281903928f43d8c563aed75c4845",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use wstd::http::Client;"
+        }
+      ]
+    },
+    {
+      "file": "crates/wasm-runtime-guest/src/fs.rs",
+      "sha256": "40b9b85c57cf3093e2d40cd5e74f656b731feba08e6f5b12a8a2b4e7dfff7ce7",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "pub use crate::wit::wasi::filesystem::preopens::{Descriptor, get_directories};"
+        }
+      ]
+    },
+    {
+      "file": "crates/wasm-runtime-guest/src/http.rs",
+      "sha256": "f10e0ea8011b4117f54f623c7874a1557e858068eaedb191d3343522ebae8f1c",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use futures_util::future::LocalBoxFuture;"
+        }
+      ]
+    },
+    {
+      "file": "crates/wasm-runtime-guest/src/job.rs",
+      "sha256": "54ff4dfb4e59ad1a072b22ecaf01b3b33cd5dbbe6b3fc9834f0b67f454bce7c1",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use futures_util::future::LocalBoxFuture;"
+        }
+      ]
+    },
+    {
+      "file": "crates/wasm-runtime-guest/src/kv.rs",
+      "sha256": "b9b74d160e1e2175fe15186919572cf228ecc2d5962518dd1c0fdc05809e901a",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "pub use crate::wit::wasi::keyvalue::store::Error;"
+        }
+      ]
+    },
+    {
+      "file": "crates/wasm-runtime-guest/src/lib.rs",
+      "sha256": "47cfb1009530cdeb7bb7d38519eb1e0f7d8bfc6ecf800604f6c815af83eef377",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "#![forbid(unsafe_code, clippy::unwrap_used)]"
+        }
+      ]
+    },
+    {
+      "file": "crates/wasm-runtime-guest/src/prefs.rs",
+      "sha256": "588b53484980b7c7d353b2d100bf0f7b6eccc7b732376cc8b073e14644723861",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use thiserror::Error;"
+        }
+      ]
+    },
+    {
+      "file": "crates/wasm-runtime-guest/src/time.rs",
+      "sha256": "8cc1203c52793767c69fedf033523d83c66f5575f13855117d4a3d5d64c63462",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "pub use wstd::future::FutureExt;"
+        }
+      ]
+    },
+    {
+      "file": "crates/wasm-runtime-host/src/functions.rs",
+      "sha256": "6604a7abfb36dc463859444f7ce23a9f824dd4bee9232b2aa0109673bb20ae01",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use std::sync::Arc;"
+        }
+      ]
+    },
+    {
+      "file": "crates/wasm-runtime-host/src/host.rs",
+      "sha256": "14f338d909d2bd14d3946b7032ef7c546d409531d3e7bdf3f1057c9726d80ff9",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use http_body_util::BodyExt;"
+        }
+      ]
+    },
+    {
+      "file": "crates/wasm-runtime-host/src/lib.rs",
+      "sha256": "a2274cbb32bd32b7f46d27e0051ded558e5e355b3ca57e50cbd77078c45ebf9a",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "#![forbid(clippy::unwrap_used)]"
+        }
+      ]
+    },
+    {
+      "file": "crates/wasm-runtime-host/src/prefs.rs",
+      "sha256": "6a5fdd48a9a4fc42692bab4fa357d91343cbce53126bc37b2c2c251efd3c34c4",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use bytes::Bytes;"
+        }
+      ]
+    },
+    {
+      "file": "crates/wasm-runtime-host/src/sqlite.rs",
+      "sha256": "e74c48adb9ad933aefd6672de28e76c959412f3b99d2f643a8b18f21a0591cd6",
+      "anchors": [
+        {
+          "line": 1,
+          "contains": "use bytes::Bytes;"
         }
       ]
     }
@@ -1185,6 +2222,7 @@
       "condition": "enabled and independently observed"
     }
   ],
+  "unresolved_source_graph": [],
   "routes": [
     {
       "method": "GET",
@@ -2424,6 +3462,5 @@
       "effects": [],
       "secondary_effects": []
     }
-  ],
-  "unresolved_source_graph": []
+  ]
 }
