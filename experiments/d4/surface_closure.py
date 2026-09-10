@@ -642,7 +642,42 @@ def _walk_attestation(v, path="attestation"):
         for i, x in enumerate(v): _walk_attestation(x, f"{path}[{i}]")
     elif isinstance(v, str) and len(v.encode()) > 4096: raise SurfaceError(f"{path}: string limit")
 
-def validate_attestation(attestation, manifest=None, callback=None):
+@dataclass(frozen=True, slots=True)
+class AttestationTrust:
+    manager_receipt_path_sha256: str
+    manager_receipt_sha256: str
+    manager_pid: int
+    collector_pid: int
+    collector_parent_pid: int
+    collector_source_sha256: str
+    fixture_pid: int
+    fixture_start_mono_ns: int
+    service_uid: int
+    service_groups: tuple[int, ...]
+    manifest_sha256: str
+    source_sha256: str
+    source_root_sha256: str
+    binary_path_sha256: str
+    binary_sha256: str
+    build_id: str
+    config_sha256: str
+    config_generation: int
+    migration_sha256: str
+    plugin_sha256: str
+    sandbox_profile_sha256: str
+    sandbox_profile_generation: int
+    sandbox_root_sha256: str
+    collection_ready_mono_ns: int
+    collection_launched_mono_ns: int
+    collection_deadline_mono_ns: int
+    expected_argv: tuple[str, ...]
+    expected_env: tuple[tuple[str, str], ...]
+    condition_resolutions: tuple[tuple[str, str], ...]
+
+
+def validate_attestation(attestation, manifest, trust):
+    if type(trust) is not AttestationTrust: raise SurfaceError("exact AttestationTrust required")
+    if type(manifest) is not dict: raise SurfaceError("manifest object required")
     if type(attestation) is not dict: raise SurfaceError("attestation object required")
     raw = json.dumps(attestation, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     if len(raw) > 8 * 1024 * 1024: raise SurfaceError("attestation too large")
@@ -652,6 +687,21 @@ def validate_attestation(attestation, manifest=None, callback=None):
     if set(attestation) != required: raise SurfaceError("attestation keys mismatch")
     if not HEX64.fullmatch(attestation["attestation_sha256"]): raise SurfaceError("invalid attestation digest")
     if _canonical_digest(attestation, "attestation_sha256") != attestation["attestation_sha256"]: raise SurfaceError("attestation digest mismatch")
+    # Trust is supplied by the manager; never derive it from the self-report.
+    receipt = attestation["manager_receipt"]
+    collector = attestation["collector"]
+    if receipt.get("receipt_sha256") != trust.manager_receipt_sha256 or receipt.get("path_sha256") != trust.manager_receipt_path_sha256: raise SurfaceError("receipt trust mismatch")
+    if receipt.get("manager_pid") != trust.manager_pid or receipt.get("collector_pid") != trust.collector_pid or receipt.get("collector_parent_pid") != trust.collector_parent_pid: raise SurfaceError("receipt pid mismatch")
+    if collector.get("pid") != trust.collector_pid or collector.get("parent_pid") != trust.collector_parent_pid or collector.get("source_sha256") != trust.collector_source_sha256: raise SurfaceError("collector trust mismatch")
+    source = attestation["source"]
+    if source.get("sha256") != trust.source_sha256 or source.get("root_sha256") != trust.source_root_sha256: raise SurfaceError("source trust mismatch")
+    if attestation["binary"].get("path_sha256") != trust.binary_path_sha256 or attestation["binary"].get("sha256") != trust.binary_sha256: raise SurfaceError("binary trust mismatch")
+    if attestation["config"].get("sha256") != trust.config_sha256 or attestation["config"].get("generation") != trust.config_generation: raise SurfaceError("config trust mismatch")
+    if attestation["migration"].get("sha256") != trust.migration_sha256 or attestation["plugin"].get("sha256") != trust.plugin_sha256: raise SurfaceError("artifact trust mismatch")
+    if attestation["sandbox"].get("profile_sha256") != trust.sandbox_profile_sha256 or attestation["sandbox"].get("root_sha256") != trust.sandbox_root_sha256: raise SurfaceError("sandbox trust mismatch")
+    launch = attestation["launch"]
+    if tuple(launch.get("argv", ())) != trust.expected_argv or tuple((x.get("name"), x.get("value")) for x in launch.get("env", ())) != trust.expected_env: raise SurfaceError("launch trust mismatch")
+    if launch.get("env_i") is not True: raise SurfaceError("environment not inherited")
     u=attestation["uncertainty"]
     if type(u) is not dict or set(u) != {"unknown","missing","extra","stale","self_reported_only"} or any(u[k] != [] for k in u): raise SurfaceError("uncertainty")
     if len(attestation["listeners"]) != 2 or len(attestation["listener_bindings"]) != 2: raise SurfaceError("two listeners required")
@@ -665,9 +715,7 @@ def validate_attestation(attestation, manifest=None, callback=None):
             if x.get("evidence_id") not in evidence: raise SurfaceError("missing evidence")
     if any(x.get("resolution") not in {"enabled","disabled","absent"} or x.get("observed_by") == "declaration" for x in attestation["registrations"].get("conditions", [])): raise SurfaceError("unresolved condition")
     result={"status":"feasible","listeners":tuple((x.get("id"),x.get("path"),x.get("inode")) for x in attestation["listeners"])}
-    result=MappingProxyType(result)
-    if callback is not None: callback(result)
-    return result
+    return MappingProxyType(result)
 
 def validate_quarantine(root, manifest):
     root=Path(root)
