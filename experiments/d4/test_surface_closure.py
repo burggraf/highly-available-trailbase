@@ -1010,13 +1010,12 @@ class AttestationTests(unittest.TestCase):
         for value, expected in failures: attempt(value, expected)
         self.assertEqual(calls, 0)
 
-if __name__ == "__main__":
-    unittest.main()
-
 class QuarantineTests(unittest.TestCase):
     def test_only_canonical_private_manifested_roots_pass(self):
         with tempfile.TemporaryDirectory() as td:
-            root = Path(td) / "q"
+            base = Path(td) / "owner-base"
+            base.mkdir(mode=0o700)
+            root = base / "q"
             root.mkdir(mode=0o700)
             payload = b"safe"
             (root / "payload").write_bytes(payload)
@@ -1029,6 +1028,7 @@ class QuarantineTests(unittest.TestCase):
                  "file_count":1,"byte_total":4,"hash_algorithm":"sha256","manifest_sha256":"","access_log":str((root/"access.log").resolve())}
             m["manifest_sha256"] = surface_closure._canonical_digest(m, "manifest_sha256")
             (root / "manifest.json").write_text(json.dumps(m, sort_keys=True, separators=(",", ":")))
+            (root / "manifest.json").chmod(0o600)
             result = surface_closure.validate_quarantine(root, m)
             self.assertTrue(result["feasible"])
             with self.assertRaises(TypeError): result["feasible"] = False
@@ -1041,5 +1041,9 @@ class QuarantineTests(unittest.TestCase):
             m = {"schema":"d4-quarantine-1", "root":str(root.resolve()), "owner_uid":os.getuid(), "disposition":"pending", "files":[{"path":"payload","sha256":hashlib.sha256(data).hexdigest(),"size":1,"mode":384,"nlink":1,"kind":"regular"}], "file_count":1,"byte_total":1,"hash_algorithm":"sha256","manifest_sha256":"","access_log":str((root/"access.log").resolve())}
             m["manifest_sha256"] = surface_closure._canonical_digest(m, "manifest_sha256")
             (root / "manifest.json").write_text(json.dumps(m, sort_keys=True, separators=(",", ":")))
+            (root / "manifest.json").chmod(0o600)
             (root / "payload").write_bytes(b"tampered")
             with self.assertRaises(surface_closure.SurfaceError): surface_closure.validate_quarantine(root, m)
+
+if __name__ == "__main__":
+    unittest.main()

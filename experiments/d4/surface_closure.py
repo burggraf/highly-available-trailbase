@@ -1058,11 +1058,12 @@ def validate_quarantine(root, manifest):
             raise SurfaceError("quarantine root")
         raw = os.path.abspath(os.fspath(root))
         canonical = os.path.realpath(raw)
-        if raw != canonical or not os.path.isabs(canonical) or manifest["root"] != canonical or len(canonical.encode()) > 4096:
+        if not os.path.isabs(canonical) or manifest["root"] != canonical or len(canonical.encode()) > 4096:
             raise SurfaceError("quarantine root")
         uid = manifest["owner_uid"]
         if type(uid) is not int or uid <= 0: raise SurfaceError("owner uid")
-        if manifest["hash_algorithm"] != "sha256" or manifest["disposition"] not in {"pending", "retain_encrypted", "owner_authorized_destroy"}:
+        # The exact artifact has no owner-record schema: never self-authorize a terminal disposition.
+        if manifest["hash_algorithm"] != "sha256" or manifest["disposition"] != "pending":
             raise SurfaceError("quarantine disposition")
         if _canonical_digest(manifest, "manifest_sha256") != manifest["manifest_sha256"]:
             raise SurfaceError("manifest digest")
@@ -1079,24 +1080,36 @@ def validate_quarantine(root, manifest):
             path = x["path"]
             if type(path) is not str or not SAFE_PATH.fullmatch(path) or path.startswith("./") or path.endswith("/"):
                 raise SurfaceError("invalid payload path")
-            if path in names or x["kind"] != "regular" or x["mode"] != 0o600 or x["nlink"] != 1:
+            if path in names or os.path.basename(path) in {"manifest.json", os.path.basename(manifest["access_log"])} or x["kind"] != "regular" or x["mode"] != 0o600 or x["nlink"] != 1:
                 raise SurfaceError("invalid payload entry")
             if type(x["size"]) is not int or x["size"] < 0 or x["size"] > 268435456 or not HEX64.fullmatch(x["sha256"]):
                 raise SurfaceError("invalid payload entry")
             names.add(path); declared[tuple(path.split("/"))] = x
         if sum(x["size"] for x in files) != manifest["byte_total"]: raise SurfaceError("byte total")
 
-        # Open every component with O_NOFOLLOW, retaining the root descriptor.
-        parts = tuple(x for x in canonical.split(os.sep) if x)
-        fd = os.open(os.sep, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-        fds.append(fd)
-        for part in parts:
-            nxt = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
-            fds.append(nxt); fd = nxt
-            st = os.fstat(fd)
-            if st.st_uid != uid or stat.S_IMODE(st.st_mode) != 0o700: raise SurfaceError("quarantine ancestry")
-        root_fd = fd
-        controls = {"manifest.json", os.path.relpath(manifest["access_log"], canonical)}
+        # The owner-controlled base is the root's parent. System parents (including /)
+        # are intentionally not required to share its owner or mode. Retain both fds;
+        # this is a descriptor snapshot, not a filesystem immutability claim. Task5
+        # binds terminal collection externally.
+        parent_path = os.path.dirname(canonical)
+        parent_pre = os.lstat(parent_path)
+        root_pre = os.lstat(canonical)
+        if (not stat.S_ISDIR(parent_pre.st_mode) or not stat.S_ISDIR(root_pre.st_mode)
+                or parent_pre.st_uid != uid or stat.S_IMODE(parent_pre.st_mode) != 0o700
+                or root_pre.st_uid != uid or stat.S_IMODE(root_pre.st_mode) != 0o700):
+            raise SurfaceError("quarantine ancestry")
+        parent_fd = os.open(parent_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        fds.append(parent_fd)
+        root_fd = os.open(os.path.basename(canonical), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+        fds.append(root_fd)
+        parent_post = os.fstat(parent_fd)
+        root_post = os.fstat(root_fd)
+        if any((parent_post.st_dev != parent_pre.st_dev, parent_post.st_ino != parent_pre.st_ino,
+                parent_post.st_uid != parent_pre.st_uid, stat.S_IMODE(parent_post.st_mode) != stat.S_IMODE(parent_pre.st_mode),
+                root_post.st_dev != root_pre.st_dev, root_post.st_ino != root_pre.st_ino,
+                root_post.st_uid != root_pre.st_uid, stat.S_IMODE(root_post.st_mode) != stat.S_IMODE(root_pre.st_mode))):
+            raise SurfaceError("quarantine identity")
+        controls = {"manifest.json", os.path.basename(manifest["access_log"])}
         log = manifest["access_log"]
         if type(log) is not str or not os.path.isabs(log) or os.path.dirname(log) != canonical or log == canonical + "/manifest.json": raise SurfaceError("access log")
         if any("/" in x for x in controls if x != "manifest.json"): raise SurfaceError("access log")
@@ -1128,13 +1141,17 @@ def validate_quarantine(root, manifest):
                     seen.add(key); inode_seen.add((st.st_dev, st.st_ino))
                     if key in declared:
                         x = declared[rel]
-                        if mode != 0o600 or st.st_size != x["size"]: raise SurfaceError("payload metadata")
+                        if mode != 0o600 or st.st_size != x["size"] or st.st_nlink != 1 or x["nlink"] != st.st_nlink: raise SurfaceError("payload metadata")
                         data = _fd_bytes(child, "quarantine payload", max_bytes=268435456)
                         if hashlib.sha256(data).hexdigest() != x["sha256"]: raise SurfaceError("payload tamper")
                 else: raise SurfaceError("special entry")
         walk(root_fd)
         if seen != names | controls: raise SurfaceError("missing entry")
-        return MappingProxyType({"feasible": True, "root": canonical, "file_count": len(files), "byte_total": manifest["byte_total"]})
+        parent_now = os.lstat(parent_path); root_now = os.lstat(canonical)
+        if ((parent_now.st_dev, parent_now.st_ino, parent_now.st_mode, parent_now.st_uid) != (parent_pre.st_dev, parent_pre.st_ino, parent_pre.st_mode, parent_pre.st_uid)
+                or (root_now.st_dev, root_now.st_ino, root_now.st_mode, root_now.st_uid) != (root_pre.st_dev, root_pre.st_ino, root_pre.st_mode, root_pre.st_uid)):
+            raise SurfaceError("quarantine identity")
+        return MappingProxyType({"feasible": True, "root": canonical, "root_device": root_pre.st_dev, "root_inode": root_pre.st_ino, "file_count": len(files), "byte_total": manifest["byte_total"]})
     except SurfaceError: raise
     except (OSError, ValueError, TypeError, UnicodeError, json.JSONDecodeError) as exc:
         raise SurfaceError("quarantine validation failed") from exc
