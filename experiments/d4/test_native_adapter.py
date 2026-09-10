@@ -1,5 +1,6 @@
 """Local native-adapter unit contracts; no native processes or live endpoints."""
 from contextlib import closing
+import errno
 import hashlib
 import io
 import json
@@ -13,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import urllib.error
 
 HERE = Path(__file__).resolve().parent
@@ -192,6 +194,19 @@ class NativeAdapterTests(unittest.TestCase):
             adapter.prove(requirement)
         self.assertEqual(runner.calls,[])
 
+    def test_stop_group_persistent_eperm_is_bounded_cleanup_uncertainty(self):
+        process = mock.Mock(pid=1234)
+        process.communicate.return_value = (b's' * (native_adapter.MAX_COMMAND_OUTPUT + 1),
+                                            b'e' * (native_adapter.MAX_COMMAND_OUTPUT + 1))
+        permission = PermissionError(errno.EPERM, 'operation not permitted')
+        with mock.patch.object(native_adapter.os, 'killpg', side_effect=[None, permission]), \
+             mock.patch.object(native_adapter.time, 'monotonic', side_effect=[0, 2]), \
+             self.assertRaises(native_adapter.CommandCleanupUncertain) as caught:
+            native_adapter._stop_group(process)
+        self.assertLessEqual(len(caught.exception.stdout), native_adapter.MAX_COMMAND_OUTPUT)
+        self.assertLessEqual(len(caught.exception.stderr), native_adapter.MAX_COMMAND_OUTPUT)
+        self.assertFalse(hasattr(caught.exception, 'group_disappeared'))
+
     def test_default_command_timeout_stops_descendant_process_group(self):
         marker=self.root/'child-stopped';pidfile=self.root/'child-pid'
         child=("import os,signal,sys,time; marker=sys.argv[1]; ready_fd=int(sys.argv[2]); "
@@ -203,13 +218,19 @@ class NativeAdapterTests(unittest.TestCase):
                 "assert os.read(ready_read,len(b'ready')) == b'ready'; os.close(ready_read); "
                 "pending=sys.argv[3]+'.pending'; open(pending,'w').write(str(p.pid)); "
                 "os.replace(pending,sys.argv[3]); time.sleep(30)")
-        with self.assertRaises(subprocess.TimeoutExpired):
+        try:
             native_adapter._run_group([sys.executable,'-c',parent,child,str(marker),str(pidfile)],
                                       {'PATH':os.environ.get('PATH','/usr/bin:/bin')},2)
+        except subprocess.TimeoutExpired:
+            self.assertTrue(pidfile.is_file())
+            child_pid=int(pidfile.read_text())
+            with self.assertRaises(ProcessLookupError): os.kill(child_pid,0)
+        except native_adapter.CommandCleanupUncertain:
+            pass
+        else:
+            self.fail('command unexpectedly completed')
         self.assertTrue(pidfile.is_file())
         self.assertTrue(marker.is_file())
-        child_pid=int(pidfile.read_text())
-        with self.assertRaises(ProcessLookupError): os.kill(child_pid,0)
 
     def test_intermediate_symlink_in_root_refuses(self):
         actual=self.root/'actual-root';actual.mkdir(mode=0o700)
@@ -299,6 +320,26 @@ class NativeAdapterTests(unittest.TestCase):
         self.assertEqual((evidence/'sync.stdout').read_bytes(),b'partial')
         self.assertFalse((evidence/'restore.intent.json').exists())
         self.assertFalse((evidence/'proof.json').exists())
+
+    def test_cleanup_uncertainty_is_durable_proof_uncertain_and_never_replays(self):
+        error = native_adapter.CommandCleanupUncertain(b'partial', b'cleanup')
+        opener, runner = Opener(), Runner(failure=(1, error))
+        adapter = self.adapter(opener, runner)
+        with admission.AdmissionJournal(self.jroot) as journal:
+            decision = native_adapter.admit_native(journal, self.request, adapter)
+        with admission.AdmissionJournal(self.jroot) as journal:
+            self.assertEqual(self.rows(journal), [('a' * 32, 'proof_uncertain', None, None)])
+            with self.assertRaisesRegex(RuntimeError, 'operation identity already used'):
+                native_adapter.admit_native(journal, self.request, adapter)
+        self.assertEqual((decision.released, decision.reason, len(runner.calls)),
+                         (False, 'proof_uncertain', 1))
+        evidence = self.root / 'evidence' / ('a' * 32)
+        self.assertEqual((evidence / 'sync.outcome.json').read_bytes(),
+                         b'{"outcome":"cleanup","completion":"uncertain"}')
+        self.assertEqual((evidence / 'sync.stdout').read_bytes(), b'partial')
+        self.assertEqual((evidence / 'sync.stderr').read_bytes(), b'cleanup')
+        self.assertFalse((evidence / 'proof.json').exists())
+        self.assertFalse((evidence / 'restore.intent.json').exists())
 
     def test_no_secret_or_body_is_persisted_by_adapter_or_journal(self):
         adapter=self.adapter(runner=Runner(failure=(1,RuntimeError('NEVER_STORE_EXCEPTION'))))
