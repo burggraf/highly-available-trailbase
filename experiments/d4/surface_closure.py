@@ -18,19 +18,19 @@ class SurfaceError(ValueError): pass
 def _is_file(path: Path, name: str) -> bool:
     try:
         return path.is_file()
-    except (OSError, UnicodeError) as exc:
+    except (OSError, UnicodeError, RuntimeError) as exc:
         raise SurfaceError(f"{name}: cannot inspect path") from exc
 
 def _read_bytes(path: Path, name: str) -> bytes:
     try:
         return path.read_bytes()
-    except (OSError, UnicodeError) as exc:
+    except (OSError, UnicodeError, RuntimeError) as exc:
         raise SurfaceError(f"{name}: cannot read bytes") from exc
 
 def _read_text(path: Path, name: str) -> str:
     try:
         return path.read_text()
-    except (OSError, UnicodeError) as exc:
+    except (OSError, UnicodeError, RuntimeError) as exc:
         raise SurfaceError(f"{name}: cannot read text") from exc
 
 def _dict(v: Any, name: str) -> dict:
@@ -181,6 +181,10 @@ def verify_source(source_root: Path, provenance_path: Path, manifest: dict[str, 
         if type(s["regular_files"]) is not int or s["regular_files"] <= 0 or type(s["expanded_bytes"]) is not int or s["expanded_bytes"] <= 0: raise SurfaceError("invalid provenance sizes")
     if seen != {"trailbase","litestream"}: raise SurfaceError("missing provenance source")
     if source_root.name != manifest["source"]["root"]: raise SurfaceError("source root mismatch")
+    try:
+        if not source_root.is_dir(): raise SurfaceError("source root is missing or not a directory")
+    except (OSError, UnicodeError, RuntimeError) as exc:
+        raise SurfaceError("source root cannot be inspected") from exc
     expected = {e["file"]: e for e in manifest["source_files"]}
     for name,e in expected.items():
         path=source_root/name
@@ -193,7 +197,7 @@ def verify_source(source_root: Path, provenance_path: Path, manifest: dict[str, 
         if s["line"] > len(lines) or s["contains"] not in lines[s["line"]-1]: raise SurfaceError("bad route anchor")
     try:
         actual={str(x.relative_to(source_root)) for scope in SOURCE_SCOPES for x in (source_root/scope).rglob("*.rs") if _is_file(x, "source enumeration")}
-    except (OSError, UnicodeError, ValueError) as exc:
+    except (OSError, UnicodeError, RuntimeError, ValueError) as exc:
         raise SurfaceError("source enumeration failed") from exc
     if actual != set(expected): raise SurfaceError("source inventory does not exactly match configured scopes")
 

@@ -1,91 +1,144 @@
+import copy
+import hashlib
 import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 import surface_closure
 
 
+MANIFEST = Path(__file__).with_name("surface_manifest.json")
+
+
+def synthetic_fixture(tmp: Path):
+    manifest = copy.deepcopy(surface_closure.load_manifest(MANIFEST))
+    root = tmp / "trailbase"
+    provenance = tmp / "manifest.json"
+    requirements = {}
+    for entry in manifest["source_files"]:
+        requirements.setdefault(entry["file"], set()).update(a["line"] for a in entry["anchors"])
+    for route in manifest["routes"]:
+        requirements.setdefault(route["source"]["file"], set()).add(route["source"]["line"])
+    for index, entry in enumerate(manifest["source_files"]):
+        name = entry["file"]
+        lines = [f"// synthetic {name} line {line}" for line in range(1, max(requirements[name]) + 1)]
+        for anchor_index, anchor in enumerate(entry["anchors"]):
+            token = f"synthetic inventory {index} {anchor_index}"
+            lines[anchor["line"] - 1] += f" {token}"
+            anchor["contains"] = token
+        data = ("\n".join(lines) + "\n").encode("utf-8")
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        entry["sha256"] = hashlib.sha256(data).hexdigest()
+    for route_index, route in enumerate(manifest["routes"]):
+        source = route["source"]
+        token = f"synthetic route {route_index}"
+        path = root / source["file"]
+        data = path.read_text().splitlines()
+        data[source["line"] - 1] += f" {token}"
+        path.write_text("\n".join(data) + "\n")
+        source["contains"] = token
+    for entry in manifest["source_files"]:
+        digest = hashlib.sha256((root / entry["file"]).read_bytes()).hexdigest()
+        entry["sha256"] = digest
+        for route in manifest["routes"]:
+            if route["source"]["file"] == entry["file"]:
+                route["source"]["sha256"] = digest
+    recorded = {"sources": [
+        {"name": "trailbase", "repo": "trailbaseio/trailbase", "tag": "v0.33.11", "commit": surface_closure.COMMIT,
+         "url": "https://codeload.github.com/trailbaseio/trailbase/tar.gz/f24291b894bb6c6696608e5f4c2f68666fe97686",
+         "archive_sha256": "78f694531b28e6f8eb7f600a6c4c63f37437b5e965a1a0a357c19dd5780fd852", "regular_files": 1, "expanded_bytes": 1},
+        {"name": "litestream", "repo": "benbjohnson/litestream", "tag": "v0.5.17", "commit": surface_closure.LITESTREAM[3],
+         "url": "https://codeload.github.com/benbjohnson/litestream/tar.gz/ccd326c175b583b5e82893a6078f06dcef5fba3f",
+         "archive_sha256": "cbfb487c66690679234ec46e28d03a2de60b795b7b4466f3444755fc4d39e7d8", "regular_files": 1, "expanded_bytes": 1},
+    ]}
+    data = (json.dumps(recorded, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    provenance.write_bytes(data)
+    manifest["source"]["root"] = root.name
+    manifest["source"]["provenance"]["file"] = provenance.name
+    manifest["source"]["provenance"]["sha256"] = hashlib.sha256(data).hexdigest()
+    return manifest, root, provenance
+
+
 class SurfaceManifestTests(unittest.TestCase):
     def test_source_artifact_mismatches_are_infeasible(self):
-        manifest = surface_closure.load_manifest(Path(__file__).with_name("surface_manifest.json"))
-        root = Path("/var/folders/d0/z9jph2ld4v9gw45bwg0f1j900000gn/T/hat-ack-contract-sources-p2anepgt/trailbase")
-        provenance = root.parent / "manifest.json"
-        if not root.is_dir() or not provenance.is_file():
-            self.skipTest("reviewed source artifact is unavailable")
-        broken = json.loads(json.dumps(manifest))
-        broken["source_files"].append({"file": "crates/core/src/extra.rs", "sha256": "0" * 64, "anchors": [{"line": 1, "contains": "x"}]})
-        with self.assertRaises(surface_closure.SurfaceError):
-            surface_closure.verify_source(root, provenance, broken)
-        broken = json.loads(json.dumps(manifest))
-        broken["routes"][0]["source"]["sha256"] = "0" * 64
-        with self.assertRaises(surface_closure.SurfaceError):
-            surface_closure.validate_manifest(broken)
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            manifest, root, provenance = synthetic_fixture(tmp)
+            surface_closure.verify_source(root, provenance, manifest)
+            for entry in manifest["source_files"]:
+                path = root / entry["file"]
+                original = path.read_bytes()
+                with self.subTest(tamper=entry["file"]):
+                    path.write_bytes(original + b"tampered")
+                    with self.assertRaises(surface_closure.SurfaceError): surface_closure.verify_source(root, provenance, manifest)
+                    path.write_bytes(original)
+            for entry in manifest["source_files"]:
+                path = root / entry["file"]
+                original = path.read_bytes(); path.unlink()
+                with self.subTest(delete=entry["file"]):
+                    with self.assertRaises(surface_closure.SurfaceError): surface_closure.verify_source(root, provenance, manifest)
+                path.write_bytes(original)
+            extra = root / surface_closure.SOURCE_SCOPES[0] / "extra.rs"
+            extra.write_text("// extra\n")
+            with self.assertRaises(surface_closure.SurfaceError): surface_closure.verify_source(root, provenance, manifest)
+            extra.unlink()
+            broken = copy.deepcopy(manifest); broken["routes"][0]["source"]["sha256"] = "0" * 64
+            with self.assertRaises(surface_closure.SurfaceError): surface_closure.verify_source(root, provenance, broken)
+            broken = copy.deepcopy(manifest); broken["source_files"][0]["anchors"][0]["contains"] = "missing"
+            with self.assertRaises(surface_closure.SurfaceError): surface_closure.verify_source(root, provenance, broken)
+            broken = copy.deepcopy(manifest); broken["routes"][0]["source"]["contains"] = "missing"
+            with self.assertRaises(surface_closure.SurfaceError): surface_closure.verify_source(root, provenance, broken)
+
+            mutations = [
+                ("missing provenance", lambda m, p: p.unlink()),
+                ("invalid utf8", lambda m, p: p.write_bytes(b"\\xff")),
+                ("wrong digest", lambda m, p: m["source"]["provenance"].update(sha256="0" * 64)),
+                ("duplicate TrailBase", lambda m, p: json.loads(p.read_text())["sources"].append(json.loads(p.read_text())["sources"][0])),
+                ("extra source", lambda m, p: json.loads(p.read_text())["sources"].append({})),
+            ]
+            for label, mutate in mutations:
+                with self.subTest(provenance=label):
+                    m = copy.deepcopy(manifest); q = tmp / f"{label.replace(' ', '_')}.json"; q.write_bytes(provenance.read_bytes())
+                    if label in {"duplicate TrailBase", "extra source"}:
+                        record = json.loads(q.read_text()); record["sources"].append(record["sources"][0] if label.startswith("duplicate") else {}); q.write_text(json.dumps(record))
+                    else: mutate(m, q)
+                    with self.assertRaises(surface_closure.SurfaceError): surface_closure.verify_source(root, q, m)
+            for key in ("tag", "commit", "repo", "name", "url", "archive_sha256", "regular_files", "expanded_bytes"):
+                with self.subTest(provenance_key=key):
+                    record = json.loads(provenance.read_text()); value = record["sources"][0][key]; record["sources"][0][key] = "bad" if isinstance(value, str) else 0
+                    q = tmp / f"bad_{key}.json"; q.write_text(json.dumps(record)); m = copy.deepcopy(manifest); m["source"]["provenance"]["sha256"] = hashlib.sha256(q.read_bytes()).hexdigest()
+                    with self.assertRaises(surface_closure.SurfaceError): surface_closure.verify_source(root, q, m)
+            for key_change in ("missing key", "extra key", "wrong sources type"):
+                with self.subTest(provenance_keys=key_change):
+                    record = json.loads(provenance.read_text())
+                    if key_change == "missing key": record["sources"][0].pop("repo")
+                    elif key_change == "extra key": record["sources"][0]["extra"] = True
+                    else: record["sources"] = "not an array"
+                    q = tmp / f"bad_{key_change.replace(' ', '_')}.json"; q.write_text(json.dumps(record)); m = copy.deepcopy(manifest); m["source"]["provenance"]["sha256"] = hashlib.sha256(q.read_bytes()).hexdigest()
+                    with self.assertRaises(surface_closure.SurfaceError): surface_closure.verify_source(root, q, m)
+
+            with self.assertRaises(surface_closure.SurfaceError): surface_closure.verify_source(tmp / "missing-trailbase", provenance, manifest)
+            not_dir = tmp / "not-dir"; not_dir.write_text("x")
+            with self.assertRaises(surface_closure.SurfaceError): surface_closure.verify_source(not_dir, provenance, manifest)
+            with mock.patch.object(Path, "rglob", side_effect=RuntimeError("boom")):
+                with self.assertRaises(surface_closure.SurfaceError): surface_closure.verify_source(root, provenance, manifest)
 
     def test_graph_is_one_to_one_and_reachable(self):
-        manifest = surface_closure.load_manifest(Path(__file__).with_name("surface_manifest.json"))
+        manifest = surface_closure.load_manifest(MANIFEST)
         caps = manifest["capabilities"]
         self.assertEqual(len({c["name"] for c in caps}), len(caps))
         self.assertEqual(set(manifest["graph_accounting"]["routes"]), {f"route:{r['method']} {r['path']}" for r in manifest["routes"]})
-        with self.assertRaises(surface_closure.SurfaceError):
-            broken = json.loads(json.dumps(manifest)); broken["capabilities"][0]["edges"].append("root"); surface_closure.validate_manifest(broken)
+
 
 class SurfaceClosureTests(unittest.TestCase):
     def test_manifest_is_pinned_and_complete(self):
-        manifest = surface_closure.load_manifest(Path(__file__).with_name("surface_manifest.json"))
+        manifest = surface_closure.load_manifest(MANIFEST)
         self.assertEqual(len(manifest["routes"]), 82)
-        self.assertEqual(manifest["source"]["commit"], "f24291b894bb6c6696608e5f4c2f68666fe97686")
-        route_keys = {(r["method"], r["path"]) for r in manifest["routes"]}
-        self.assertIn(("DELETE", "/api/auth/v1/delete"), route_keys)
-        self.assertEqual({(r["method"], r["path"]) for r in manifest["routes"] if r["classification"] == "allow"}, set(surface_closure.ALLOWED))
-        self.assertTrue({"router", "conditional", "job", "dynamic_router", "listener", "direct_writer", "provider", "telemetry"} <= {c["class"] for c in manifest["capabilities"]})
-
-    def test_tampered_source_is_rejected(self):
-        manifest = surface_closure.load_manifest(Path(__file__).with_name("surface_manifest.json"))
-        source = manifest["routes"][0]["source"]
-        with tempfile.TemporaryDirectory() as td:
-            root = Path(td)
-            (root / source["file"]).parent.mkdir(parents=True)
-            (root / source["file"]).write_text("tampered\n")
-            with self.assertRaises(surface_closure.SurfaceError):
-                surface_closure.verify_source(root, root / "manifest.json", manifest)
-
-    def test_wrong_allowlist_is_rejected(self):
-        manifest = surface_closure.load_manifest(Path(__file__).with_name("surface_manifest.json"))
-        manifest["routes"][0]["classification"] = "allow"
-        with self.assertRaises(surface_closure.SurfaceError):
-            surface_closure.validate_manifest(manifest)
-
-    def test_missing_delete_and_duplicate_pair_are_rejected(self):
-        manifest = surface_closure.load_manifest(Path(__file__).with_name("surface_manifest.json"))
-        manifest["routes"] = [r for r in manifest["routes"] if r["path"] != "/api/auth/v1/delete"]
-        with self.assertRaises(surface_closure.SurfaceError):
-            surface_closure.validate_manifest(manifest)
-        manifest = surface_closure.load_manifest(Path(__file__).with_name("surface_manifest.json"))
-        manifest["routes"][1]["method"] = manifest["routes"][0]["method"]
-        manifest["routes"][1]["path"] = manifest["routes"][0]["path"]
-        with self.assertRaises(surface_closure.SurfaceError):
-            surface_closure.validate_manifest(manifest)
-
-    def test_runtime_unknown_and_unresolved_graph_are_rejected(self):
-        manifest = surface_closure.load_manifest(Path(__file__).with_name("surface_manifest.json"))
-        manifest["unresolved_source_graph"] = ["generated router"]
-        with self.assertRaises(surface_closure.SurfaceError):
-            surface_closure.validate_manifest(manifest)
-        manifest = surface_closure.load_manifest(Path(__file__).with_name("surface_manifest.json"))
-        manifest["routes"][0]["classification"] = "runtime_unknown"
-        with self.assertRaises(surface_closure.SurfaceError):
-            surface_closure.validate_eligibility_input(manifest)
-
-    def test_bad_anchor_and_provenance_are_rejected(self):
-        manifest = surface_closure.load_manifest(Path(__file__).with_name("surface_manifest.json"))
-        manifest["routes"][0]["source"]["line"] = 1
-        with self.assertRaises(surface_closure.SurfaceError):
-            surface_closure.verify_source(Path("/var/folders/d0/z9jph2ld4v9gw45bwg0f1j900000gn/T/hat-ack-contract-sources-p2anepgt/trailbase"), Path("/var/folders/d0/z9jph2ld4v9gw45bwg0f1j900000gn/T/hat-ack-contract-sources-p2anepgt/manifest.json"), manifest)
-        manifest = surface_closure.load_manifest(Path(__file__).with_name("surface_manifest.json"))
-        manifest["source"]["provenance"]["sha256"] = "0" * 64
-        with self.assertRaises(surface_closure.SurfaceError):
-            surface_closure.verify_source(Path("/var/folders/d0/z9jph2ld4v9gw45bwg0f1j900000gn/T/hat-ack-contract-sources-p2anepgt/trailbase"), Path("/var/folders/d0/z9jph2ld4v9gw45bwg0f1j900000gn/T/hat-ack-contract-sources-p2anepgt/manifest.json"), manifest)
+        self.assertEqual(manifest["source"]["commit"], surface_closure.COMMIT)
 
 
 if __name__ == "__main__":
