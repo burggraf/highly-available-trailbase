@@ -1,5 +1,5 @@
 import copy
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace, replace
 import hashlib
 import json
 import os
@@ -672,17 +672,301 @@ class ClosureRequestTests(unittest.TestCase):
             self.assertEqual(calls, 0)
 
 
+def valid_attestation_fixture():
+    manifest = surface_closure.load_manifest(MANIFEST)
+    h = "a" * 64
+    conditions = {
+        "config:anonymous_enabled": "disabled", "config:otp_enabled": "disabled",
+        "config:sqlite": "enabled", "config:transactions_enabled": "disabled",
+        "conditional:transactions-enabled": "disabled",
+        "conditional:records-subscribe-sqlite": "enabled",
+        "conditional:auth-anonymous-signin": "disabled",
+        "conditional:auth-otp-signin": "disabled",
+        "conditional:wasm-feature": "absent",
+        "conditional:independent-admin-listener": "enabled",
+        "conditional:public-dir": "absent", "conditional:public-dir-spa": "absent",
+        "conditional:auth-rate-limit": "disabled",
+    }
+    request_hashes = (("create_main", "a" * 64), ("create_aux", "b" * 64), ("logout_session", "c" * 64))
+    trust = surface_closure.AttestationTrust(
+        h, "b" * 64, 10, 30, 10, "c" * 64, 20, 90, 501, (20,),
+        surface_closure._manifest_sha256(manifest), "d" * 64, "e" * 64,
+        "f" * 64, "1" * 64, "trailbase-build", "2" * 64, 7, "3" * 64,
+        "4" * 64, "5" * 64, 9, "6" * 64, 100, 110, 200,
+        ("trail", "serve"), (("PATH", "/usr/bin"),), request_hashes, tuple(conditions.items()),
+        ("/private/q/main.db", "/private/q/session.db", "/private/q/config"),
+        "/private/q/logs.db", "manager-nonce", "0" * 64)
+    evidence = []
+    sequence = 0
+    def ev(kind):
+        nonlocal sequence
+        sequence += 1
+        ident = f"e{sequence}"
+        evidence.append({"id": ident, "path": f"{ident}.json", "sha256": f"{sequence % 16:x}" * 64,
+                         "size": 1, "kind": kind, "collector_source_sha256": trust.collector_source_sha256,
+                         "created_mono_ns": 150})
+        return ident
+    ancestry = [{"path": "/private", "uid": 501, "mode": 0o700, "symlink": False},
+                {"path": "/private/q", "uid": 501, "mode": 0o700, "symlink": False}]
+    listeners = [
+        {"id": "main", "pid": 20, "role": "main", "protocol": "AF_UNIX", "sock_type": "SOCK_STREAM",
+         "path": "/private/q/main.sock", "parent_ancestry": copy.deepcopy(ancestry), "uid": 501,
+         "mode": 0o600, "device": 1, "inode": 101, "nlink": 1, "source": "observed"},
+        {"id": "admin", "pid": 20, "role": "admin", "protocol": "AF_UNIX", "sock_type": "SOCK_STREAM",
+         "path": "/private/q/admin.sock", "parent_ancestry": copy.deepcopy(ancestry), "uid": 501,
+         "mode": 0o600, "device": 1, "inode": 102, "nlink": 1, "source": "observed"},
+    ]
+    tree = [
+        {"pid": 10, "parent_pid": 0, "start_mono_ns": 1, "uid": 501, "gids": [20],
+         "exe_sha256": "7" * 64, "argv": ["manager"], "role": "manager"},
+        {"pid": 20, "parent_pid": 10, "start_mono_ns": 90, "uid": 501, "gids": [20],
+         "exe_sha256": trust.binary_sha256, "argv": list(trust.expected_argv), "role": "trailbase"},
+        {"pid": 30, "parent_pid": 10, "start_mono_ns": 110, "uid": 501, "gids": [20],
+         "exe_sha256": trust.collector_source_sha256, "argv": ["collector"], "role": "collector"},
+    ]
+    descriptors = []
+    for proc in tree:
+        for fd, kind in enumerate(("stdin", "stdout", "stderr")):
+            descriptors.append({"pid": proc["pid"], "fd": fd, "cloexec": False, "owner_uid": proc["uid"],
+                                "process_role": proc["role"], "type": kind, "path": None,
+                                "inode": 0, "device": 0, "mode": 0, "nlink": 1, "source": "observed"})
+    bindings = [{"listener_id": x["id"], "inode": x["inode"], "device": x["device"], "pid": 20,
+                 "exe_sha256": trust.binary_sha256, "argv": list(trust.expected_argv),
+                 "observed_mono_ns": 140, "source": "observed", "evidence_id": ev("socket")}
+                for x in listeners]
+    connections = []
+    for index, listener in enumerate((listeners[0], listeners[0], listeners[0])):
+        connections.append({"id": f"conn{index}", "listener_id": listener["id"], "client_pid": 10,
+            "server_pid": 20, "client_uid": 501, "client_gids": [20], "server_uid": 501,
+            "server_gids": [20], "client_inode": 200 + index, "server_inode": listener["inode"],
+            "accepted_mono_ns": 130 + index, "peer_source": "LOCAL_PEERCRED",
+            "bytes_before_validation": 0, "evidence_id": ev("socket")})
+    route_regs = []
+    for route in manifest["routes"]:
+        condition = route["condition"]
+        route_regs.append({"method": route["method"], "path": route["path"], "handler": route["handler"],
+            "enabled": condition == "always" or conditions[condition] == "enabled",
+            "source_sha256": route["source"]["sha256"], "condition_id": condition,
+            "evidence_id": ev("registration")})
+    caps = {x["name"]: x for x in manifest["capabilities"]}
+    jobs = [{"id": "job:" + name, "enabled": False, "mutates": True,
+             "source_sha256": caps["job:" + name]["source"]["sha256"], "condition_id": "always",
+             "evidence_id": ev("registration")} for name in surface_closure.REQUIRED_JOBS]
+    condition_regs = [{"id": key, "expression": key, "resolution": value, "observed_by": "collector",
+                       "evidence_id": ev("registration")} for key, value in conditions.items()]
+    dynamic = [{"point_id": cap["name"], "kind": "dynamic_router",
+                "source_sha256": cap["source"]["sha256"], "query": "content-addressed absence",
+                "expected_absent": True, "observed_absent": True, "evidence_id": ev("absence")}
+               for cap in manifest["capabilities"] if cap["class"] == "dynamic_router"]
+    probes = [{"path": path, "uid": 501, "operation": "create", "result": "denied", "errno": 13,
+               "evidence_id": ev("probe")} for path in trust.protected_paths]
+    telemetry = {"logs_only": True,
+        "readers": [{"pid": 20, "operation": "read", "path": trust.logs_path, "evidence_id": ev("descriptor")}],
+        "writers": [{"pid": 20, "operation": "write", "path": trust.logs_path, "evidence_id": ev("descriptor")}]}
+    evidence.append({"id": "receipt", "path": "receipt.json", "sha256": "9" * 64, "size": 1,
+                     "kind": "receipt", "collector_source_sha256": trust.collector_source_sha256,
+                     "created_mono_ns": 150})
+    attestation = {
+        "schema": surface_closure.ATTESTATION_SCHEMA,
+        "collector": {"id": "collector", "source_sha256": trust.collector_source_sha256,
+            "pid": 30, "parent_pid": 10, "started_wall": "2026-09-09T00:00:00Z", "started_mono_ns": 111,
+            "finished_wall": "2026-09-09T00:00:01Z", "finished_mono_ns": 190},
+        "manager_receipt": {"path_sha256": trust.manager_receipt_path_sha256,
+            "receipt_sha256": trust.manager_receipt_sha256, "nonce": trust.manager_receipt_nonce,
+            "manager_pid": 10, "collector_pid": 30, "collector_parent_pid": 10,
+            "launched_mono_ns": 110, "exited_mono_ns": 195},
+        "source": {"repo": "trailbaseio/trailbase", "tag": "v0.33.11", "commit": surface_closure.COMMIT,
+            "sha256": trust.source_sha256, "root_sha256": trust.source_root_sha256},
+        "binary": {"path_sha256": trust.binary_path_sha256, "sha256": trust.binary_sha256,
+                   "build_id": trust.build_id},
+        "config": {"sha256": trust.config_sha256, "generation": 7, "files": []},
+        "migration": {"sha256": trust.migration_sha256, "files": []},
+        "plugin": {"sha256": trust.plugin_sha256, "files": [], "registrations": []},
+        "sandbox": {"profile_sha256": trust.sandbox_profile_sha256, "profile_generation": 9,
+                    "identity_uid": 501, "identity_groups": [20], "root_sha256": trust.sandbox_root_sha256},
+        "launch": {"argv": list(trust.expected_argv), "env": [{"name": "PATH", "value": "/usr/bin"}],
+                   "process_tree": tree, "env_i": True},
+        "window": {"ready_mono_ns": 100, "start_mono_ns": 120, "end_mono_ns": 180,
+            "positive_controls": [{"kind": kind, "request_sha256": digest,
+                "connection_id": f"conn{index}", "start_mono_ns": 140 + index * 5,
+                "end_mono_ns": 141 + index * 5} for index, (kind, digest) in enumerate(request_hashes)]},
+        "descriptors": descriptors, "listeners": listeners, "connections": connections,
+        "listener_bindings": bindings,
+        "registrations": {"jobs": jobs, "plugins": [], "routes": route_regs,
+                          "conditions": condition_regs, "dynamic_absence": dynamic},
+        "writable_probes": probes, "evidence": evidence,
+        "uncertainty": {"unknown": [], "missing": [], "extra": [], "stale": [], "self_reported_only": []},
+        "telemetry": telemetry, "attestation_sha256": "0" * 64,
+    }
+    attestation["attestation_sha256"] = surface_closure._canonical_digest(attestation, "attestation_sha256")
+    trust = replace(trust, attestation_sha256=attestation["attestation_sha256"])
+    return manifest, trust, attestation
+
+
+def resigned(attestation, trust):
+    attestation["attestation_sha256"] = surface_closure._canonical_digest(attestation, "attestation_sha256")
+    return replace(trust, attestation_sha256=attestation["attestation_sha256"])
+
+
 class AttestationTests(unittest.TestCase):
+    def test_valid_independent_attestation_is_immutable(self):
+        manifest, trust, attestation = valid_attestation_fixture()
+        result = surface_closure.validate_attestation(attestation, manifest, trust)
+        self.assertEqual(result["status"], "feasible")
+        with self.assertRaises(TypeError): result["status"] = "changed"
+
     def test_missing_extra_stale_or_self_reported_facts_are_infeasible(self):
-        """The validator rejects the envelope before accepting any claimed fact."""
-        with tempfile.TemporaryDirectory() as td:
-            manifest = surface_closure.load_manifest(MANIFEST)
-            # A real trust object is intentionally not synthesized from the claim.
-            trust = object.__new__(surface_closure.AttestationTrust)
+        manifest, trust, base = valid_attestation_fixture()
+        for key in base["uncertainty"]:
+            with self.subTest(key=key):
+                value = copy.deepcopy(base); value["uncertainty"][key] = ["x"]
+                with self.assertRaises(surface_closure.SurfaceError):
+                    surface_closure.validate_attestation(value, manifest, resigned(value, trust))
+        mutations = [
+            lambda x: x["collector"].__setitem__("extra", True),
+            lambda x: x["manager_receipt"].__setitem__("nonce", "fixture-copy"),
+            lambda x: x["listeners"][0].__setitem__("source", "declared"),
+            lambda x: x["registrations"]["conditions"][0].__setitem__("observed_by", "declaration"),
+            lambda x: x["evidence"][0].__setitem__("created_mono_ns", 201),
+        ]
+        for mutate in mutations:
+            value = copy.deepcopy(base); mutate(value)
             with self.assertRaises(surface_closure.SurfaceError):
-                surface_closure.validate_attestation({}, manifest, trust)
+                surface_closure.validate_attestation(value, manifest, resigned(value, trust))
+
+    def test_trust_and_timing_are_cross_bound(self):
+        manifest, trust, value = valid_attestation_fixture()
+        changes = {"manager_pid": 11, "fixture_pid": 21, "service_uid": 502,
+                   "build_id": "other", "collection_deadline_mono_ns": 179,
+                   "manager_receipt_nonce": "other", "attestation_sha256": "f" * 64}
+        for field, changed in changes.items():
+            with self.subTest(field=field):
+                with self.assertRaises(surface_closure.SurfaceError):
+                    surface_closure.validate_attestation(value, manifest, replace(trust, **{field: changed}))
+        for path in (("collector","finished_mono_ns",201), ("manager_receipt","exited_mono_ns",109),
+                     ("window","end_mono_ns",201)):
+            changed = copy.deepcopy(value); changed[path[0]][path[1]] = path[2]
             with self.assertRaises(surface_closure.SurfaceError):
-                surface_closure.validate_attestation({"schema": "d4-attestation-1", "extra": True}, manifest, trust)
+                surface_closure.validate_attestation(changed, manifest, resigned(changed, trust))
+
+    def test_process_descriptor_listener_and_connection_mismatches_refuse(self):
+        manifest, trust, base = valid_attestation_fixture()
+        mutations = [
+            lambda x: x["launch"]["process_tree"][1].__setitem__("pid", 99),
+            lambda x: x["launch"]["process_tree"][2].__setitem__("parent_pid", 20),
+            lambda x: x["launch"]["process_tree"][0].__setitem__("parent_pid", 30),
+            lambda x: x["descriptors"][0].__setitem__("source", "declared"),
+            lambda x: x["descriptors"].append({**x["descriptors"][0], "fd": 9, "cloexec": False}),
+            lambda x: x["listeners"][0].__setitem__("protocol", "AF_INET"),
+            lambda x: x["listeners"][0].__setitem__("inode", 999),
+            lambda x: x["listeners"][0]["parent_ancestry"][0].__setitem__("symlink", True),
+            lambda x: x["listener_bindings"][0].__setitem__("inode", 999),
+            lambda x: x["connections"][0].__setitem__("server_uid", 999),
+            lambda x: x["connections"][0].__setitem__("bytes_before_validation", 1),
+            lambda x: x["connections"][0].__setitem__("peer_source", "declared"),
+        ]
+        for index, mutate in enumerate(mutations):
+            with self.subTest(index=index):
+                value = copy.deepcopy(base); mutate(value)
+                with self.assertRaises(surface_closure.SurfaceError):
+                    surface_closure.validate_attestation(value, manifest, resigned(value, trust))
+
+    def test_registration_evidence_probe_and_telemetry_mismatches_refuse(self):
+        manifest, trust, base = valid_attestation_fixture()
+        mutations = [
+            lambda x: x["registrations"]["jobs"][0].__setitem__("enabled", True),
+            lambda x: x["registrations"]["jobs"].pop(),
+            lambda x: x["registrations"]["plugins"].append({}),
+            lambda x: x["registrations"]["routes"][0].__setitem__("handler", "other"),
+            lambda x: x["registrations"]["routes"].pop(),
+            lambda x: x["registrations"]["conditions"][0].__setitem__("resolution", "runtime_unknown"),
+            lambda x: x["registrations"]["dynamic_absence"].pop(),
+            lambda x: x["registrations"]["dynamic_absence"][0].__setitem__("observed_absent", False),
+            lambda x: x["evidence"][0].__setitem__("collector_source_sha256", "f" * 64),
+            lambda x: x["evidence"].pop(0),
+            lambda x: x["writable_probes"][0].__setitem__("result", "allowed"),
+            lambda x: x["writable_probes"][0].__setitem__("path", "/outside"),
+            lambda x: x["telemetry"]["writers"][0].__setitem__("path", "/private/q/main.db"),
+            lambda x: x["telemetry"].__setitem__("logs_only", False),
+        ]
+        for index, mutate in enumerate(mutations):
+            with self.subTest(index=index):
+                value = copy.deepcopy(base); mutate(value)
+                with self.assertRaises(surface_closure.SurfaceError):
+                    surface_closure.validate_attestation(value, manifest, resigned(value, trust))
+
+    def test_every_attestation_object_has_exact_schema(self):
+        manifest, trust, base = valid_attestation_fixture()
+        for key in tuple(base):
+            with self.subTest(top_missing=key):
+                value = copy.deepcopy(base); value.pop(key)
+                with self.assertRaises(surface_closure.SurfaceError):
+                    surface_closure.validate_attestation(value, manifest, trust)
+        value = copy.deepcopy(base); value["extra"] = True
+        with self.assertRaises(surface_closure.SurfaceError):
+            surface_closure.validate_attestation(value, manifest, resigned(value, trust))
+        nested = ("collector","manager_receipt","source","binary","config","migration","plugin",
+                  "sandbox","launch","window","uncertainty","telemetry","registrations")
+        for name in nested:
+            first = next(iter(base[name]))
+            for action in ("missing", "extra"):
+                with self.subTest(object=name, action=action):
+                    value = copy.deepcopy(base)
+                    if action == "missing": value[name].pop(first)
+                    else: value[name]["extra"] = True
+                    with self.assertRaises(surface_closure.SurfaceError):
+                        surface_closure.validate_attestation(value, manifest, resigned(value, trust))
+
+    def test_malformed_nested_types_are_surface_errors(self):
+        manifest, trust, base = valid_attestation_fixture()
+        mutations = [
+            lambda x: x.__setitem__("collector", []),
+            lambda x: x["collector"].__setitem__("pid", True),
+            lambda x: x["launch"].__setitem__("argv", "trail"),
+            lambda x: x["launch"]["process_tree"].__setitem__(0, {}),
+            lambda x: x.__setitem__("descriptors", {}),
+            lambda x: x["descriptors"].__setitem__(0, []),
+            lambda x: x["listeners"].__setitem__(0, {}),
+            lambda x: x["connections"].__setitem__(0, {}),
+            lambda x: x["listener_bindings"].__setitem__(0, {}),
+            lambda x: x["registrations"].__setitem__("routes", {}),
+            lambda x: x["writable_probes"].__setitem__(0, {}),
+            lambda x: x["evidence"].__setitem__(0, {}),
+            lambda x: x["telemetry"].__setitem__("readers", {}),
+        ]
+        for index, mutate in enumerate(mutations):
+            with self.subTest(index=index):
+                value = copy.deepcopy(base); mutate(value)
+                with self.assertRaises(surface_closure.SurfaceError):
+                    surface_closure.validate_attestation(value, manifest, resigned(value, trust))
+
+    def test_external_digest_and_positive_request_hashes_are_mandatory(self):
+        manifest, trust, base = valid_attestation_fixture()
+        value = copy.deepcopy(base); value["collector"]["id"] = "rewritten"
+        value["attestation_sha256"] = surface_closure._canonical_digest(value, "attestation_sha256")
+        with self.assertRaises(surface_closure.SurfaceError):
+            surface_closure.validate_attestation(value, manifest, trust)
+        with self.assertRaises(surface_closure.SurfaceError):
+            surface_closure.validate_attestation(base, manifest, replace(trust, attestation_sha256=""))
+        with self.assertRaises(surface_closure.SurfaceError):
+            surface_closure.validate_attestation(base, manifest, replace(trust, positive_request_sha256=(("create_main", "a" * 64),)))
+
+    def test_failures_never_reach_positive_callback(self):
+        manifest, trust, base = valid_attestation_fixture()
+        calls = 0
+        def attempt(value, expected):
+            nonlocal calls
+            try: surface_closure.validate_attestation(value, manifest, expected)
+            except surface_closure.SurfaceError: return
+            calls += 1
+        failures = []
+        for key in base["uncertainty"]:
+            value = copy.deepcopy(base); value["uncertainty"][key] = ["x"]
+            failures.append((value, resigned(value, trust)))
+        value = copy.deepcopy(base); value["writable_probes"][0]["result"] = "allowed"
+        failures.append((value, resigned(value, trust)))
+        for value, expected in failures: attempt(value, expected)
+        self.assertEqual(calls, 0)
 
 if __name__ == "__main__":
     unittest.main()
