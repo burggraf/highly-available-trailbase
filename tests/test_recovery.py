@@ -81,7 +81,7 @@ class RecoveryTests(unittest.TestCase):
 
     def test_replica_config_and_authority_mapping_are_strict(self):
         m=self.module(); operation={'id':'a'*32,'source':'A','target':'B','source_epoch':'d1-source','new_epoch':'d1-'+'a'*32}
-        good='path: demos/d1-source/main\n  path: demos/d1-source/session # comment\n\tpath: demos/d1-source/aux\n'
+        good='path: demos/d1-source/main\n  path: demos/d1-source/session # comment\n\tpath: demos/d1-source/aux\n  comment: value\n'
         self.assertEqual(m._replica_config(good.encode(), 'd1-source'), good.encode())
         for raw in (b'',good.encode().replace(b'\n',b'\r\n'),b'\xef\xbb\xbf'+good.encode(),good.encode()+b'\x00',good.encode().replace(b'demos/d1-source/aux',b'demos/d1-source/other')):
             with self.assertRaises(ValueError):m._replica_config(raw,'d1-source')
