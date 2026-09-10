@@ -1,4 +1,5 @@
 import copy
+from dataclasses import FrozenInstanceError
 import hashlib
 import json
 import os
@@ -173,9 +174,9 @@ class SurfaceManifestTests(unittest.TestCase):
                         os.replace(replacement, target)
                 return fd
 
-            def checked_fd_bytes(fd, name, identity=None):
+            def checked_fd_bytes(fd, name, identity=None, max_bytes=None):
                 if name != "provenance": self.assertEqual(rs_opens, expected_count)
-                return real_fd_bytes(fd, name, identity)
+                return real_fd_bytes(fd, name, identity, max_bytes)
 
             pin = mock.patch.object(surface_closure, "PINNED_MANIFEST_SHA256", surface_closure._manifest_sha256(manifest))
             with pin, mock.patch.object(surface_closure.os, "open", side_effect=tracked_open), mock.patch.object(surface_closure, "_fd_bytes", side_effect=checked_fd_bytes):
@@ -200,11 +201,11 @@ class SurfaceManifestTests(unittest.TestCase):
                 if fd in source_fds: identities[fd] = (st.st_dev, st.st_ino, st.st_size)
                 return st
 
-            def checked_fd_bytes(fd, name, identity=None):
+            def checked_fd_bytes(fd, name, identity=None, max_bytes=None):
                 if name != "provenance":
                     self.assertEqual(len(identities), expected_count)
                     self.assertEqual(identity, identities[fd])
-                return real_fd_bytes(fd, name, identity)
+                return real_fd_bytes(fd, name, identity, max_bytes)
 
             pin = mock.patch.object(surface_closure, "PINNED_MANIFEST_SHA256", surface_closure._manifest_sha256(manifest))
             with pin, mock.patch.object(surface_closure.os, "open", side_effect=tracked_open), mock.patch.object(surface_closure.os, "fstat", side_effect=tracked_fstat), mock.patch.object(surface_closure, "_fd_bytes", side_effect=checked_fd_bytes):
@@ -293,7 +294,7 @@ class SurfaceManifestTests(unittest.TestCase):
         self.assertEqual(manifest["graph_accounting"]["providers"], surface_closure.EXPECTED_ACCOUNTING["providers"])
 
 
-class ClosureRequestTests(unittest.TestCase):
+class ClosureRequestCompatibilityTests(unittest.TestCase):
     def setUp(self):
         self.manifest = surface_closure.load_manifest(MANIFEST)
 
@@ -502,6 +503,174 @@ class SurfaceClosureTests(unittest.TestCase):
             manifest, root, provenance = synthetic_fixture(Path(td))
             with mock.patch.object(Path, "lstat", side_effect=OSError("boom")):
                 with self.assertRaises(surface_closure.SurfaceError): surface_closure.verify_source(root, provenance, manifest)
+
+
+class ArtifactReadLimitTests(unittest.TestCase):
+    def test_descriptor_growth_stops_at_hard_limit(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = Path(td) / "growing"
+            path.write_bytes(b"x")
+            fd = os.open(path, os.O_RDONLY)
+            try:
+                with mock.patch.object(surface_closure.os, "read", side_effect=(b"xxx", b"xxx", AssertionError("unbounded read"))) as read:
+                    with self.assertRaises(surface_closure.SurfaceError):
+                        surface_closure._fd_bytes(fd, "growing", max_bytes=4)
+                self.assertEqual(read.call_count, 2)
+            finally:
+                os.close(fd)
+
+
+class ClosureRequestTests(unittest.TestCase):
+    MAIN_BODY = b'{"op_key":"native-main_ops","payload":"must-survive"}'
+    AUX_BODY = b'{"op_key":"native-aux_ops","payload":"must-survive"}'
+    LOGOUT_BODY = b'{"refresh_token":"' + b"A" * 86 + b'"}'
+    HEADERS = ((b"content-type", b"application/json"),)
+
+    @classmethod
+    def setUpClass(cls):
+        cls.manifest = surface_closure.load_manifest(MANIFEST)
+
+    def request(self, *, method=b"POST", target=b"/api/records/v1/main_ops",
+                headers=None, body=None):
+        return surface_closure.ClosureRequest(
+            method, target, self.HEADERS if headers is None else headers,
+            self.MAIN_BODY if body is None else body)
+
+    def assert_refused(self, request):
+        try:
+            binding = surface_closure.bind_request(request, self.manifest)
+        except surface_closure.SurfaceError:
+            return
+        self.assertIsNone(binding)
+
+    def test_exact_three_native_requests_bind(self):
+        cases = (
+            (self.request(), "create_record", "main"),
+            (self.request(target=b"/api/records/v1/aux_ops", body=self.AUX_BODY), "create_record", "aux"),
+            (self.request(target=b"/api/auth/v1/logout", body=self.LOGOUT_BODY), "logout_session", "session"),
+        )
+        for request, kind, database in cases:
+            with self.subTest(target=request.target):
+                binding = surface_closure.bind_request(request, self.manifest)
+                self.assertEqual((binding.operation_kind, binding.database, binding.validated_request),
+                                 (kind, database, request))
+
+    def test_equivalent_json_and_header_name_case_bind(self):
+        bodies = (
+            b' { "payload" : "must-survive", "op_key" : "native-main_ops" } ',
+            b'\n{"op_key":"n\\u0061tive-main_ops","payload":"must-survive"}\t',
+        )
+        for name in (b"content-type", b"Content-Type", b"CONTENT-TYPE"):
+            for body in bodies:
+                with self.subTest(name=name, body=body):
+                    self.assertIsNotNone(surface_closure.bind_request(
+                        self.request(headers=((name, b"application/json"),), body=body), self.manifest))
+
+    def test_method_differentials_refuse(self):
+        methods = (b"post", b"Post", b"GET", b"PUT", b"PATCH", b"DELETE", b"OPTIONS",
+                   b"HEAD", b"POST ", b" POST", b"PO\x00ST", b"PO\nST", b"P\xffST", "POST", bytearray(b"POST"))
+        for method in methods:
+            with self.subTest(method=method):
+                self.assert_refused(self.request(method=method))
+
+    def test_target_differentials_refuse(self):
+        targets = (b"/api/records/v1/main_ops?x=1", b"/api/records/v1/main_ops#x",
+                   b"/api/records/v1/%6dain_ops", b"/api\\records/v1/main_ops",
+                   b"/api/./records/v1/main_ops", b"/api/../records/v1/main_ops",
+                   b"/api//records/v1/main_ops", b"/API/records/v1/main_ops",
+                   b"/api/records/v1/Main_ops", b"/api/records/v1/main_ops/",
+                   b"/api/records/v1/main_ops\x00", b"/api/records/v1/main_ops\n",
+                   b"/api/records/v1/ma\xffin_ops", b"api/records/v1/main_ops",
+                   b"/api/records/v1/other", "/api/records/v1/main_ops", bytearray(b"/api/records/v1/main_ops"))
+        for target in targets:
+            with self.subTest(target=target):
+                self.assert_refused(self.request(target=target))
+
+    def test_header_differentials_refuse(self):
+        headers = (
+            (), ((b"content-type", b"application/json"), (b"content-type", b"application/json")),
+            ((b" content-type", b"application/json"),), ((b"content-type ", b"application/json"),),
+            ((b"\tcontent-type", b"application/json"),), ((b"content-type", b" application/json"),),
+            ((b"content-type", b"application/json "),), ((b"content-type", b"Application/Json"),),
+            ((b"content-type", b"application/json; charset=utf-8"),),
+            ((b"content-type", b"multipart/form-data"),), ((b"content-type", b"application/x-www-form-urlencoded"),),
+            ((b"content-type", b"application/json\n"),), ((b"cont\x00ent-type", b"application/json"),),
+            ((b"cont\xffent-type", b"application/json"),), ((b"authorization", b"x"),),
+            ((b"content-type", b"application/json"), (b"host", b"localhost")),
+            ([b"content-type", b"application/json"],), (("content-type", b"application/json"),),
+            ((b"content-type", "application/json"),), [(b"content-type", b"application/json")],
+        )
+        for value in headers:
+            with self.subTest(headers=value):
+                self.assert_refused(self.request(headers=value))
+
+    def test_record_body_differentials_refuse(self):
+        bodies = (
+            b"", b"{}", b"[]", b"null", b"true", b"1", b'"x"', b"{", b"\xff",
+            b'{"op_key":"a","op_key":"b","payload":"x"}',
+            b'{"op_key":"a","payload":NaN}', b'{"op_key":"a","payload":Infinity}',
+            b'{"op_key":"a","payload":"x"}garbage',
+            b'{"op_key":"a"}', b'{"payload":"x"}', b'{"op_key":"a","payload":"x","extra":1}',
+            b'{"op_key":1,"payload":"x"}', b'{"op_key":"a","payload":1}',
+            b'{"op_key":"","payload":"x"}', b'{"op_key":"a","payload":""}',
+            json.dumps({"op_key": "a" * 1025, "payload": "x"}).encode(),
+            json.dumps({"op_key": "a", "payload": "x" * 1025}).encode(),
+            b"x=" + self.MAIN_BODY, b"--boundary\r\n" + self.MAIN_BODY,
+            bytearray(self.MAIN_BODY), b"x" * (surface_closure.MAX_ARTIFACT_BYTES + 1),
+        )
+        for body in bodies:
+            with self.subTest(body=repr(body)[:80]):
+                self.assert_refused(self.request(body=body))
+
+    def test_logout_body_differentials_refuse(self):
+        invalid = (b"{}", b"[]", b'{"refresh_token":1}', b'{"refresh_token":"A"}',
+                   b'{"refresh_token":"' + b"A" * 85 + b'"}',
+                   b'{"refresh_token":"' + b"A" * 87 + b'"}',
+                   b'{"refresh_token":"' + b"!" * 86 + b'"}',
+                   b'{"refresh_token":"' + b"A" * 86 + b'","extra":1}',
+                   b'{"refresh_token":"' + b"A" * 86 + b'","refresh_token":"' + b"A" * 86 + b'"}')
+        for body in invalid:
+            with self.subTest(body=repr(body)[:80]):
+                self.assert_refused(self.request(target=b"/api/auth/v1/logout", body=body))
+
+    def test_binding_and_nested_request_are_immutable(self):
+        request = self.request()
+        binding = surface_closure.bind_request(request, self.manifest)
+        for obj, field, value in ((request, "body", b"changed"), (binding, "database", "aux"),
+                                  (binding.validated_request, "headers", ())):
+            with self.subTest(field=field):
+                with self.assertRaises(FrozenInstanceError):
+                    setattr(obj, field, value)
+        with self.assertRaises(TypeError):
+            binding.validated_request.headers[0][0] = b"changed"
+        self.assertEqual(set(binding.__dataclass_fields__), {"operation_kind", "database", "validated_request"})
+
+    def test_raw_byte_differentials_refuse_before_callback(self):
+        calls = 0
+        def attempt(request):
+            nonlocal calls
+            try:
+                binding = surface_closure.bind_request(request, self.manifest)
+            except surface_closure.SurfaceError:
+                return
+            if binding is not None:
+                calls += 1
+        for route in self.manifest["routes"]:
+            with self.subTest(route=(route["method"], route["path"])):
+                attempt(self.request(method=route["method"].encode("ascii"),
+                                     target=route["path"].encode("ascii"), body=b"{}"))
+                self.assertEqual(calls, 0)
+        near_misses = (
+            self.request(target=b"/api/records/v1/main_ops/1"),
+            self.request(target=b"/api/records/v1/main_op"),
+            self.request(target=b"/api/records/v1/aux_ops/1", body=self.AUX_BODY),
+            self.request(target=b"/api/auth/v1/logout/", body=self.LOGOUT_BODY),
+            self.request(target=b"/api/auth/v1/logout", body=b"{}"),
+        )
+        for request in near_misses:
+            attempt(request)
+            self.assertEqual(calls, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -18,6 +18,7 @@ TOP_LEVEL = {"schema_version", "source", "source_scopes", "source_files", "capab
 SAFE_PATH = re.compile(r"^(?!/)(?!$)(?!.*\\)(?!.*(?:^|/)\.{1,2}(?:/|$))[^\x00]+$")
 SOURCE_SCOPES = ["crates/core/src", "crates/wasm-runtime-axum/src", "crates/wasm-runtime-common/src", "crates/wasm-runtime-guest/src", "crates/wasm-runtime-host/src"]
 PINNED_MANIFEST_SHA256 = "4b83d9e581dda2760c112eb9b56594ea66db6d0678d093c5c5dfb5f179a6e322"
+MAX_ARTIFACT_BYTES = 1024 * 1024
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 REQUIRED_JOBS = ("Backup", "Heartbeat", "LogCleaner", "AuthCleaner", "QueryOptimizer", "FileDeletions")
 REQUIRED_NON_ROUTE = {
@@ -206,8 +207,8 @@ def load_manifest(path: Path | None = None) -> dict[str, Any]:
     if path is not None and not isinstance(path, Path): raise SurfaceError("manifest path must be a Path")
     try:
         with open(path or Path(__file__).with_name("surface_manifest.json"), "rb") as stream:
-            data = stream.read(1024 * 1024 + 1)
-        if len(data) > 1024 * 1024:
+            data = stream.read(MAX_ARTIFACT_BYTES + 1)
+        if len(data) > MAX_ARTIFACT_BYTES:
             raise SurfaceError("manifest exceeds 1MiB")
         manifest = json.loads(data)
     except (OSError, UnicodeError, RuntimeError, json.JSONDecodeError) as exc:
@@ -480,7 +481,11 @@ def _fd_bytes(fd: int, name: str, identity: tuple[int, int, int] | None = None, 
         if max_bytes is not None and st.st_size > max_bytes:
             raise SurfaceError(f"{name}: exceeds size limit")
         chunks = []
-        while chunk := os.read(fd, 1024 * 1024):
+        total = 0
+        while chunk := os.read(fd, min(1024 * 1024, (max_bytes - total + 1) if max_bytes is not None else 1024 * 1024)):
+            total += len(chunk)
+            if max_bytes is not None and total > max_bytes:
+                raise SurfaceError(f"{name}: exceeds size limit")
             chunks.append(chunk)
         data = b"".join(chunks)
         if identity is not None and len(data) != identity[2]:
@@ -555,11 +560,11 @@ def verify_source(source_root: Path, provenance_path: Path, manifest: dict[str, 
         p = manifest["source"]["provenance"]
         if provenance_path.name != p["file"]: raise SurfaceError("provenance path mismatch")
         try:
-            if os.fstat(provenance_fd).st_size > 1024 * 1024:
+            if os.fstat(provenance_fd).st_size > MAX_ARTIFACT_BYTES:
                 raise SurfaceError("provenance exceeds size limit")
         except OSError as exc:
             raise SurfaceError("provenance: cannot stat") from exc
-        provenance_data = _fd_bytes(provenance_fd, "provenance")
+        provenance_data = _fd_bytes(provenance_fd, "provenance", max_bytes=MAX_ARTIFACT_BYTES)
         if hashlib.sha256(provenance_data).hexdigest() != p["sha256"]: raise SurfaceError("provenance manifest missing or tampered")
         try: recorded = json.loads(provenance_data.decode("utf-8"))
         except (json.JSONDecodeError, TypeError, UnicodeError) as exc: raise SurfaceError("invalid provenance manifest") from exc
@@ -588,7 +593,7 @@ def verify_source(source_root: Path, provenance_path: Path, manifest: dict[str, 
         cache = {}
         for name in sorted(snapshot):
             fd, identity = snapshot[name]
-            data = _fd_bytes(fd, name, identity)
+            data = _fd_bytes(fd, name, identity, MAX_ARTIFACT_BYTES)
             digest = hashlib.sha256(data).hexdigest()
             if digest != expected[name]["sha256"]: raise SurfaceError(f"missing or tampered source: {name}")
             try: lines = data.decode("utf-8").splitlines()
