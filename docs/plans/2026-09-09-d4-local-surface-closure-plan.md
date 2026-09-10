@@ -293,6 +293,14 @@ Every changed path must be allowlisted; the negative path check remains defense 
 
 Report the feasible/infeasible result and required raw-retention disposition. Local fast-forward integration, merged retest and worktree/branch cleanup are optional post-qualification actions requiring explicit owner approval. Never push or deploy as part of this plan.
 
+### Recorded result: infeasible before native execution
+
+Task 1–4 pure validation and static review completed at repository commit `592e61fd5ebbdb6fecb8cbbfd003c1218e87fb79`. Canonical verification retained the pinned TrailBase `v0.33.11` source commit and exact 82-route census. Final local checks passed: 66 surface-closure tests, 10 logout-adapter tests, 18 native-adapter tests, 14 admission tests, 108 D4 discovery tests, and 107 runtime tests; known SQLite `ResourceWarning`s and expected parser stderr remained non-failing categories. Task 3 final review workflow `c74d50c9-ca02-4731-ad7c-2bec8ab67eb7` and Task 4 correction review workflow `6ee53b6e-ffef-4739-8721-e8bfbfbcd070` returned OK.
+
+Task 5 stopped at static preflight without starting TrailBase, Litestream, a collector, sandbox probe, socket, or request. The private root `/Users/markb/.config/hat/d4-qualification/surface-closure-6Ks3W2ng` records `infeasible_static`, zero request bytes and 13 exact refusal blockers: process-role observability; listener/accepted-socket observability; authenticated header closure; runtime registration completeness; `logs.db` SQL call-path observability; peer/collector-receipt ordering; process cleanup/reaping; descriptor-relative artifact paths; descriptor-relative adapter publication; sibling provenance; collector live-observation schema; source-archive verification; and prior-oracle packet qualification. Static checker self-tests passed and the gate exits `2` by design. Independent refusal review workflow `831c9c49-dea5-43a1-8437-e9ed7bc8e64f` found no false-green or spawn bypass.
+
+This is an **infeasible qualification result**, not a failed native attempt and not evidence that the underlying capabilities are impossible. The private metadata-only root remains owner-only with disposition `pending`; it contains no copied binaries/source, credentials, payloads, databases, WALs, raw logs, request bodies, or native evidence. No deletion, encryption, integration, cleanup, push, deployment, production gate, listener, routing, power, recovery, rejoin, or HA capability is authorized or claimed.
+
 ## Stop boundary
 
 No production listener/proxy, live data/VPS, remote storage, paid resource, deployment, routing, power, activation, recovery, rejoin, automatic replay, policy relaxation, TrailBase fork, login adapter, or new mutation proof. Any unknown/unobserved capability, mutating probe, sandbox escape, inherited descriptor, direct writer, secondary effect, or denied upstream call ends the experiment as refusal/infeasible.

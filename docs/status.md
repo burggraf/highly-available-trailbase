@@ -48,6 +48,14 @@ Reviewed fresh run `al-WMqSG4vWaCsm` passed: target session membership was **0â†
 
 Ten logout-adapter, 18 native-adapter, 14 protocol and 107 runtime tests pass. This evidence covers only nominal single-token POST logout. It does not cover login, refresh mutation, GET/cookie/all-session logout, existing JWT invalidation, account/admin mutation, response-loss settlement, complete ACK/auth coverage, remote durability, distributed authority, HA or deployment.
 
+### D4 surface-closure qualification: static infeasible result
+
+The local-only [surface-closure plan](plans/2026-09-09-d4-local-surface-closure-plan.md) now has reviewed pure validators for the pinned TrailBase `v0.33.11` 82-route source census, three exact request contracts, externally trusted runtime attestation structure, and descriptor-bound quarantine snapshots. The final suites passed 66 surface, 10 logout-adapter, 18 native-adapter, 14 admission, 108 D4 discovery and 107 runtime tests, plus canonical source verification. These validators remain disconnected from `hat/`, deployment, and live services.
+
+Native qualification did **not** run. A fresh private static harness stopped fail-closed with 13 unresolved observability/ordering/path-publication/provenance blockers, zero processes and zero request bytes. Its checker exits `2` and independent workflow `831c9c49-dea5-43a1-8437-e9ed7bc8e64f` found no false-green or spawn bypass. The metadata-only root remains owner-only and `pending`; no secret, database, WAL, payload, raw request or raw log was collected. The result is **infeasible under the current contract and host observations**, not proof that the capabilities are impossible and not permission to weaken the contract.
+
+No surface gate, listener, automatic action, deployment, routing, recovery, rejoin or HA capability is installed or qualified. Integration and worktree cleanup require explicit owner approval; push and deployment are not part of this result.
+
 ### Source-audit warning: manual recovery is not a zero-ACK-loss policy gate
 
 Read-only review `20e2f324-718e-4a92-a9a8-71722100c5e8` identified a specific existing manual-path gap, independently confirmed by tracing the source at historical revision `0ef6db3`: `hat/recovery.py::_fault_outcomes()` validates classification shape and exhaustive membership but permits a nonempty `lost` list. `recover()`'s comparison phase accepts that report and proceeds toward activation without requiring `lost` to be empty. `tests/restore_baseline.py` separately marks the supplied protected ledger's auth/records as passing before attaching fault classification; that PASS is not proof every fault acknowledgement survived.
