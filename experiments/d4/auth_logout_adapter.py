@@ -8,7 +8,6 @@ import admission
 import native_adapter
 
 _TOKEN=re.compile(r'[A-Za-z0-9]{86}')
-# Deserialization may transiently hold descriptor bytes plus SQLite's copy.
 _MAX_SESSION_IMAGE=64*1024*1024
 
 class AuthLogoutAdapter(native_adapter.NativeAdapter):
@@ -85,25 +84,24 @@ class AuthLogoutAdapter(native_adapter.NativeAdapter):
                     or value.st_uid!=os.geteuid() or value.st_mode&0o077 or value.st_nlink!=1
                     or value.st_size>_MAX_SESSION_IMAGE):
                 raise RuntimeError('logout image identity changed')
-            chunks=[];remaining=value.st_size
-            while remaining:
-                chunk=os.read(descriptor,min(1024*1024,remaining))
-                if not chunk:raise RuntimeError('logout image truncated')
-                chunks.append(chunk);remaining-=len(chunk)
-            if (os.fstat(descriptor).st_dev,os.fstat(descriptor).st_ino,os.fstat(descriptor).st_size)!=identity:
-                raise RuntimeError('logout image identity changed')
-        finally:os.close(descriptor)
-        raw=b''.join(chunks);digest=hashlib.sha256(raw).hexdigest()
-        try:
-            with closing(sqlite3.connect(':memory:')) as db:
-                db.deserialize(raw);db.execute('PRAGMA ignore_check_constraints=ON')
+            digest=hashlib.sha256()
+            while True:
+                chunk=os.read(descriptor,1024*1024)
+                if not chunk:break
+                digest.update(chunk)
+            with closing(sqlite3.connect(f'file:/dev/fd/{descriptor}?mode=ro&immutable=1',uri=True)) as db:
+                db.execute('PRAGMA ignore_check_constraints=ON')
                 if db.execute('PRAGMA integrity_check').fetchone()!=('ok',) or db.execute('PRAGMA foreign_key_check').fetchall():
                     raise ValueError
                 count=db.execute('SELECT count(*) FROM _session WHERE refresh_token=? AND expires>unixepoch()',(token,)).fetchone()
+            after=os.fstat(descriptor)
+            if (after.st_dev,after.st_ino,after.st_size)!=identity:
+                raise RuntimeError('logout image identity changed')
             if count is None or type(count[0]) is not int:raise ValueError
-            return count[0],digest
+            return count[0],digest.hexdigest()
         except (sqlite3.Error,ValueError):
             raise RuntimeError('logout session image differs') from None
+        finally:os.close(descriptor)
 
     def forward(self,request):
         token=self.validate_policy(request);operation=request['operation_id']

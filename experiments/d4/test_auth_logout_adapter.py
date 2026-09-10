@@ -29,8 +29,8 @@ class Result:
     def __init__(self,stdout=b'',returncode=0,stderr=b''):self.stdout=stdout;self.returncode=returncode;self.stderr=stderr
 
 class Runner:
-    def __init__(self,events,pre=True,post=False,txids=(1,2),failure=None):
-        self.events=events;self.pre=pre;self.post=post;self.txids=txids;self.failure=failure;self.calls=[];self.syncs=0
+    def __init__(self,events,pre=True,post=False,txids=(1,2),failure=None,wal=False):
+        self.events=events;self.pre=pre;self.post=post;self.txids=txids;self.failure=failure;self.wal=wal;self.calls=[];self.syncs=0
     def __call__(self,argv,**kwargs):
         self.calls.append((list(argv),kwargs));kind=argv[1];self.events.append(kind)
         if self.failure and len(self.calls)==self.failure[0]:raise self.failure[1]
@@ -40,11 +40,14 @@ class Runner:
         if kind=='restore':
             output=Path(argv[argv.index('-o')+1]);present=self.pre if 'predecessor' in output.name else self.post
             with closing(sqlite3.connect(output)) as db:
+                if self.wal:self.assert_wal(db)
                 db.execute('CREATE TABLE _session(id INTEGER PRIMARY KEY,user BLOB NOT NULL,refresh_token TEXT NOT NULL,created INTEGER NOT NULL,expires INTEGER NOT NULL) STRICT')
                 if present:db.execute('INSERT INTO _session VALUES(1,?,?,?,?)',(b'1'*16,TOKEN,1,4102444800))
                 db.commit()
             output.chmod(0o600);return Result(b'restored')
         raise AssertionError(argv)
+    def assert_wal(self,db):
+        if db.execute('PRAGMA journal_mode=WAL').fetchone()!=('wal',):raise AssertionError('WAL unavailable')
 
 class AuthLogoutAdapterTests(unittest.TestCase):
     def setUp(self):
@@ -119,6 +122,12 @@ class AuthLogoutAdapterTests(unittest.TestCase):
         events=[];opener=Opener(events,error=OSError('SECRET_EXCEPTION'));runner=Runner(events)
         with admission.AdmissionJournal(self.jroot) as journal:decision=auth_logout_adapter.admit_logout(journal,self.request,self.adapter(opener,runner))
         self.assertEqual((decision.released,decision.reason,events),(False,'forward_uncertain',['sync','restore','http']))
+    def test_wal_mode_restored_image_is_consumed_through_stable_descriptor(self):
+        events=[];runner=Runner(events,wal=True);opener=Opener(events)
+        with admission.AdmissionJournal(self.jroot) as journal:
+            decision=auth_logout_adapter.admit_logout(journal,self.request,self.adapter(opener,runner))
+        self.assertEqual((decision.released,decision.reason),(True,'proven'))
+
     def test_restored_image_replacement_cannot_change_consumed_membership(self):
         events=[];adapter=self.adapter(Opener(events),Runner(events))
         directory=adapter._directory('f'*32)
