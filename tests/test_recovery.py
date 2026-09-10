@@ -39,13 +39,17 @@ class RecoveryTests(unittest.TestCase):
         with self.assertRaises(ValueError) as caught:m.fault_operations([start,{'event':'stop','submitted':0,'acknowledged':0,'rejected':0,'uncertain':0,'time_ns':2,'utc':'2026-01-01T00:00:01Z'}])
         self.assertNotIn(marker,str(caught.exception)); self.assertIsNone(caught.exception.__cause__)
 
-    def test_canonical_parser_bounds_and_recursion_refuse_generically(self):
+    def test_canonical_parser_measures_structure_not_raw_delimiters(self):
         m=self.module()
+        for value in ({'text':'many } [ ] \\" \\\\ delimiters'}, {'items':['[']*1000}, {'close':'}'}):
+            raw=m.canonical_json(value)
+            self.assertEqual(m.parse_canonical_json(raw),value)
+        deep=[]; current=deep
+        for _ in range(513): current.append([]); current=current[0]
+        with self.assertRaises(ValueError) as caught:m.parse_canonical_json(m.canonical_json(deep))
+        self.assertNotIn('SECRET',str(caught.exception)); self.assertIsNone(caught.exception.__cause__)
         for raw in (b'', b'{}'*(1<<20)):
             with self.assertRaises(ValueError):m.parse_canonical_json(raw)
-        deep=b'['*2000+b'0'+b']'*2000
-        with self.assertRaises(ValueError) as caught:m.parse_canonical_json(deep)
-        self.assertNotIn('0',str(caught.exception))
 
     def test_restore_plan_is_exact_bounded_and_not_older_than_baseline(self):
         m=self.module()
