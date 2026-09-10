@@ -1032,6 +1032,9 @@ class QuarantineTests(unittest.TestCase):
             result = surface_closure.validate_quarantine(root, m)
             self.assertTrue(result["feasible"])
             with self.assertRaises(TypeError): result["feasible"] = False
+            self.assertIsInstance(result["entries"], tuple)
+            self.assertTrue(all(type(entry) is tuple for entry in result["entries"]))
+            with self.assertRaises(TypeError): result["entries"] += ((),)
 
     def test_quarantine_rejects_tamper_and_links(self):
         with tempfile.TemporaryDirectory() as td:
