@@ -410,8 +410,12 @@ def reconcile_existing(journal, maintenance, stop_ingress, ingress):
         ident,target=completed
         route=journal.db.execute("SELECT evidence FROM steps WHERE operation=? AND phase='route' AND status='done'",(ident,)).fetchone()
         digest=hashlib.sha256(ingress.read_bytes()).hexdigest()
-        if (target!='B' or not route
-                or not _exact_route(json.loads(route[0]),target,journal.db.execute('SELECT new_epoch FROM operations WHERE id=?',(ident,)).fetchone()[0],digest)):
+        try:
+            route_value=json.loads(route[0]) if route else None
+            epoch=journal.db.execute('SELECT new_epoch FROM operations WHERE id=?',(ident,)).fetchone()[0]
+        except (TypeError,ValueError,sqlite3.Error) as exc:
+            raise RuntimeError('completed route differs; reconciliation refused') from exc
+        if (target!='B' or not _exact_route(route_value,target,epoch,digest)):
             raise RuntimeError('completed route differs; reconciliation refused')
         if maintenance.exists():
             private_file(maintenance)

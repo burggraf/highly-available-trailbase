@@ -168,7 +168,9 @@ class RecoveryGuardTests(unittest.TestCase):
             permit=root/'permit'; permit.write_text(json.dumps({'operation':operation['id'],'boot_id':'boot','pid':os.getpid(),'birth':self.m.process_identity(os.getpid()),'config_sha':hashlib.sha256(ingress.read_bytes()).hexdigest()})); permit.chmod(0o600)
             return root,operation,ingress,maintenance,permit
         root,operation,ingress,maintenance,permit=setup()
-        self.assertTrue(self.m.ingress_allowed(root,maintenance,permit,ingress,'boot'))
+        with mock.patch.object(self.m,'process_identity',return_value='stable-birth'):
+            permit.write_text(json.dumps({'operation':operation['id'],'boot_id':'boot','pid':os.getpid(),'birth':'stable-birth','config_sha':hashlib.sha256(ingress.read_bytes()).hexdigest()}))
+            self.assertTrue(self.m.ingress_allowed(root,maintenance,permit,ingress,'boot'))
         import shutil
         shutil.rmtree(root)
         cases=('missing','reordered','duplicate','extra','nonempty-intent')
@@ -181,7 +183,7 @@ class RecoveryGuardTests(unittest.TestCase):
                         journal.db.execute("UPDATE steps SET phase='tmp' WHERE operation=? AND phase='preflight' AND status='intent'",(operation['id'],))
                         journal.db.execute("UPDATE steps SET phase='preflight' WHERE operation=? AND phase='close_ingress' AND status='intent'",(operation['id'],))
                         journal.db.execute("UPDATE steps SET phase='close_ingress' WHERE operation=? AND phase='tmp' AND status='intent'",(operation['id'],))
-                    elif case=='duplicate': journal.db.execute("INSERT INTO steps(operation,position,phase,status,evidence) SELECT operation,position,phase,status,evidence FROM steps WHERE operation=? AND phase='route'",(operation['id'],))
+                    elif case=='duplicate': journal.db.execute("INSERT INTO steps(operation,position,phase,status,evidence) SELECT operation,99,phase,status,evidence FROM steps WHERE operation=? AND phase='route'",(operation['id'],))
                     elif case=='extra': journal.db.execute("INSERT INTO steps(operation,position,phase,status,evidence) VALUES(?,?,?,?,?)",(operation['id'],9,'verify','intent','{}'))
                     else: journal.db.execute("UPDATE steps SET evidence='{""x"":1}' WHERE operation=? AND phase='route' AND status='intent'",(operation['id'],))
                     journal.db.commit()
