@@ -748,7 +748,7 @@ def valid_attestation_fixture():
     for index, listener in enumerate((listeners[0], listeners[0], listeners[0])):
         connections.append({"id": f"conn{index}", "listener_id": listener["id"], "client_pid": 10,
             "server_pid": 20, "client_uid": 501, "client_gids": [20], "server_uid": 501,
-            "server_gids": [20], "client_inode": 200 + index, "server_inode": listener["inode"],
+            "server_gids": [20], "client_device": 1, "client_inode": 200 + index, "server_inode": listener["inode"],
             "accepted_mono_ns": 130 + index, "peer_source": "LOCAL_PEERCRED",
             "bytes_before_validation": 0, "evidence_id": ev("socket")})
     route_regs = []
@@ -799,7 +799,8 @@ def valid_attestation_fixture():
         "window": {"ready_mono_ns": 100, "start_mono_ns": 120, "end_mono_ns": 180,
             "positive_controls": [{"kind": kind, "request_sha256": digest,
                 "connection_id": f"conn{index}", "start_mono_ns": 140 + index * 5,
-                "end_mono_ns": 141 + index * 5} for index, (kind, digest) in enumerate(request_hashes)]},
+                "end_mono_ns": 141 + index * 5, "evidence_id": connections[index]["evidence_id"]}
+                for index, (kind, digest) in enumerate(request_hashes)]},
         "descriptors": descriptors, "listeners": listeners, "connections": connections,
         "listener_bindings": bindings,
         "registrations": {"jobs": jobs, "plugins": [], "routes": route_regs,
@@ -868,7 +869,9 @@ class AttestationTests(unittest.TestCase):
             lambda x: x["descriptors"][0].__setitem__("source", "declared"),
             lambda x: x["descriptors"][0].__setitem__("mode", -1),
             lambda x: x["descriptors"][0].__setitem__("nlink", -1),
+            lambda x: x["descriptors"][0].__setitem__("inode", 10 ** 100),
             lambda x: x["descriptors"].append({**x["descriptors"][0], "fd": 9, "cloexec": False}),
+            lambda x: x["descriptors"].append({**next(d for d in x["descriptors"] if d["pid"] == 10 and d["fd"] == 3), "fd": 99, "path": "/arbitrary.sock", "inode": 999}),
             lambda x: x["listeners"][0].__setitem__("protocol", "AF_INET"),
             lambda x: x["listeners"][0].__setitem__("inode", 999),
             lambda x: x["listeners"][0]["parent_ancestry"][0].__setitem__("symlink", True),
@@ -878,6 +881,7 @@ class AttestationTests(unittest.TestCase):
             lambda x: x["connections"][0].__setitem__("client_inode", 999),
             lambda x: x["connections"][0].__setitem__("bytes_before_validation", 1),
             lambda x: x["connections"][0].__setitem__("peer_source", "declared"),
+            lambda x: (x["connections"][0].update(client_pid=20, client_uid=501, client_gids=[20], client_device=1, client_inode=101),),
         ]
         for index, mutate in enumerate(mutations):
             with self.subTest(index=index):
@@ -899,6 +903,7 @@ class AttestationTests(unittest.TestCase):
             lambda x: x["evidence"][0].__setitem__("collector_source_sha256", "f" * 64),
             lambda x: x["evidence"][0].__setitem__("size", -1),
             lambda x: x["evidence"].append(copy.deepcopy(x["evidence"][0])),
+            lambda x: x["evidence"][1].__setitem__("path", x["evidence"][0]["path"]),
             lambda x: x["evidence"].pop(0),
             lambda x: x["writable_probes"][0].__setitem__("result", "allowed"),
             lambda x: x["writable_probes"][0].__setitem__("path", "/outside"),
@@ -906,6 +911,7 @@ class AttestationTests(unittest.TestCase):
             lambda x: x["telemetry"].__setitem__("logs_only", False),
             lambda x: (x["connections"][0].update(listener_id="admin", server_inode=102),
                        next(d for d in x["descriptors"] if d["pid"] == 10 and d["inode"] == 200).update(path="/private/q/admin.sock")),
+            lambda x: [control.__setitem__("connection_id", "conn0") for control in x["window"]["positive_controls"]],
         ]
         for index, mutate in enumerate(mutations):
             with self.subTest(index=index):

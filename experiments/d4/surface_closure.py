@@ -687,6 +687,11 @@ def _ai(v, p, positive=False):
     if type(v) is not int or (positive and v <= 0): raise SurfaceError(f"{p}: integer")
     return v
 
+def _bounded(v, p, low=0, high=(1 << 63) - 1):
+    _ai(v, p)
+    if not low <= v <= high: raise SurfaceError(f"{p}: out of range")
+    return v
+
 def _as(v, p, digest=False):
     if type(v) is not str or not v or len(v.encode()) > 4096: raise SurfaceError(f"{p}: string")
     if digest and not HEX64.fullmatch(v): raise SurfaceError(f"{p}: hash")
@@ -712,15 +717,20 @@ def validate_attestation(attestation, manifest, trust):
         if type(trust) is not AttestationTrust or type(manifest) is not dict or type(attestation) is not dict: raise SurfaceError("attestation inputs")
         for name in ("manager_receipt_path_sha256","manager_receipt_sha256","collector_source_sha256","manifest_sha256","source_sha256","source_root_sha256","binary_path_sha256","binary_sha256","config_sha256","migration_sha256","plugin_sha256","sandbox_profile_sha256","sandbox_root_sha256"):
             _as(getattr(trust,name), "trust."+name, True)
-        for name in ("manager_pid","collector_pid","collector_parent_pid","fixture_pid","fixture_start_mono_ns","service_uid","config_generation","sandbox_profile_generation","collection_ready_mono_ns","collection_launched_mono_ns","collection_deadline_mono_ns"):
-            _ai(getattr(trust,name), "trust."+name)
+        for name in ("manager_pid","collector_pid","collector_parent_pid","fixture_pid"):
+            _bounded(getattr(trust,name), "trust."+name, 1)
+        for name in ("fixture_start_mono_ns","collection_ready_mono_ns","collection_launched_mono_ns","collection_deadline_mono_ns"):
+            _bounded(getattr(trust,name), "trust."+name)
+        _bounded(trust.service_uid, "trust.service_uid", 0, (1 << 32) - 1)
+        _bounded(trust.config_generation, "trust.config_generation", 0, (1 << 31) - 1)
+        _bounded(trust.sandbox_profile_generation, "trust.sandbox_profile_generation", 0, (1 << 31) - 1)
         _as(trust.manager_receipt_nonce, "trust nonce")
         _as(trust.attestation_sha256, "trust.attestation_sha256", True)
         _as(trust.build_id, "trust.build_id")
         _as(trust.logs_path, "trust.logs_path")
         if not trust.logs_path.startswith("/"): raise SurfaceError("trust logs path")
         if (type(trust.service_groups) is not tuple or not trust.service_groups
-                or any(type(x) is not int or x < 0 for x in trust.service_groups)
+                or any(type(x) is not int or not 0 <= x <= (1 << 32) - 1 for x in trust.service_groups)
                 or type(trust.expected_argv) is not tuple or not trust.expected_argv
                 or any(type(x) is not str or not x for x in trust.expected_argv)
                 or type(trust.expected_env) is not tuple
@@ -752,8 +762,8 @@ def validate_attestation(attestation, manifest, trust):
         for k in ("source_sha256",): _as(c[k],k,True)
         for k in ("path_sha256","receipt_sha256"): _as(r[k],k,True)
         _as(r["nonce"], "receipt.nonce")
-        for k in ("pid","parent_pid","started_mono_ns","finished_mono_ns"): _ai(c[k],k,True)
-        for k in ("manager_pid","collector_pid","collector_parent_pid","launched_mono_ns","exited_mono_ns"): _ai(r[k],k,True)
+        for k in ("pid","parent_pid","started_mono_ns","finished_mono_ns"): _bounded(c[k],k,1)
+        for k in ("manager_pid","collector_pid","collector_parent_pid","launched_mono_ns","exited_mono_ns"): _bounded(r[k],k,1)
         if (r["receipt_sha256"],r["path_sha256"],r["nonce"],r["manager_pid"],r["collector_pid"],r["collector_parent_pid"]) != (trust.manager_receipt_sha256,trust.manager_receipt_path_sha256,trust.manager_receipt_nonce,trust.manager_pid,trust.collector_pid,trust.collector_parent_pid): raise SurfaceError("receipt trust")
         if not (trust.collection_launched_mono_ns == r["launched_mono_ns"] <= c["started_mono_ns"] <= c["finished_mono_ns"] <= r["exited_mono_ns"] <= trust.collection_deadline_mono_ns): raise SurfaceError("receipt time")
         if (c["pid"],c["parent_pid"],c["source_sha256"]) != (trust.collector_pid,trust.collector_parent_pid,trust.collector_source_sha256): raise SurfaceError("collector trust")
@@ -811,7 +821,7 @@ def _validate_attestation_nested(a, trust, tree, manifest):
     specs = {
         "descriptors": ("pid fd cloexec owner_uid process_role type path inode device mode nlink source".split(), 256),
         "listeners": ("id pid role protocol sock_type path parent_ancestry uid mode device inode nlink source".split(), 2),
-        "connections": ("id listener_id client_pid server_pid client_uid client_gids server_uid server_gids client_inode server_inode accepted_mono_ns peer_source bytes_before_validation evidence_id".split(), 64),
+        "connections": ("id listener_id client_pid server_pid client_uid client_gids server_uid server_gids client_device client_inode server_inode accepted_mono_ns peer_source bytes_before_validation evidence_id".split(), 64),
         "listener_bindings": ("listener_id inode device pid exe_sha256 argv observed_mono_ns source evidence_id".split(), 2),
         "writable_probes": ("path uid operation result errno evidence_id".split(), 256),
         "evidence": ("id path sha256 size kind collector_source_sha256 created_mono_ns".split(), 4096),
@@ -831,9 +841,11 @@ def _validate_attestation_nested(a, trust, tree, manifest):
     by_role = {}
     for proc in tree.values():
         if proc["role"] not in {"manager", "trailbase", "collector"} or proc["role"] in by_role: raise SurfaceError("process roles")
-        for gid in proc["gids"]: _ai(gid, "process gid")
+        for gid in proc["gids"]: _bounded(gid, "process gid", 0, (1 << 32) - 1)
         for arg in proc["argv"]: _as(arg, "process argv")
-        _ai(proc["start_mono_ns"], "process start", True)
+        _bounded(proc["pid"], "process pid", 1); _bounded(proc["parent_pid"], "process parent")
+        _bounded(proc["uid"], "process uid", 0, (1 << 32) - 1)
+        _bounded(proc["start_mono_ns"], "process start", 1)
         by_role[proc["role"]] = proc
     if set(by_role) != {"manager", "trailbase", "collector"}: raise SurfaceError("process roles")
     manager, fixture, collector = by_role["manager"], by_role["trailbase"], by_role["collector"]
@@ -847,10 +859,13 @@ def _validate_attestation_nested(a, trust, tree, manifest):
             or collector["pid"] == fixture["pid"]): raise SurfaceError("trusted process tree mismatch")
 
     for descriptor in a["descriptors"]:
-        for key in ("pid", "fd", "owner_uid", "inode", "device", "mode", "nlink"): _ai(descriptor[key], "descriptor integer")
-        if (descriptor["fd"] < 0 or descriptor["owner_uid"] < 0 or descriptor["inode"] < 0
-                or descriptor["device"] < 0 or not 0 <= descriptor["mode"] <= 0o7777
-                or descriptor["nlink"] < 1): raise SurfaceError("descriptor numeric range")
+        _bounded(descriptor["pid"], "descriptor pid", 1)
+        _bounded(descriptor["fd"], "descriptor fd", 0, 1_048_576)
+        _bounded(descriptor["owner_uid"], "descriptor uid", 0, (1 << 32) - 1)
+        _bounded(descriptor["inode"], "descriptor inode")
+        _bounded(descriptor["device"], "descriptor device")
+        _bounded(descriptor["mode"], "descriptor mode", 0, 0o7777)
+        _bounded(descriptor["nlink"], "descriptor nlink", 1, (1 << 31) - 1)
         if type(descriptor["cloexec"]) is not bool or descriptor["source"] != "observed" or descriptor["type"] not in {"stdin","stdout","stderr","uds","file","pipe","other"}: raise SurfaceError("descriptor observation")
         proc = tree.get(descriptor["pid"])
         if proc is None or descriptor["process_role"] != proc["role"] or descriptor["owner_uid"] != proc["uid"]: raise SurfaceError("descriptor process")
@@ -870,7 +885,9 @@ def _validate_attestation_nested(a, trust, tree, manifest):
     if len(listeners) != 2 or {x["role"] for x in listeners.values()} != {"main", "admin"}: raise SurfaceError("listener roles")
     for listener in listeners.values():
         _as(listener["id"], "listener.id"); _absolute_path(listener["path"], "listener.path")
-        for key in ("pid", "uid", "mode", "device", "inode", "nlink"): _ai(listener[key], "listener integer", True)
+        _bounded(listener["pid"], "listener pid", 1); _bounded(listener["uid"], "listener uid", 0, (1 << 32) - 1)
+        _bounded(listener["mode"], "listener mode", 1, 0o7777); _bounded(listener["device"], "listener device", 1)
+        _bounded(listener["inode"], "listener inode", 1); _bounded(listener["nlink"], "listener nlink", 1, (1 << 31) - 1)
         if (listener["pid"] != trust.fixture_pid or listener["uid"] != trust.service_uid
                 or listener["protocol"] != "AF_UNIX" or listener["sock_type"] != "SOCK_STREAM"
                 or listener["source"] != "observed" or listener["mode"] != 0o600 or listener["nlink"] != 1): raise SurfaceError("listener identity")
@@ -897,14 +914,13 @@ def _validate_attestation_nested(a, trust, tree, manifest):
     total = 0
     for item in a["evidence"]:
         _as(item["id"], "evidence.id"); _safe_relative(item["path"], "evidence.path"); _as(item["sha256"], "evidence.sha256", True)
-        _ai(item["size"], "evidence.size"); _ai(item["created_mono_ns"], "evidence.time")
-        if item["size"] < 0: raise SurfaceError("negative evidence size")
+        _bounded(item["size"], "evidence.size", 0, 268435456); _bounded(item["created_mono_ns"], "evidence.time")
         if item["kind"] not in {"absence","descriptor","socket","process","probe","receipt","registration","other"}: raise SurfaceError("evidence kind")
         if item["collector_source_sha256"] != trust.collector_source_sha256 or not (trust.collection_launched_mono_ns <= item["created_mono_ns"] <= trust.collection_deadline_mono_ns) or item["size"] > 268435456: raise SurfaceError("evidence trust")
         total += item["size"]
         if total > 268435456: raise SurfaceError("evidence total")
         evidence[item["id"]] = item
-    if len(evidence) != len(a["evidence"]): raise SurfaceError("duplicate evidence")
+    if len(evidence) != len(a["evidence"]) or len({x["path"] for x in a["evidence"]}) != len(a["evidence"]): raise SurfaceError("duplicate evidence")
     referenced = set()
     def evidence_ref(value, kinds=None):
         if type(value) is not str or value not in evidence: raise SurfaceError("missing evidence")
@@ -915,7 +931,7 @@ def _validate_attestation_nested(a, trust, tree, manifest):
     if set(bindings) != set(listeners): raise SurfaceError("listener binding set")
     for listener_id, binding in bindings.items():
         listener = listeners[listener_id]
-        for key in ("inode","device","pid","observed_mono_ns"): _ai(binding[key], "binding integer", True)
+        for key in ("inode","device","pid","observed_mono_ns"): _bounded(binding[key], "binding integer", 1)
         _as(binding["exe_sha256"], "binding executable", True); _al(binding["argv"], "binding argv", 64)
         if (binding["source"] != "observed" or binding["inode"] != listener["inode"] or binding["device"] != listener["device"]
                 or binding["pid"] != trust.fixture_pid or binding["exe_sha256"] != trust.binary_sha256
@@ -925,38 +941,47 @@ def _validate_attestation_nested(a, trust, tree, manifest):
     connections = {x["id"]: x for x in a["connections"]}
     for connection in connections.values():
         _as(connection["id"], "connection.id"); _al(connection["client_gids"], "client gids", 64); _al(connection["server_gids"], "server gids", 64)
-        for gid in connection["client_gids"] + connection["server_gids"]: _ai(gid, "connection gid")
-        for key in ("client_pid","server_pid","client_uid","server_uid","client_inode","server_inode","accepted_mono_ns","bytes_before_validation"): _ai(connection[key], "connection integer")
-        if (connection["client_pid"] <= 0 or connection["server_pid"] <= 0 or connection["client_uid"] < 0
-                or connection["server_uid"] < 0 or connection["client_inode"] <= 0
-                or connection["server_inode"] <= 0 or connection["accepted_mono_ns"] <= 0): raise SurfaceError("connection numeric range")
+        for gid in connection["client_gids"] + connection["server_gids"]: _bounded(gid, "connection gid", 0, (1 << 32) - 1)
+        for key in ("client_pid","server_pid","client_device","client_inode","server_inode","accepted_mono_ns"): _bounded(connection[key], "connection integer", 1)
+        for key in ("client_uid","server_uid"): _bounded(connection[key], "connection uid", 0, (1 << 32) - 1)
+        _bounded(connection["bytes_before_validation"], "connection bytes", 0, 0)
         listener = listeners.get(connection["listener_id"])
-        if (listener is None or connection["server_pid"] != trust.fixture_pid or connection["server_uid"] != trust.service_uid
+        if (listener is None or connection["client_pid"] != trust.manager_pid
+                or tree[connection["client_pid"]]["role"] != "manager"
+                or connection["server_pid"] != trust.fixture_pid or connection["server_uid"] != trust.service_uid
                 or tuple(connection["server_gids"]) != trust.service_groups or connection["server_inode"] != listener["inode"]
                 or connection["client_pid"] not in tree or connection["client_uid"] != tree[connection["client_pid"]]["uid"]
                 or tuple(connection["client_gids"]) != tuple(tree[connection["client_pid"]]["gids"])
                 or connection["peer_source"] != "LOCAL_PEERCRED" or connection["bytes_before_validation"] != 0
                 or not (a["window"]["start_mono_ns"] <= connection["accepted_mono_ns"] <= a["window"]["end_mono_ns"])): raise SurfaceError("connection binding")
-        peer_descriptors = [d for d in a["descriptors"] if d["pid"] == connection["client_pid"] and d["inode"] == connection["client_inode"] and d["type"] == "uds" and d["path"] == listener["path"]]
+        peer_descriptors = [d for d in a["descriptors"] if d["pid"] == connection["client_pid"]
+                            and d["inode"] == connection["client_inode"] and d["device"] == connection["client_device"]
+                            and d["type"] == "uds" and d["path"] == listener["path"]]
         if len(peer_descriptors) != 1: raise SurfaceError("connection client descriptor")
         evidence_ref(connection["evidence_id"], {"socket"})
+
+    manager_sockets = {(d["device"], d["inode"], d["path"]) for d in a["descriptors"] if d["pid"] == trust.manager_pid and d["fd"] > 2}
+    connection_sockets = {(c["client_device"], c["client_inode"], listeners[c["listener_id"]]["path"]) for c in connections.values()}
+    if manager_sockets != connection_sockets: raise SurfaceError("manager descriptor allowlist")
 
     controls = _al(a["window"]["positive_controls"], "controls", 3)
     if len(controls) != 3: raise SurfaceError("positive controls")
     expected_requests = dict(trust.positive_request_sha256)
     expected_kinds = set(expected_requests)
     for control in controls:
-        _ao(control, ("kind","request_sha256","connection_id","start_mono_ns","end_mono_ns"), "control")
+        _ao(control, ("kind","request_sha256","connection_id","start_mono_ns","end_mono_ns","evidence_id"), "control")
         _as(control["kind"], "control.kind"); _as(control["request_sha256"], "control.request_sha256", True)
         _ai(control["start_mono_ns"], "control.start"); _ai(control["end_mono_ns"], "control.end")
         if (control["request_sha256"] != expected_requests.get(control["kind"])
                 or control["connection_id"] not in connections
                 or listeners[connections[control["connection_id"]]["listener_id"]]["role"] != "main"
                 or not (a["window"]["start_mono_ns"] <= control["start_mono_ns"] < control["end_mono_ns"] <= a["window"]["end_mono_ns"])): raise SurfaceError("control binding")
-    if {x["kind"] for x in controls} != expected_kinds: raise SurfaceError("control kinds")
+        evidence_ref(control["evidence_id"], {"socket"})
+    if ({x["kind"] for x in controls} != expected_kinds
+            or len({x["connection_id"] for x in controls}) != 3): raise SurfaceError("control kinds")
 
     for probe in a["writable_probes"]:
-        _absolute_path(probe["path"], "probe.path"); _ai(probe["uid"], "probe.uid"); _ai(probe["errno"], "probe.errno", True)
+        _absolute_path(probe["path"], "probe.path"); _bounded(probe["uid"], "probe.uid", 0, (1 << 32) - 1); _bounded(probe["errno"], "probe.errno", 1, (1 << 31) - 1)
         if probe["uid"] != trust.service_uid or probe["operation"] not in {"create","append","rename","unlink","chmod"} or probe["result"] != "denied": raise SurfaceError("probe")
         evidence_ref(probe["evidence_id"], {"probe"})
     if {x["path"] for x in a["writable_probes"]} != set(trust.protected_paths): raise SurfaceError("protected probe coverage")
