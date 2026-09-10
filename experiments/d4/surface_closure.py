@@ -8,6 +8,7 @@ import stat
 from pathlib import Path
 from typing import Any
 from dataclasses import dataclass
+from types import MappingProxyType
 import math
 
 COMMIT = "f24291b894bb6c6696608e5f4c2f68666fe97686"
