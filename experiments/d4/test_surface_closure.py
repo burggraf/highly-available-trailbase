@@ -331,6 +331,40 @@ class AuthorizationClosureTests(unittest.TestCase):
             surface_closure.bind_request(self.request(headers=headers), self.manifest)
         self.assertNotIn(self.secret, repr(caught.exception).encode())
 
+    def test_json_parse_errors_have_no_body_bearing_exception_graph(self):
+        cases = (
+            (b"/api/records/v1/main_ops", b'{"op_key":"' + self.secret + b'"'),
+            (b"/api/records/v1/main_ops", b'{"op_key":"' + self.secret + b'\xff'),
+            (b"/api/auth/v1/logout", b'{"refresh_token":"' + self.secret + b'"'),
+            (b"/api/auth/v1/logout", b'{"refresh_token":"' + self.secret + b'\xff'),
+        )
+        for target, body in cases:
+            request = self.request(target=target)
+            request = surface_closure.ClosureRequest(request.method, request.target,
+                                                     request.headers if target.endswith(b"main_ops") else ((b"Content-Type", b"application/json"),), body)
+            with self.subTest(target=target), self.assertRaises(surface_closure.SurfaceError) as caught:
+                surface_closure.bind_request(request, self.manifest)
+            error = caught.exception
+            self.assertIsNone(error.__cause__)
+            self.assertIsNone(error.__context__)
+            self.assertNotIn(self.secret, repr(error).encode())
+            self.assertNotIn(body, repr(error).encode())
+            self.assertNotIn(self.secret, repr(error.args).encode())
+            seen = set()
+            def scan(value):
+                if id(value) in seen: return
+                seen.add(id(value))
+                self.assertNotIn(self.secret, repr(value).encode())
+                if isinstance(value, BaseException):
+                    scan(value.__cause__); scan(value.__context__); scan(value.args)
+                    for field in ("doc", "msg", "message", "value"):
+                        if hasattr(value, field): scan(getattr(value, field))
+                elif isinstance(value, dict):
+                    for item in value.items(): scan(item)
+                elif isinstance(value, (tuple, list, set, frozenset)):
+                    for item in value: scan(item)
+            scan(error)
+
     def test_main_requires_bearer_and_redacts_secret(self):
         binding = surface_closure.bind_request(self.request(), self.manifest)
         self.assertIsNotNone(binding)

@@ -417,8 +417,14 @@ def _strict_json(body: bytes) -> object:
         return out
     def constant(value):
         raise SurfaceError("nonfinite JSON number")
-    try: value = json.loads(body.decode("utf-8"), object_pairs_hook=pairs, parse_constant=constant)
-    except (UnicodeDecodeError, ValueError, SurfaceError) as exc: raise SurfaceError("invalid JSON") from exc
+    def parse():
+        try:
+            return json.loads(body.decode("utf-8"), object_pairs_hook=pairs, parse_constant=constant)
+        except (UnicodeDecodeError, ValueError, SurfaceError):
+            return None
+    value = parse()
+    if value is None:
+        raise SurfaceError("invalid JSON")
     if type(value) is not dict: raise SurfaceError("JSON object required")
     return value
 
