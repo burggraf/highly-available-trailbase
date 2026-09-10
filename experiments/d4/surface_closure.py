@@ -15,6 +15,24 @@ HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 class SurfaceError(ValueError): pass
 
+def _is_file(path: Path, name: str) -> bool:
+    try:
+        return path.is_file()
+    except (OSError, UnicodeError) as exc:
+        raise SurfaceError(f"{name}: cannot inspect path") from exc
+
+def _read_bytes(path: Path, name: str) -> bytes:
+    try:
+        return path.read_bytes()
+    except (OSError, UnicodeError) as exc:
+        raise SurfaceError(f"{name}: cannot read bytes") from exc
+
+def _read_text(path: Path, name: str) -> str:
+    try:
+        return path.read_text()
+    except (OSError, UnicodeError) as exc:
+        raise SurfaceError(f"{name}: cannot read text") from exc
+
 def _dict(v: Any, name: str) -> dict:
     if type(v) is not dict: raise SurfaceError(f"{name}: expected object")
     return v
@@ -107,6 +125,12 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         if c["class"] not in {"router","conditional","job","dynamic_router","listener","direct_writer","provider","telemetry","route"}: raise SurfaceError("invalid capability class")
         if c["resolution"] not in {"static","runtime_unknown"}: raise SurfaceError("invalid capability resolution")
     byname = {c["name"]: c for c in caps}
+    route_nodes = {f"route:{r['method']} {r['path']}": r for r in routes}
+    if any(name not in byname or byname[name]["class"] != "route" for name in route_nodes): raise SurfaceError("each route requires a route capability")
+    for name, r in route_nodes.items():
+        node = byname[name]
+        if node["source_files"] != [r["source"]["file"]] or node["condition"] != r["condition"]: raise SurfaceError("route capability metadata mismatch")
+    if any(c["class"] == "route" and c["name"] not in route_nodes for c in caps): raise SurfaceError("unaccounted route capability")
     if len([c for c in caps if c["name"] == "root"]) != 1: raise SurfaceError("one root required")
     if any(c["name"] in c["edges"] for c in caps): raise SurfaceError("self edge")
     if any(len(c["edges"]) != len(set(c["edges"])) for c in caps): raise SurfaceError("duplicate edge")
@@ -124,7 +148,8 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         if any(type(x) is not str or x not in byname for x in vals) or len(vals) != len(set(vals)): raise SurfaceError(f"invalid accounting.{k}")
     if set(accounting["routers"]) != {n for n,c in byname.items() if c["class"] == "router"} - {"root"}: raise SurfaceError("router accounting mismatch")
     expected_routes = {f"route:{r['method']} {r['path']}" for r in routes}
-    if set(accounting["routes"]) != expected_routes: raise SurfaceError("route accounting mismatch")
+    if set(accounting["routes"]) != expected_routes or len(accounting["routes"]) != len(route_nodes): raise SurfaceError("route accounting mismatch")
+    if any(byname[n]["class"] != "route" for n in accounting["routes"]): raise SurfaceError("route accounting class mismatch")
     for key, classes in {"conditional_arms":{"conditional"}, "jobs":{"job"}, "dynamic_points":{"dynamic_router"}, "listeners":{"listener"}, "telemetry":{"telemetry"}}.items():
         if any(byname[n]["class"] not in classes for n in accounting[key]): raise SurfaceError(f"{key} class mismatch")
     if any(byname[n]["class"] not in {"direct_writer","provider"} for n in accounting["writers"]): raise SurfaceError("writer class mismatch")
@@ -137,9 +162,9 @@ def validate_eligibility_input(manifest):
 def verify_source(source_root: Path, provenance_path: Path, manifest: dict[str, Any]) -> None:
     if not isinstance(source_root, Path) or not isinstance(provenance_path, Path): raise SurfaceError("source paths must be Paths")
     validate_manifest(manifest); p = manifest["source"]["provenance"]
-    if not provenance_path.is_file() or hashlib.sha256(provenance_path.read_bytes()).hexdigest() != p["sha256"]: raise SurfaceError("provenance manifest missing or tampered")
-    try: recorded = json.loads(provenance_path.read_text())
-    except (OSError, json.JSONDecodeError, TypeError) as exc: raise SurfaceError("invalid provenance manifest") from exc
+    if not _is_file(provenance_path, "provenance") or hashlib.sha256(_read_bytes(provenance_path, "provenance")).hexdigest() != p["sha256"]: raise SurfaceError("provenance manifest missing or tampered")
+    try: recorded = json.loads(_read_text(provenance_path, "provenance"))
+    except (json.JSONDecodeError, TypeError, UnicodeError) as exc: raise SurfaceError("invalid provenance manifest") from exc
     recorded = _dict(recorded, "provenance"); _keys(recorded, {"sources"}, "provenance"); sources = _list(recorded["sources"], "sources")
     if len(sources) != 2: raise SurfaceError("provenance requires TrailBase and Litestream")
     seen = set()
@@ -159,14 +184,17 @@ def verify_source(source_root: Path, provenance_path: Path, manifest: dict[str, 
     expected = {e["file"]: e for e in manifest["source_files"]}
     for name,e in expected.items():
         path=source_root/name
-        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest()!=e["sha256"]: raise SurfaceError(f"missing or tampered source: {name}")
-        lines=path.read_text().splitlines()
+        if not _is_file(path, name) or hashlib.sha256(_read_bytes(path, name)).hexdigest()!=e["sha256"]: raise SurfaceError(f"missing or tampered source: {name}")
+        lines=_read_text(path, name).splitlines()
         for a in e["anchors"]:
             if a["line"] > len(lines) or a["contains"] not in lines[a["line"]-1]: raise SurfaceError(f"bad source anchor: {name}")
     for r in manifest["routes"]:
-        s=r["source"]; path=source_root/s["file"]; lines=path.read_text().splitlines()
+        s=r["source"]; path=source_root/s["file"]; lines=_read_text(path, s["file"]).splitlines()
         if s["line"] > len(lines) or s["contains"] not in lines[s["line"]-1]: raise SurfaceError("bad route anchor")
-    actual={str(x.relative_to(source_root)) for scope in SOURCE_SCOPES for x in (source_root/scope).rglob("*.rs") if x.is_file()}
+    try:
+        actual={str(x.relative_to(source_root)) for scope in SOURCE_SCOPES for x in (source_root/scope).rglob("*.rs") if _is_file(x, "source enumeration")}
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise SurfaceError("source enumeration failed") from exc
     if actual != set(expected): raise SurfaceError("source inventory does not exactly match configured scopes")
 
 if __name__ == "__main__":
