@@ -113,6 +113,141 @@ MAX_ARTIFACT = 4 << 20
 _EPOCH = re.compile(r'd1-[a-z0-9-]+')
 _OPERATION = re.compile(r'[0-9a-f]{32}')
 _PRODUCER = re.compile(r'hat-d3-client-([0-9a-f]{32})\.service')
+_ACCEPTANCE_SCHEMA = 'hat-restore-acceptance-1'
+_AUTHORITY_SCHEMA = 'hat-restore-input-authority-1'
+_DBS = ('main', 'session', 'aux')
+_HEX64 = re.compile(r'[0-9a-f]{64}')
+
+
+def canonical_json(value):
+    try:
+        return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True, allow_nan=False).encode('ascii')
+    except (TypeError, ValueError, UnicodeEncodeError) as exc:
+        raise ValueError('invalid canonical JSON value') from exc
+
+
+def _acceptance_operation(value):
+    if not isinstance(value, dict) or set(value) != {'id','source','target','source_epoch','new_epoch'}:
+        raise ValueError('invalid restore operation')
+    if (not isinstance(value['id'], str) or not _OPERATION.fullmatch(value['id'])
+            or (value['source'], value['target']) not in (('A','B'),('B','A'))):
+        raise ValueError('invalid restore operation')
+    for name in ('source_epoch','new_epoch'):
+        if not isinstance(value[name], str) or not _EPOCH.fullmatch(value[name]):
+            raise ValueError('invalid restore epoch')
+    if value['new_epoch'] != 'd1-' + value['id'] or value['source_epoch'] == value['new_epoch']:
+        raise ValueError('restore epoch binding differs')
+    return value
+
+
+def derive_restore_profile(operation, phase, has_fault):
+    operation = _acceptance_operation(operation)
+    matrix = {
+        ('A','B','compare',False): ('comparison', operation['source_epoch'], 5),
+        ('A','B','baseline',False): ('baseline', operation['new_epoch'], 7),
+        ('A','B','new-writes',False): ('fresh-writes', operation['new_epoch'], 9),
+        ('B','A','compare',True): ('recovery-comparison', operation['source_epoch'], 5),
+        ('B','A','baseline',False): ('baseline', operation['new_epoch'], 7),
+        ('B','A','new-writes',False): ('fresh-writes', operation['new_epoch'], 9),
+    }
+    try: return matrix[(operation['source'], operation['target'], phase, type(has_fault) is bool and has_fault)]
+    except KeyError as exc: raise ValueError('unsupported restore acceptance phase') from exc
+
+
+def _authority(value, operation, profile):
+    if not isinstance(value, dict) or set(value) != {'schema','operation','origin','ledger','support','binaries'}:
+        raise ValueError('invalid restore input authority')
+    if value['schema'] != _AUTHORITY_SCHEMA or value['operation'] != operation['id']:
+        raise ValueError('restore input authority differs')
+    allowed = {'d2-preflight','d3-recovery-input','current-verify-exclusive'}
+    if value['origin'] not in allowed or (profile == 'fresh-writes') != (value['origin'] == 'current-verify-exclusive'):
+        raise ValueError('restore input authority origin differs')
+    ledger=value['ledger']
+    if (not isinstance(ledger,dict) or set(ledger) != {'path','device','inode','mode','uid','links','bytes','sha256'}
+            or not isinstance(ledger['path'],str) or not ledger['path'].startswith('/')
+            or any(type(ledger[k]) is not int or ledger[k] < 0 for k in ('device','inode','mode','uid','links','bytes'))
+            or ledger['links'] != 1 or ledger['bytes'] <= 0 or not _HEX64.fullmatch(ledger['sha256'])):
+        raise ValueError('invalid restore ledger authority')
+    if set(value['binaries']) != {'trail','litestream'} or any(not isinstance(v,str) or not _HEX64.fullmatch(v) for v in value['binaries'].values()):
+        raise ValueError('invalid restore binary authority')
+    required={'config.textproto','migrations/main/U100__hat_ops.sql','migrations/aux/U100__hat_ops.sql','secrets/keys/private_key.pem','secrets/keys/public_key.pem'}
+    if set(value['support']) != required or any(not isinstance(v,str) or not _HEX64.fullmatch(v) for v in value['support'].values()):
+        raise ValueError('invalid restore support authority')
+
+
+def validate_acceptance_request(request, operation):
+    operation = _acceptance_operation(operation)
+    if not isinstance(request,dict) or set(request) != {'schema','operation','phase','source','target','epoch','positions','profile','inputs'}:
+        raise ValueError('invalid restore acceptance request')
+    if request['schema'] != _ACCEPTANCE_SCHEMA or request['operation'] != operation['id']:
+        raise ValueError('restore request identity differs')
+    profile, epoch, _ = derive_restore_profile(operation, request['phase'], request['profile']=='recovery-comparison')
+    if (request['source'],request['target'],request['epoch'],request['profile']) != (operation['source'],operation['target'],epoch,profile):
+        raise ValueError('restore request binding differs')
+    positions=request['positions']
+    if set(positions) != set(_DBS) or any(type(v) is not int or not 0 < v < 2**64 for v in positions.values()):
+        raise ValueError('invalid restore positions')
+    inputs=request['inputs']
+    required={'replica_config_sha256','ledger_sha256','ledger_authority','restore_points','support','binaries'}
+    if not isinstance(inputs,dict) or not required <= set(inputs) or set(inputs)-required:
+        raise ValueError('invalid restore request inputs')
+    if not _HEX64.fullmatch(inputs['replica_config_sha256']) or not _HEX64.fullmatch(inputs['ledger_sha256']):
+        raise ValueError('invalid restore input hashes')
+    _authority(inputs['ledger_authority'],operation,profile)
+    if inputs['ledger_authority']['ledger']['sha256'] != inputs['ledger_sha256'] or inputs['support'] != inputs['ledger_authority']['support'] or inputs['binaries'] != inputs['ledger_authority']['binaries']:
+        raise ValueError('restore request authority mismatch')
+    points=inputs['restore_points']
+    if set(points) != set(_DBS): raise ValueError('invalid restore points')
+    for db in _DBS:
+        if set(points[db]) != {'source','position'} or points[db]['source'] != '/var/lib/hat-demo/depot/data/'+db+'.db' or points[db]['position'] != positions[db]:
+            raise ValueError('restore point binding differs')
+    if profile == 'recovery-comparison':
+        extra={'fault_ledger_sha256','fault_operations','fault_operation_count','fault_operations_sha256'}
+        if set(inputs) != required|extra or not isinstance(inputs['fault_operations'],list) or type(inputs['fault_operation_count']) is not int or inputs['fault_operation_count'] != len(inputs['fault_operations']):
+            raise ValueError('invalid fault request binding')
+        if inputs['fault_operations'] != sorted(set(inputs['fault_operations'])) or any(not isinstance(v,str) or not re.fullmatch(r'(?:main|aux)_ops/d3-[A-Za-z0-9-]{1,125}',v) for v in inputs['fault_operations']):
+            raise ValueError('invalid fault request operations')
+        if not _HEX64.fullmatch(inputs['fault_ledger_sha256']) or hashlib.sha256(canonical_json(inputs['fault_operations'])).hexdigest() != inputs['fault_operations_sha256']:
+            raise ValueError('invalid fault request hashes')
+    elif set(inputs) != required:
+        raise ValueError('unexpected fault request fields')
+    return request
+
+
+def fault_operations(events):
+    submitted=[]; seen=set()
+    for event in events:
+        if not isinstance(event,dict) or event.get('event') != 'submitted': continue
+        api=event.get('api'); row=event.get('row',{})
+        key=(api,row.get('op_key'))
+        if api not in ('main_ops','aux_ops') or not re.fullmatch(r'd3-[A-Za-z0-9-]{1,125}',str(row.get('op_key',''))) or key in seen:
+            raise ValueError('invalid fault submitted operation')
+        seen.add(key); submitted.append(api+'/'+row['op_key'])
+    return sorted(submitted)
+
+
+def validate_fault_outcomes(value, events):
+    categories=('recovered','lost','ambiguous','unacknowledged_recovered','rejected')
+    if not isinstance(value,dict) or set(value) != set(categories) or any(not isinstance(value[k],list) or value[k] != sorted(value[k]) for k in categories):
+        raise ValueError('invalid fault outcomes')
+    expected=set(fault_operations(events)); flattened=[item for k in categories for item in value[k]]
+    if len(flattened) != len(set(flattened)) or set(flattened) != expected or value['lost']:
+        raise ValueError('fault outcomes are incomplete or acknowledge loss')
+    return value
+
+
+def validate_acceptance_result(result, request):
+    validate_acceptance_request(request, {'id':request['operation'],'source':request['source'],'target':request['target'],'source_epoch':request['epoch'],'new_epoch':'d1-'+request['operation']})
+    if not isinstance(result,dict) or set(result) != {'schema','request','request_sha256','databases','signature','checks'} or result['schema'] != _ACCEPTANCE_SCHEMA or result['request'] != request or result['request_sha256'] != hashlib.sha256(canonical_json(request)).hexdigest():
+        raise ValueError('invalid restore acceptance result')
+    if set(result['databases']) != set(_DBS) or set(result['signature']) != set(_DBS): raise ValueError('invalid restore result databases')
+    for db in _DBS:
+        item=result['databases'][db]
+        if set(item) != {'position','sha256','integrity','foreign_keys'} or item['position'] != request['positions'][db] or not _HEX64.fullmatch(item['sha256']) or item['integrity'] != 'PASS' or item['foreign_keys'] != 'PASS': raise ValueError('invalid restore database result')
+        if not _HEX64.fullmatch(result['signature'][db]): raise ValueError('invalid restore signature')
+    expected={'records':'PASS','authentication':'PASS'}
+    if result['checks'] != expected: raise ValueError('invalid restore checks')
+    return result
 
 
 def _json(raw):
