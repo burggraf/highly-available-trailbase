@@ -1047,21 +1047,98 @@ def _validate_attestation_nested(a, trust, tree, manifest):
 
 
 def validate_quarantine(root, manifest):
-    root=Path(root)
-    if type(manifest) is not dict or manifest.get("schema") != _QUAR_SCHEMA: raise SurfaceError("invalid quarantine manifest")
-    required={"schema","root","owner_uid","disposition","files","file_count","byte_total","hash_algorithm","manifest_sha256","access_log"}
-    if set(manifest) != required or manifest["root"] != str(root.resolve(strict=True)): raise SurfaceError("quarantine root")
-    if manifest["hash_algorithm"] != "sha256" or manifest["disposition"] not in {"pending","retain_encrypted","owner_authorized_destroy"}: raise SurfaceError("quarantine disposition")
-    if _canonical_digest(manifest,"manifest_sha256") != manifest["manifest_sha256"]: raise SurfaceError("manifest digest")
-    if len(manifest["files"]) > 16384 or manifest["file_count"] != len(manifest["files"]): raise SurfaceError("file count")
-    if manifest["byte_total"] != sum(x["size"] for x in manifest["files"]): raise SurfaceError("byte total")
-    if manifest["byte_total"] > 268435456: raise SurfaceError("quarantine size")
-    for entry in manifest["files"]:
-        if set(entry) != {"path","sha256","size","mode","nlink","kind"} or entry["kind"] != "regular" or entry["mode"] != 0o600 or entry["nlink"] != 1: raise SurfaceError("invalid payload entry")
-        p=root/entry["path"]
-        if not p.is_file() or p.is_symlink() or p.resolve() != p: raise SurfaceError("invalid payload path")
-        st=p.stat()
-        if st.st_uid != manifest["owner_uid"] or stat.S_IMODE(st.st_mode) != 0o600 or st.st_nlink != 1: raise SurfaceError("payload metadata")
-        with p.open("rb") as f: data=f.read()
-        if len(data) != entry["size"] or hashlib.sha256(data).hexdigest() != entry["sha256"]: raise SurfaceError("payload tamper")
-    return True
+    """Validate a quarantine snapshot without pathname reads or mutations."""
+    required = {"schema", "root", "owner_uid", "disposition", "files", "file_count",
+                "byte_total", "hash_algorithm", "manifest_sha256", "access_log"}
+    fds = []
+    try:
+        if not isinstance(root, Path) or type(manifest) is not dict or set(manifest) != required:
+            raise SurfaceError("invalid quarantine manifest")
+        if manifest["schema"] != _QUAR_SCHEMA or type(manifest["root"]) is not str:
+            raise SurfaceError("quarantine root")
+        raw = os.path.abspath(os.fspath(root))
+        canonical = os.path.realpath(raw)
+        if raw != canonical or not os.path.isabs(canonical) or manifest["root"] != canonical or len(canonical.encode()) > 4096:
+            raise SurfaceError("quarantine root")
+        uid = manifest["owner_uid"]
+        if type(uid) is not int or uid <= 0: raise SurfaceError("owner uid")
+        if manifest["hash_algorithm"] != "sha256" or manifest["disposition"] not in {"pending", "retain_encrypted", "owner_authorized_destroy"}:
+            raise SurfaceError("quarantine disposition")
+        if _canonical_digest(manifest, "manifest_sha256") != manifest["manifest_sha256"]:
+            raise SurfaceError("manifest digest")
+        files = manifest["files"]
+        if type(files) is not list or len(files) > 16384 or type(manifest["file_count"]) is not int or manifest["file_count"] != len(files):
+            raise SurfaceError("file count")
+        if type(manifest["byte_total"]) is not int or manifest["byte_total"] < 0 or manifest["byte_total"] > 268435456:
+            raise SurfaceError("quarantine size")
+        if any(type(x) is not dict or set(x) != {"path","sha256","size","mode","nlink","kind"} for x in files):
+            raise SurfaceError("invalid payload entry")
+        names = set()
+        declared = {}
+        for x in files:
+            path = x["path"]
+            if type(path) is not str or not SAFE_PATH.fullmatch(path) or path.startswith("./") or path.endswith("/"):
+                raise SurfaceError("invalid payload path")
+            if path in names or x["kind"] != "regular" or x["mode"] != 0o600 or x["nlink"] != 1:
+                raise SurfaceError("invalid payload entry")
+            if type(x["size"]) is not int or x["size"] < 0 or x["size"] > 268435456 or not HEX64.fullmatch(x["sha256"]):
+                raise SurfaceError("invalid payload entry")
+            names.add(path); declared[tuple(path.split("/"))] = x
+        if sum(x["size"] for x in files) != manifest["byte_total"]: raise SurfaceError("byte total")
+
+        # Open every component with O_NOFOLLOW, retaining the root descriptor.
+        parts = tuple(x for x in canonical.split(os.sep) if x)
+        fd = os.open(os.sep, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        fds.append(fd)
+        for part in parts:
+            nxt = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            fds.append(nxt); fd = nxt
+            st = os.fstat(fd)
+            if st.st_uid != uid or stat.S_IMODE(st.st_mode) != 0o700: raise SurfaceError("quarantine ancestry")
+        root_fd = fd
+        controls = {"manifest.json", os.path.relpath(manifest["access_log"], canonical)}
+        log = manifest["access_log"]
+        if type(log) is not str or not os.path.isabs(log) or os.path.dirname(log) != canonical or log == canonical + "/manifest.json": raise SurfaceError("access log")
+        if any("/" in x for x in controls if x != "manifest.json"): raise SurfaceError("access log")
+        for name in ("manifest.json", os.path.basename(log)):
+            cfd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=root_fd); fds.append(cfd)
+            st = os.fstat(cfd)
+            if st.st_uid != uid or stat.S_IMODE(st.st_mode) != 0o600 or st.st_nlink != 1 or not stat.S_ISREG(st.st_mode): raise SurfaceError("control metadata")
+            if name == "manifest.json":
+                raw = _fd_bytes(cfd, "quarantine manifest", max_bytes=8 * 1024 * 1024)
+                try: actual = json.loads(raw.decode("utf-8"), object_pairs_hook=lambda pairs: dict(pairs) if len({k for k, _ in pairs}) == len(pairs) else (_ for _ in ()).throw(ValueError()))
+                except (ValueError, UnicodeError, json.JSONDecodeError): raise SurfaceError("control manifest")
+                if actual != manifest: raise SurfaceError("control manifest")
+        expected_dirs = {prefix for path in (names | controls) for i in range(1, len(path.split("/"))) for prefix in [tuple(path.split("/")[:i])]}
+        seen = set(); inode_seen = set()
+        def walk(dfd, prefix=()):
+            for ent in os.scandir(dfd):
+                name = ent.name
+                if name in {".", ".."} or "/" in name or "\\" in name or "\x00" in name: raise SurfaceError("invalid entry")
+                rel = prefix + (name,); child = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0), dir_fd=dfd); fds.append(child)
+                st = os.fstat(child); mode = stat.S_IMODE(st.st_mode)
+                if st.st_uid != uid: raise SurfaceError("entry metadata")
+                if stat.S_ISDIR(st.st_mode):
+                    if mode != 0o700 or rel not in expected_dirs: raise SurfaceError("directory metadata")
+                    walk(child, rel)
+                elif stat.S_ISREG(st.st_mode):
+                    key = "/".join(rel)
+                    if key not in declared and key not in controls: raise SurfaceError("undeclared entry")
+                    if key in seen or (st.st_dev, st.st_ino) in inode_seen: raise SurfaceError("duplicate entry")
+                    seen.add(key); inode_seen.add((st.st_dev, st.st_ino))
+                    if key in declared:
+                        x = declared[rel]
+                        if mode != 0o600 or st.st_size != x["size"]: raise SurfaceError("payload metadata")
+                        data = _fd_bytes(child, "quarantine payload", max_bytes=268435456)
+                        if hashlib.sha256(data).hexdigest() != x["sha256"]: raise SurfaceError("payload tamper")
+                else: raise SurfaceError("special entry")
+        walk(root_fd)
+        if seen != names | controls: raise SurfaceError("missing entry")
+        return MappingProxyType({"feasible": True, "root": canonical, "file_count": len(files), "byte_total": manifest["byte_total"]})
+    except SurfaceError: raise
+    except (OSError, ValueError, TypeError, UnicodeError, json.JSONDecodeError) as exc:
+        raise SurfaceError("quarantine validation failed") from exc
+    finally:
+        for fd in reversed(fds):
+            try: os.close(fd)
+            except OSError: pass
