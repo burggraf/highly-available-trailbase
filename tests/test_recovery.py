@@ -11,6 +11,17 @@ import unittest
 ENTRY=Path(os.environ.get('HAT_RECOVERY_ENTRY',str(Path(__file__).resolve().parents[1]/'hat/recovery.py')))
 
 class RecoveryTests(unittest.TestCase):
+    def _authority(self, operation, origin):
+        support={name:'b'*64 for name in ('config.textproto','migrations/main/U100__hat_ops.sql','migrations/aux/U100__hat_ops.sql','secrets/keys/private_key.pem','secrets/keys/public_key.pem')}
+        return {'schema':'hat-restore-input-authority-1','operation':operation['id'],'origin':origin,
+                'ledger':{'path':'/var/lib/hat-control/'+operation['id']+'/ledger.jsonl','device':1,'inode':2,'mode':384,'uid':0,'links':1,'bytes':10,'sha256':'a'*64},'support':support,'binaries':{'trail':'c'*64,'litestream':'d'*64}}
+    def _request(self, operation, phase, authority):
+        profile,epoch,_,_=self.module().derive_restore_profile(operation,phase,phase=='compare' and operation['source']=='B')
+        inputs={'replica_config_sha256':'e'*64,'ledger_sha256':'a'*64,'ledger_authority':authority,'restore_points':{db:{'source':'/var/lib/hat-demo/depot/data/'+db+'.db','position':1} for db in ('main','session','aux')},'support':authority['support'],'binaries':authority['binaries']}
+        if profile=='recovery-comparison':
+            ops=['main_ops/d3-a']; inputs.update(fault_ledger_sha256='f'*64,fault_operations=ops,fault_operation_count=1,fault_operations_sha256=__import__('hashlib').sha256(self.module().canonical_json(ops)).hexdigest())
+        return {'schema':'hat-restore-acceptance-1','operation':operation['id'],'phase':phase,'source':operation['source'],'target':operation['target'],'epoch':epoch,'positions':{db:1 for db in ('main','session','aux')},'profile':profile,'inputs':inputs}
+
     def module(self):
         self.assertTrue(ENTRY.is_file(),'missing D3 recovery contracts')
         sys.path.insert(0,str(ENTRY.parent))
@@ -54,7 +65,7 @@ class RecoveryTests(unittest.TestCase):
         m=self.module()
         operation={'id':'a'*32,'source':'A','target':'B','source_epoch':'d1-source','new_epoch':'d1-'+'a'*32}
         authority={'schema':'hat-restore-input-authority-1','operation':operation['id'],'origin':'d2-preflight',
-                   'ledger':{'path':'/var/lib/hat-demo/ledger.jsonl','device':1,'inode':2,'mode':384,'uid':0,'links':1,'bytes':10,'sha256':'a'*64},
+                   'ledger':{'path':'/var/lib/hat-control/'+'a'*32+'/ledger.jsonl','device':1,'inode':2,'mode':384,'uid':0,'links':1,'bytes':10,'sha256':'a'*64},
                    'support':{name:'b'*64 for name in ('config.textproto','migrations/main/U100__hat_ops.sql','migrations/aux/U100__hat_ops.sql','secrets/keys/private_key.pem','secrets/keys/public_key.pem')},
                    'binaries':{'trail':'c'*64,'litestream':'d'*64}}
         request={'schema':'hat-restore-acceptance-1','operation':operation['id'],'phase':'compare','source':'A','target':'B',
@@ -67,6 +78,18 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(m.validate_acceptance_request(request,operation),request)
         self.assertEqual(m.parse_acceptance_request(raw,operation),request)
         self.assertNotIn('payload-value',m.canonical_json(request).decode())
+
+    def test_replica_config_and_authority_mapping_are_strict(self):
+        m=self.module(); operation={'id':'a'*32,'source':'A','target':'B','source_epoch':'d1-source','new_epoch':'d1-'+'a'*32}
+        good='path: demos/d1-source/main\\n  path: demos/d1-source/session # comment\\n\\tpath: demos/d1-source/aux\\n'
+        self.assertEqual(m._replica_config(good.encode(), 'd1-source'), good.encode())
+        for raw in (b'',good.encode().replace(b'\\n',b'\\r\\n'),b'\\xef\\xbb\\xbf'+good.encode(),good.encode()+b'\\x00',good.encode().replace(b'demos/d1-source/aux',b'demos/d1-source/other')):
+            with self.assertRaises(ValueError):m._replica_config(raw,'d1-source')
+        auth=self._authority(operation,'d2-preflight')
+        self.assertEqual(m.validate_acceptance_request(self._request(operation,'compare',auth),operation)['profile'],'comparison')
+        for origin,phase in (('d3-recovery-input','compare'),('current-verify-exclusive','baseline')):
+            bad=self._request(operation,phase,self._authority(operation,origin))
+            with self.assertRaises(ValueError):m.validate_acceptance_request(bad,operation)
         for patch in ({'profile':'baseline'},{'epoch':'d1-wrong'},{'operation':'b'*32},
                       {'positions':request['positions']|{'main':True}},
                       {'inputs':request['inputs']|{'extra':1}},
@@ -154,7 +177,7 @@ class RecoveryTests(unittest.TestCase):
                 profile,epoch,_,_=m.derive_restore_profile(operation,phase,fault)
                 support={name:'b'*64 for name in ('config.textproto','migrations/main/U100__hat_ops.sql','migrations/aux/U100__hat_ops.sql','secrets/keys/private_key.pem','secrets/keys/public_key.pem')}
                 authority={'schema':'hat-restore-input-authority-1','operation':ident,'origin':'current-verify-exclusive' if phase=='new-writes' else ('d2-preflight' if source=='A' else 'd3-recovery-input'),
-                           'ledger':{'path':'/var/lib/hat-demo/ledger.jsonl','device':1,'inode':2,'mode':384,'uid':0,'links':1,'bytes':10,'sha256':'a'*64},
+                           'ledger':{'path':'/var/lib/hat-control/'+'a'*32+'/ledger.jsonl','device':1,'inode':2,'mode':384,'uid':0,'links':1,'bytes':10,'sha256':'a'*64},
                            'support':support,'binaries':{'trail':'c'*64,'litestream':'d'*64}}
                 inputs={'replica_config_sha256':'e'*64,'ledger_sha256':'a'*64,'ledger_authority':authority,
                         'restore_points':{db:{'source':'/var/lib/hat-demo/depot/data/'+db+'.db','position':1} for db in ('main','session','aux')},
