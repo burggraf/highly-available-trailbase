@@ -672,5 +672,17 @@ class ClosureRequestTests(unittest.TestCase):
             self.assertEqual(calls, 0)
 
 
+class AttestationTests(unittest.TestCase):
+    def test_missing_extra_stale_or_self_reported_facts_are_infeasible(self):
+        """The validator rejects the envelope before accepting any claimed fact."""
+        with tempfile.TemporaryDirectory() as td:
+            manifest = surface_closure.load_manifest(MANIFEST)
+            # A real trust object is intentionally not synthesized from the claim.
+            trust = object.__new__(surface_closure.AttestationTrust)
+            with self.assertRaises(surface_closure.SurfaceError):
+                surface_closure.validate_attestation({}, manifest, trust)
+            with self.assertRaises(surface_closure.SurfaceError):
+                surface_closure.validate_attestation({"schema": "d4-attestation-1", "extra": True}, manifest, trust)
+
 if __name__ == "__main__":
     unittest.main()

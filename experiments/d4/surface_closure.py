@@ -673,49 +673,157 @@ class AttestationTrust:
     expected_argv: tuple[str, ...]
     expected_env: tuple[tuple[str, str], ...]
     condition_resolutions: tuple[tuple[str, str], ...]
+    manager_receipt_nonce: str = ""
+    attestation_sha256: str = ""
 
+def _ao(v, keys, p):
+    if type(v) is not dict or set(v) != set(keys): raise SurfaceError(f"{p}: keys")
+    return v
+
+def _ai(v, p, positive=False):
+    if type(v) is not int or (positive and v <= 0): raise SurfaceError(f"{p}: integer")
+    return v
+
+def _as(v, p, digest=False):
+    if type(v) is not str or not v or len(v.encode()) > 4096: raise SurfaceError(f"{p}: string")
+    if digest and not HEX64.fullmatch(v): raise SurfaceError(f"{p}: hash")
+    return v
+
+def _al(v, p, n=4096):
+    if type(v) is not list or len(v) > n: raise SurfaceError(f"{p}: array")
+    return v
+
+def _au(xs, key, p):
+    vals=[x[key] for x in xs]
+    if len(vals) != len(set(vals)): raise SurfaceError(f"{p}: duplicate identity")
+
+def _files(xs, p):
+    _al(xs,p)
+    for x in xs:
+        _ao(x,("path","sha256"),p); _as(x["path"],p); _as(x["sha256"],p,True)
+        if not SAFE_PATH.fullmatch(x["path"]): raise SurfaceError(f"{p}: unsafe path")
+    _au(xs,"path",p)
 
 def validate_attestation(attestation, manifest, trust):
-    if type(trust) is not AttestationTrust: raise SurfaceError("exact AttestationTrust required")
-    if type(manifest) is not dict: raise SurfaceError("manifest object required")
-    if type(attestation) is not dict: raise SurfaceError("attestation object required")
-    raw = json.dumps(attestation, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
-    if len(raw) > 8 * 1024 * 1024: raise SurfaceError("attestation too large")
-    _walk_attestation(attestation)
-    if attestation.get("schema") != ATTESTATION_SCHEMA: raise SurfaceError("invalid attestation schema")
-    required = {"schema","collector","manager_receipt","source","binary","config","migration","plugin","sandbox","launch","window","descriptors","listeners","connections","listener_bindings","registrations","writable_probes","evidence","uncertainty","telemetry","attestation_sha256"}
-    if set(attestation) != required: raise SurfaceError("attestation keys mismatch")
-    if not HEX64.fullmatch(attestation["attestation_sha256"]): raise SurfaceError("invalid attestation digest")
-    if _canonical_digest(attestation, "attestation_sha256") != attestation["attestation_sha256"]: raise SurfaceError("attestation digest mismatch")
-    # Trust is supplied by the manager; never derive it from the self-report.
-    receipt = attestation["manager_receipt"]
-    collector = attestation["collector"]
-    if receipt.get("receipt_sha256") != trust.manager_receipt_sha256 or receipt.get("path_sha256") != trust.manager_receipt_path_sha256: raise SurfaceError("receipt trust mismatch")
-    if receipt.get("manager_pid") != trust.manager_pid or receipt.get("collector_pid") != trust.collector_pid or receipt.get("collector_parent_pid") != trust.collector_parent_pid: raise SurfaceError("receipt pid mismatch")
-    if collector.get("pid") != trust.collector_pid or collector.get("parent_pid") != trust.collector_parent_pid or collector.get("source_sha256") != trust.collector_source_sha256: raise SurfaceError("collector trust mismatch")
-    source = attestation["source"]
-    if source.get("sha256") != trust.source_sha256 or source.get("root_sha256") != trust.source_root_sha256: raise SurfaceError("source trust mismatch")
-    if attestation["binary"].get("path_sha256") != trust.binary_path_sha256 or attestation["binary"].get("sha256") != trust.binary_sha256: raise SurfaceError("binary trust mismatch")
-    if attestation["config"].get("sha256") != trust.config_sha256 or attestation["config"].get("generation") != trust.config_generation: raise SurfaceError("config trust mismatch")
-    if attestation["migration"].get("sha256") != trust.migration_sha256 or attestation["plugin"].get("sha256") != trust.plugin_sha256: raise SurfaceError("artifact trust mismatch")
-    if attestation["sandbox"].get("profile_sha256") != trust.sandbox_profile_sha256 or attestation["sandbox"].get("root_sha256") != trust.sandbox_root_sha256: raise SurfaceError("sandbox trust mismatch")
-    launch = attestation["launch"]
-    if tuple(launch.get("argv", ())) != trust.expected_argv or tuple((x.get("name"), x.get("value")) for x in launch.get("env", ())) != trust.expected_env: raise SurfaceError("launch trust mismatch")
-    if launch.get("env_i") is not True: raise SurfaceError("environment not inherited")
-    u=attestation["uncertainty"]
-    if type(u) is not dict or set(u) != {"unknown","missing","extra","stale","self_reported_only"} or any(u[k] != [] for k in u): raise SurfaceError("uncertainty")
-    if len(attestation["listeners"]) != 2 or len(attestation["listener_bindings"]) != 2: raise SurfaceError("two listeners required")
-    if any(x.get("protocol") != "AF_UNIX" or x.get("sock_type") != "SOCK_STREAM" for x in attestation["listeners"]): raise SurfaceError("TCP listener")
-    if any(x.get("source") != "observed" for x in attestation["descriptors"] + attestation["listeners"] + attestation["listener_bindings"]): raise SurfaceError("declared observation")
-    if any(x.get("result") == "allowed" for x in attestation["writable_probes"]): raise SurfaceError("protected write")
-    if attestation["telemetry"].get("logs_only") is not True: raise SurfaceError("telemetry")
-    evidence={x.get("id") for x in attestation["evidence"]}
-    for group in ("connections","writable_probes"):
-        for x in attestation[group]:
-            if x.get("evidence_id") not in evidence: raise SurfaceError("missing evidence")
-    if any(x.get("resolution") not in {"enabled","disabled","absent"} or x.get("observed_by") == "declaration" for x in attestation["registrations"].get("conditions", [])): raise SurfaceError("unresolved condition")
-    result={"status":"feasible","listeners":tuple((x.get("id"),x.get("path"),x.get("inode")) for x in attestation["listeners"])}
-    return MappingProxyType(result)
+    try:
+        if type(trust) is not AttestationTrust or type(manifest) is not dict or type(attestation) is not dict: raise SurfaceError("attestation inputs")
+        for name in ("manager_receipt_path_sha256","manager_receipt_sha256","collector_source_sha256","manifest_sha256","source_sha256","source_root_sha256","binary_path_sha256","binary_sha256","config_sha256","migration_sha256","plugin_sha256","sandbox_profile_sha256","sandbox_root_sha256"):
+            _as(getattr(trust,name), "trust."+name, True)
+        for name in ("manager_pid","collector_pid","collector_parent_pid","fixture_pid","fixture_start_mono_ns","service_uid","config_generation","sandbox_profile_generation","collection_ready_mono_ns","collection_launched_mono_ns","collection_deadline_mono_ns"):
+            _ai(getattr(trust,name), "trust."+name)
+        if trust.manager_receipt_nonce and (type(trust.manager_receipt_nonce) is not str or len(trust.manager_receipt_nonce.encode()) > 4096): raise SurfaceError("trust nonce")
+        if _manifest_sha256(manifest) != trust.manifest_sha256: raise SurfaceError("manifest trust")
+        raw=json.dumps(attestation, ensure_ascii=False, sort_keys=True, separators=(",",":"), allow_nan=False).encode("utf-8", "strict")
+        if len(raw)>8*1024*1024: raise SurfaceError("attestation too large")
+        _walk_attestation(attestation)
+        top={"schema","collector","manager_receipt","source","binary","config","migration","plugin","sandbox","launch","window","descriptors","listeners","connections","listener_bindings","registrations","writable_probes","evidence","uncertainty","telemetry","attestation_sha256"}
+        if set(attestation)!=top or attestation["schema"]!=ATTESTATION_SCHEMA: raise SurfaceError("schema")
+        digest=attestation["attestation_sha256"]; _as(digest,"attestation_sha256",True)
+        if _canonical_digest(attestation,"attestation_sha256") != digest or (trust.attestation_sha256 and digest != trust.attestation_sha256): raise SurfaceError("attestation digest")
+        c=_ao(attestation["collector"],("id","source_sha256","pid","parent_pid","started_wall","started_mono_ns","finished_wall","finished_mono_ns"),"collector")
+        r=_ao(attestation["manager_receipt"],("path_sha256","receipt_sha256","manager_pid","collector_pid","collector_parent_pid","launched_mono_ns","exited_mono_ns"),"receipt")
+        for k in ("source_sha256",): _as(c[k],k,True)
+        for k in ("path_sha256","receipt_sha256"): _as(r[k],k,True)
+        for k in ("pid","parent_pid","started_mono_ns","finished_mono_ns"): _ai(c[k],k,True)
+        for k in ("manager_pid","collector_pid","collector_parent_pid","launched_mono_ns","exited_mono_ns"): _ai(r[k],k,True)
+        if (r["receipt_sha256"],r["path_sha256"],r["manager_pid"],r["collector_pid"],r["collector_parent_pid"]) != (trust.manager_receipt_sha256,trust.manager_receipt_path_sha256,trust.manager_pid,trust.collector_pid,trust.collector_parent_pid): raise SurfaceError("receipt trust")
+        if (c["pid"],c["parent_pid"],c["source_sha256"]) != (trust.collector_pid,trust.collector_parent_pid,trust.collector_source_sha256): raise SurfaceError("collector trust")
+        s=_ao(attestation["source"],("repo","tag","commit","sha256","root_sha256"),"source")
+        if (s["repo"],s["tag"],s["commit"]) != TRAILBASE[1:]: raise SurfaceError("source pin")
+        for k in ("sha256","root_sha256"): _as(s[k],k,True)
+        if (s["sha256"],s["root_sha256"]) != (trust.source_sha256,trust.source_root_sha256): raise SurfaceError("source trust")
+        b=_ao(attestation["binary"],("path_sha256","sha256","build_id"),"binary")
+        for k in ("path_sha256","sha256"): _as(b[k],k,True)
+        if (b["path_sha256"],b["sha256"],b["build_id"]) != (trust.binary_path_sha256,trust.binary_sha256,trust.build_id): raise SurfaceError("binary trust")
+        cfg=_ao(attestation["config"],("sha256","generation","files"),"config"); mig=_ao(attestation["migration"],("sha256","files"),"migration"); plug=_ao(attestation["plugin"],("sha256","files","registrations"),"plugin")
+        for x in (cfg,mig,plug): _as(x["sha256"],"artifact",True); _ai(x["generation"],"generation") if "generation" in x else None; _files(x["files"],"files")
+        if (cfg["sha256"],cfg["generation"],mig["sha256"],plug["sha256"]) != (trust.config_sha256,trust.config_generation,trust.migration_sha256,trust.plugin_sha256): raise SurfaceError("artifact trust")
+        sb=_ao(attestation["sandbox"],("profile_sha256","profile_generation","identity_uid","identity_groups","root_sha256"),"sandbox")
+        for k in ("profile_sha256","root_sha256"): _as(sb[k],k,True)
+        _ai(sb["profile_generation"],"sandbox generation"); _ai(sb["identity_uid"],"sandbox uid",True); _al(sb["identity_groups"],"sandbox groups",64)
+        if (sb["profile_sha256"],sb["profile_generation"],sb["root_sha256"]) != (trust.sandbox_profile_sha256,trust.sandbox_profile_generation,trust.sandbox_root_sha256): raise SurfaceError("sandbox trust")
+        launch=_ao(attestation["launch"],("argv","env","process_tree","env_i"),"launch"); _al(launch["argv"],"argv",64); _al(launch["env"],"env",128)
+        if launch["env_i"] is not True or tuple(launch["argv"]) != trust.expected_argv or tuple((x["name"],x["value"]) for x in launch["env"]) != trust.expected_env: raise SurfaceError("launch")
+        for x in launch["argv"]: _as(x,"argv")
+        for x in launch["env"]: _ao(x,("name","value"),"env"); _as(x["name"],"env name"); _as(x["value"],"env value")
+        _au(launch["env"],"name","env")
+        tree=_al(launch["process_tree"],"tree",256); seen={}
+        for x in tree:
+            _ao(x,("pid","parent_pid","uid","gids","exe_sha256","argv","role"),"process"); _ai(x["pid"],"pid",True); _ai(x["parent_pid"],"parent"); _ai(x["uid"],"uid",True); _al(x["gids"],"gids",64); _as(x["exe_sha256"],"exe",True); _al(x["argv"],"process argv",64); _as(x["role"],"role"); seen[x["pid"]]=x
+        if len(seen)!=len(tree) or not {"manager","trailbase","collector"} <= {x["role"] for x in tree}: raise SurfaceError("process tree")
+        for x in tree:
+            chain=set(); q=x["pid"]
+            while q:
+                if q in chain: raise SurfaceError("process cycle")
+                chain.add(q); q=seen.get(q,{}).get("parent_pid",0)
+                if q and q not in seen: raise SurfaceError("orphan process")
+        w=_ao(attestation["window"],("ready_mono_ns","start_mono_ns","end_mono_ns","positive_controls"),"window")
+        for k in ("ready_mono_ns","start_mono_ns","end_mono_ns"): _ai(w[k],k)
+        if not (0<=w["ready_mono_ns"]<=w["start_mono_ns"]<w["end_mono_ns"]<=trust.collection_deadline_mono_ns): raise SurfaceError("window")
+        _al(w["positive_controls"],"controls",64)
+        u=_ao(attestation["uncertainty"],("unknown","missing","extra","stale","self_reported_only"),"uncertainty")
+        if any(type(u[k]) is not list or u[k] for k in u): raise SurfaceError("uncertainty")
+        _validate_attestation_nested(attestation,trust,seen,manifest)
+        return MappingProxyType({"status":"feasible","listeners":tuple((x["id"],x["path"],x["inode"]) for x in attestation["listeners"])})
+    except SurfaceError: raise
+    except Exception as exc: raise SurfaceError("malformed attestation") from exc
+
+def _validate_attestation_nested(a, trust, tree, manifest):
+    # Exact schemas are deliberately table-driven: omission and additions fail closed.
+    specs={
+      "descriptors":("pid fd cloexec owner_uid process_role type path inode device mode nlink source".split(),256,"fd"),
+      "listeners":("id pid role protocol sock_type path parent_ancestry uid mode device inode nlink source".split(),2,"id"),
+      "connections":("id listener_id client_pid server_pid client_uid client_gids server_uid server_gids client_inode server_inode accepted_mono_ns peer_source bytes_before_validation".split(),64,"id"),
+      "listener_bindings":("listener_id inode device pid exe_sha256 argv observed_mono_ns source".split(),2,"listener_id"),
+      "writable_probes":("path uid operation result errno evidence_id".split(),256,"path"),
+      "evidence":("id path sha256 size kind collector_source_sha256 created_mono_ns".split(),4096,"id"),
+    }
+    for group,(keys,limit,ident) in specs.items():
+        xs=_al(a[group],group,limit); _au(xs,ident,group)
+        for x in xs: _ao(x,keys,group)
+    for x in a["descriptors"]:
+        _ai(x["pid"],"descriptor.pid",True); _ai(x["fd"],"descriptor.fd"); _ai(x["owner_uid"],"descriptor.uid",True); _as(x["process_role"],"descriptor.role"); _as(x["type"],"descriptor.type"); _as(x["source"],"descriptor.source")
+        if x["source"]!="observed" or x["type"] not in {"stdin","stdout","stderr","uds","file","pipe","other"}: raise SurfaceError("descriptor observation")
+        if x["path"] is not None and type(x["path"]) is not str: raise SurfaceError("descriptor path")
+        if x["path"] is not None and not x["path"].startswith("/"): raise SurfaceError("descriptor path")
+    for x in a["listeners"]:
+        _as(x["id"],"listener.id"); _ai(x["pid"],"listener.pid",True); _as(x["role"],"listener.role")
+        if x["role"] not in {"main","admin"} or x["protocol"]!="AF_UNIX" or x["sock_type"]!="SOCK_STREAM" or x["source"]!="observed": raise SurfaceError("listener")
+        _as(x["path"],"listener.path"); _ai(x["uid"],"listener.uid",True); _ai(x["inode"],"listener.inode",True); _ai(x["device"],"listener.device",True)
+        if not x["path"].startswith("/") or x["mode"] != 0o700 or x["nlink"] != 1: raise SurfaceError("listener path metadata")
+        _al(x["parent_ancestry"],"listener.ancestry",32)
+    if {x["role"] for x in a["listeners"]}!={"main","admin"}: raise SurfaceError("listener roles")
+    if len({(x["device"],x["inode"],x["path"]) for x in a["listeners"]}) != 2: raise SurfaceError("listener identity")
+    for x in a["connections"]:
+        if x["peer_source"] not in {"LOCAL_PEERCRED","observed"} or x["bytes_before_validation"]!=0: raise SurfaceError("connection peer")
+        if x["listener_id"] not in {y["id"] for y in a["listeners"]}: raise SurfaceError("connection listener")
+    for x in a["listener_bindings"]:
+        if x["source"]!="observed" or x["listener_id"] not in {y["id"] for y in a["listeners"]}: raise SurfaceError("binding")
+        _as(x["exe_sha256"],"binding.exe",True); _al(x["argv"],"binding.argv",64)
+    for x in a["writable_probes"]:
+        _as(x["path"],"probe.path"); _as(x["operation"],"probe.operation"); _as(x["result"],"probe.result"); _ai(x["uid"],"probe.uid",True)
+        if x["result"]!="denied" or x["operation"] not in {"create","append","rename","unlink","chmod"}: raise SurfaceError("probe")
+    evid={x["id"] for x in a["evidence"]}
+    for x in a["evidence"]:
+        _as(x["id"],"evidence.id"); _as(x["path"],"evidence.path"); _as(x["sha256"],"evidence.sha256",True); _ai(x["size"],"evidence.size"); _as(x["kind"],"evidence.kind"); _as(x["collector_source_sha256"],"evidence.collector",True); _ai(x["created_mono_ns"],"evidence.time")
+        if x["size"]>268435456: raise SurfaceError("evidence size")
+    for x in a["writable_probes"]:
+        if x["evidence_id"] not in evid: raise SurfaceError("probe evidence")
+    regs=_ao(a["registrations"],("jobs","plugins","routes","conditions","dynamic_absence"),"registrations")
+    for name,keys,lim,ident in (("jobs",("id","enabled","mutates","source_sha256","condition_id","evidence_id"),256,"id"),("plugins",("id","enabled","sha256","kind","condition_id","evidence_id"),256,"id"),("routes",("method","path","handler","enabled","source_sha256","condition_id","evidence_id"),512,"path"),("conditions",("id","expression","resolution","observed_by","evidence_id"),512,"id"),("dynamic_absence",("point_id","kind","source_sha256","query","expected_absent","observed_absent","evidence_id"),256,"point_id")):
+        xs=_al(regs[name],name,lim); _au(xs,ident,name)
+        for x in xs: _ao(x,keys,name)
+    for x in regs["jobs"]+regs["plugins"]:
+        if x["enabled"] and x.get("mutates"): raise SurfaceError("mutating registration")
+    if regs["plugins"]: raise SurfaceError("plugins")
+    for x in regs["dynamic_absence"]:
+        if x["expected_absent"] is not True or x["observed_absent"] is not True or x["evidence_id"] not in evid: raise SurfaceError("dynamic absence")
+    for x in regs["conditions"]:
+        if x["resolution"] not in {"enabled","disabled","absent"} or x["observed_by"] not in {"collector","evidence"} or x["evidence_id"] not in evid: raise SurfaceError("condition")
+    tel=_ao(a["telemetry"],("logs_only","readers","writers"),"telemetry")
+    if tel["logs_only"] is not True: raise SurfaceError("telemetry")
+    for n in ("readers","writers"): _al(tel[n],"telemetry."+n,256)
+
 
 def validate_quarantine(root, manifest):
     root=Path(root)
