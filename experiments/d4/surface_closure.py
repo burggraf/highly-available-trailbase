@@ -654,6 +654,7 @@ if __name__ == "__main__":
 
 # Task 3: pure-data attestation/quarantine contracts.
 ATTESTATION_SCHEMA = "d4-attestation-1"
+PHASE_SOCKET_SCHEMA = "d4-phase-socket-1"
 _QUAR_SCHEMA = "d4-quarantine-1"
 
 def _canonical_digest(value, omitted):
@@ -743,8 +744,89 @@ def _files(xs, p):
         if not SAFE_PATH.fullmatch(x["path"]): raise SurfaceError(f"{p}: unsafe path")
     _au(xs,"path",p)
 
+@dataclass(frozen=True, slots=True)
+class PhaseSocketTrust:
+    """Externally observed facts used by the pure phase/socket validator."""
+    manager_pid: int
+    trailbase_pid: int
+    opener_pid: int
+    collector_pid: int
+    trailbase_start: int
+    opener_start: int
+    collector_start: int
+    manager_start: int
+    evidence_inventory: tuple[tuple[str, str], ...]
+    pre_nonce: str
+    post_nonce: str
+
+
+def _phase_socket_error(condition: bool, message: str) -> None:
+    if not condition:
+        raise SurfaceError(message)
+
+
+def validate_phase_socket_attestation(attestation: dict[str, Any], trust: PhaseSocketTrust) -> MappingProxyType:
+    """Validate Task 3 receipts without touching the process, socket, or filesystem APIs."""
+    if type(attestation) is not dict or type(trust) is not PhaseSocketTrust:
+        raise SurfaceError("phase/socket input")
+    _walk_attestation(attestation)
+    required = {"schema", "pre_send", "sandbox_probe", "post_send", "evidence", "binding"}
+    _phase_socket_error(set(attestation) == required and attestation["schema"] == PHASE_SOCKET_SCHEMA, "phase/socket schema")
+    pre = _ao(attestation["pre_send"], ("nonce", "started", "exited", "processes", "listener", "listening_fd", "opener_endpoint", "accepted_endpoint", "raw_framing", "bytes_before_validation"), "pre_send")
+    probe = _ao(attestation["sandbox_probe"], ("nonce", "started", "exited", "evidence_id"), "sandbox_probe")
+    post = _ao(attestation["post_send"], ("nonce", "started", "exited", "binary", "config", "argv", "parent_pid", "parent_start", "evidence_id"), "post_send")
+    binding = _ao(attestation["binding"], ("nonce", "evidence_id"), "binding")
+    _phase_socket_error(pre["nonce"] == trust.pre_nonce and post["nonce"] == trust.post_nonce, "phase nonce trust")
+    _phase_socket_error(len({pre["nonce"], probe["nonce"], post["nonce"]}) == 3, "phase nonce reuse")
+    _phase_socket_error(pre["nonce"] != post["nonce"] and pre["nonce"] != probe["nonce"] and post["nonce"] != probe["nonce"], "phase nonce overlap")
+    for item, name in ((pre, "pre_send"), (probe, "sandbox_probe"), (post, "post_send")):
+        for key in ("started", "exited"):
+            _bounded(item[key], f"{name}.{key}", 1)
+        _phase_socket_error(item["started"] <= item["exited"], f"{name} lifecycle")
+    _phase_socket_error(probe["exited"] <= pre["started"], "sandbox ordering")
+    _phase_socket_error(pre["exited"] <= post["started"], "post-send ordering")
+    _phase_socket_error(pre["bytes_before_validation"] == 0, "application bytes before validation")
+    processes = _al(pre["processes"], "pre_send.processes", 4)
+    _phase_socket_error(len(processes) == 4, "process cardinality")
+    by_role = {}
+    for p in processes:
+        _ao(p, ("role", "pid", "parent_pid", "start", "exe_sha256", "argv", "evidence_id"), "process")
+        _phase_socket_error(p["role"] in {"manager", "trailbase", "opener", "collector"} and p["role"] not in by_role, "process roles")
+        _bounded(p["pid"], "process pid", 1); _bounded(p["parent_pid"], "process parent"); _bounded(p["start"], "process start", 1)
+        _as(p["exe_sha256"], "process executable", True); _al(p["argv"], "process argv", 64); _as(p["evidence_id"], "process evidence")
+        by_role[p["role"]] = p
+    _phase_socket_error(set(by_role) == {"manager", "trailbase", "opener", "collector"}, "process roles")
+    _phase_socket_error(by_role["manager"]["pid"] == trust.manager_pid and by_role["manager"]["start"] == trust.manager_start, "manager identity")
+    for role in ("trailbase", "opener", "collector"):
+        _phase_socket_error(by_role[role]["pid"] == getattr(trust, role + "_pid") and by_role[role]["start"] == getattr(trust, role + "_start"), f"{role} identity")
+        _phase_socket_error(by_role[role]["parent_pid"] == trust.manager_pid, f"{role} ancestry")
+    _phase_socket_error(by_role["collector"]["pid"] != by_role["trailbase"]["pid"] and by_role["collector"]["pid"] != by_role["opener"]["pid"], "collector substitution")
+    for key, label in (("listener", "listener pathname"), ("listening_fd", "listening fd"), ("opener_endpoint", "opener endpoint"), ("accepted_endpoint", "accepted endpoint")):
+        obj = _ao(pre[key], ("device", "inode", "api", "observed_mono_ns", "evidence_id"), label)
+        _bounded(obj["device"], label + " device", 1); _bounded(obj["inode"], label + " inode", 1); _as(obj["api"], label + " api"); _bounded(obj["observed_mono_ns"], label + " time", 1); _as(obj["evidence_id"], label + " evidence")
+    _phase_socket_error(pre["listener"]["api"] != "synthetic" and pre["listening_fd"]["api"] != "synthetic" and pre["accepted_endpoint"]["api"] != "synthetic", "kernel linkage")
+    _phase_socket_error(pre["listener"]["device"] != pre["accepted_endpoint"]["device"] or pre["listener"]["inode"] != pre["accepted_endpoint"]["inode"], "endpoint identity conflation")
+    framing = _ao(pre["raw_framing"], ("method", "target", "headers", "http_version", "host", "content_length", "transfer_encoding", "body_start", "body_end", "nonce", "evidence_id"), "raw framing")
+    _phase_socket_error(framing["nonce"] == pre["nonce"] and framing["transfer_encoding"] is None and framing["body_end"] >= framing["body_start"], "raw framing")
+    _phase_socket_error(binding["nonce"] == pre["nonce"], "binding phase")
+    _phase_socket_error(post["parent_pid"] == trust.manager_pid and post["parent_start"] == trust.manager_start, "litestream parent")
+    _phase_socket_error(post["started"] > pre["exited"], "litestream pre-send presence")
+    _as(post["binary"], "litestream binary", True); _as(post["config"], "litestream config", True); _al(post["argv"], "litestream argv", 64)
+    evidence_items = _al(attestation["evidence"], "evidence", 4096)
+    inventory = tuple(sorted((str(x["id"]), str(x["sha256"])) for x in evidence_items if type(x) is dict and "id" in x and "sha256" in x))
+    _phase_socket_error(inventory == tuple(sorted(trust.evidence_inventory)), "evidence inventory")
+    evidence_ids = {x["id"] for x in evidence_items}
+    refs = [p["evidence_id"] for p in processes] + [pre[k]["evidence_id"] for k in ("listener", "listening_fd", "opener_endpoint", "accepted_endpoint")]
+    refs += [framing["evidence_id"], probe["evidence_id"], post["evidence_id"], binding["evidence_id"]]
+    _phase_socket_error(all(type(x) is str and x in evidence_ids for x in refs), "evidence reference")
+    _phase_socket_error(all(type(x) is dict and set(x) == {"id", "sha256"} and _as(x["id"], "evidence id") and _as(x["sha256"], "evidence hash", True) for x in evidence_items), "evidence schema")
+    return MappingProxyType({"status": "feasible", "phase_nonce": pre["nonce"]})
+
+
 def validate_attestation(attestation, manifest, trust):
     try:
+        if type(attestation) is dict and attestation.get("schema") == PHASE_SOCKET_SCHEMA:
+            return validate_phase_socket_attestation(attestation, trust)
         if type(trust) is not AttestationTrust or type(manifest) is not dict or type(attestation) is not dict: raise SurfaceError("attestation inputs")
         for name in ("manager_receipt_path_sha256","manager_receipt_sha256","collector_source_sha256","manifest_sha256","source_sha256","source_root_sha256","binary_path_sha256","binary_sha256","config_sha256","migration_sha256","plugin_sha256","sandbox_profile_sha256","sandbox_root_sha256"):
             _as(getattr(trust,name), "trust."+name, True)

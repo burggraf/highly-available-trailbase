@@ -1276,5 +1276,32 @@ class QuarantineTests(unittest.TestCase):
             self.assertEqual(tree(root), before); self.assertEqual(manifest, original)
             self.assertEqual(result["file_count"], 1); self.assertEqual(result["byte_total"], 4)
 
+
+class PhaseSocketContractTests(unittest.TestCase):
+    def phase_fixture(self):
+        trust = surface_closure.PhaseSocketTrust(1, 2, 3, 4, 10, 11, 12, 9, tuple((f'e{i}', f'{i:064x}') for i in range(1, 11)), 'pre', 'post')
+        processes = [{"role": r, "pid": i, "parent_pid": 0 if r == 'manager' else 1, "start": 9 + i,
+                      "exe_sha256": f'{i:064x}', "argv": [r], "evidence_id": f'e{i}'}
+                     for r, i in (("manager", 1), ("trailbase", 2), ("opener", 3), ("collector", 4))]
+        endpoint = lambda i, e: {"device": 1, "inode": i, "api": "fstat+getsockname", "observed_mono_ns": 20 + i, "evidence_id": e}
+        att = {"schema": surface_closure.PHASE_SOCKET_SCHEMA,
+          "pre_send": {"nonce": "pre", "started": 10, "exited": 25, "processes": processes, "listener": endpoint(100, "e5"), "listening_fd": endpoint(101, "e6"), "opener_endpoint": endpoint(102, "e7"), "accepted_endpoint": endpoint(103, "e8"), "raw_framing": {"method":"POST", "target":"/x", "headers":[], "http_version":"HTTP/1.1", "host":"localhost", "content_length":0, "transfer_encoding":None, "body_start":0, "body_end":0, "nonce":"pre", "evidence_id":"e9"}, "bytes_before_validation": 0},
+          "sandbox_probe": {"nonce":"probe", "started":1, "exited":8, "evidence_id":"e10"},
+          "post_send": {"nonce":"post", "started":30, "exited":40, "binary":"a"*64, "config":"b"*64, "argv":["litestream"], "parent_pid":1, "parent_start":9, "evidence_id":"e1"},
+          "binding": {"nonce":"pre", "evidence_id":"e2"}, "evidence":[{"id":f"e{i}","sha256":f"{i:064x}"} for i in range(1,11)]}
+        return att, trust
+
+    def test_phase_socket_validates_separate_roles_and_phases(self):
+        att, trust = self.phase_fixture()
+        result = surface_closure.validate_phase_socket_attestation(att, trust)
+        self.assertEqual(result["status"], "feasible")
+
+    def test_phase_socket_rejects_litestream_before_pre_send(self):
+        att, trust = self.phase_fixture()
+        att["post_send"]["started"] = 5
+        with self.assertRaises(surface_closure.SurfaceError):
+            surface_closure.validate_phase_socket_attestation(att, trust)
+
+
 if __name__ == "__main__":
     unittest.main()
