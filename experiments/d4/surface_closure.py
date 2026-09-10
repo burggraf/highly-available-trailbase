@@ -7,6 +7,8 @@ import re
 import stat
 from pathlib import Path
 from typing import Any
+from dataclasses import dataclass
+import math
 
 COMMIT = "f24291b894bb6c6696608e5f4c2f68666fe97686"
 TRAILBASE = ("trailbase", "trailbaseio/trailbase", "v0.33.11", COMMIT)
@@ -168,6 +170,19 @@ EXPECTED_ROUTE_CONDITIONS = {
     ('GET', '/api/healthcheck'): 'always',
 }
 class SurfaceError(ValueError): pass
+
+@dataclass(frozen=True)
+class ClosureRequest:
+    method: bytes
+    target: bytes
+    headers: tuple[tuple[bytes, bytes], ...]
+    body: bytes
+
+@dataclass(frozen=True)
+class Binding:
+    operation_kind: str
+    database: str
+    validated_request: ClosureRequest
 
 def _dict(v: Any, name: str) -> dict:
     if type(v) is not dict: raise SurfaceError(f"{name}: expected object")
@@ -376,10 +391,44 @@ def _validate_rules(m, routes):
         x = _dict(rules[key], "exact allow rule"); _keys(x, {"upstream","database"}, "exact allow rule")
         if x["upstream"] != upstream or x["database"] != db or upstream not in templates: raise SurfaceError("rule-to-template mismatch")
 
-def bind_request(method: str, path: str, manifest: dict[str, Any]) -> str | None:
+def _strict_json(body: bytes) -> object:
+    if type(body) is not bytes or not body or body[:1] in b" \\t\\r\\n" or body[-1:] in b" \\t\\r\\n":
+        raise SurfaceError("invalid JSON framing")
+    def pairs(items):
+        out = {}
+        for key, value in items:
+            if key in out: raise SurfaceError("duplicate JSON key")
+            out[key] = value
+        return out
+    def constant(value):
+        raise SurfaceError("nonfinite JSON number")
+    try: value = json.loads(body.decode("utf-8"), object_pairs_hook=pairs, parse_constant=constant)
+    except (UnicodeDecodeError, ValueError, SurfaceError) as exc: raise SurfaceError("invalid JSON") from exc
+    if type(value) is not dict: raise SurfaceError("JSON object required")
+    return value
+
+def bind_request(request: ClosureRequest, manifest: dict[str, Any]) -> Binding | None:
     validate_manifest(manifest)
-    rule = manifest["exact_allow_rules"].get(f"{method} {path}")
-    return None if rule is None else rule["database"]
+    if type(request) is not ClosureRequest or type(request.method) is not bytes or type(request.target) is not bytes or type(request.headers) is not tuple or type(request.body) is not bytes:
+        raise SurfaceError("request fields must be exact bytes")
+    if request.method != b"POST" or len(request.body) > 1024 * 1024: raise SurfaceError("invalid method or body")
+    target = request.target
+    if not target.isascii() or not target.startswith(b"/api/") or any(c < 0x20 or c == 0x7f for c in target) or any(x in target for x in (b"?", b"#", b"%", b"\\")) or b"//" in target or any(part in (b".", b"..") for part in target.split(b"/")) or target.endswith(b"/"):
+        raise SurfaceError("invalid target")
+    if len(request.headers) != 1 or type(request.headers[0]) is not tuple or len(request.headers[0]) != 2:
+        raise SurfaceError("invalid headers")
+    name, value = request.headers[0]
+    if type(name) is not bytes or type(value) is not bytes or name.lower() != b"content-type" or name != name.strip(b" \\t") or any(c < 0x20 or c == 0x7f for c in name + value) or value != b"application/json":
+        raise SurfaceError("invalid content type")
+    allowed = {b"/api/records/v1/main_ops": ("create_record", "main"), b"/api/records/v1/aux_ops": ("create_record", "aux"), b"/api/auth/v1/logout": ("logout_session", "session")}
+    if request.target not in allowed: return None
+    kind, database = allowed[target]
+    obj = _strict_json(request.body)
+    if kind == "logout_session":
+        if set(obj) != {"refresh_token"} or type(obj["refresh_token"]) is not str or not re.fullmatch(r"[A-Za-z0-9]{86}", obj["refresh_token"]): raise SurfaceError("invalid logout body")
+    else:
+        if set(obj) != {"op_key", "payload"} or any(type(obj[k]) is not str or not 1 <= len(obj[k]) <= 1024 for k in obj): raise SurfaceError("invalid operation body")
+    return Binding(kind, database, request)
 
 def validate_eligibility_input(manifest):
     validate_manifest(manifest)

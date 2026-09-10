@@ -422,10 +422,13 @@ class SurfaceClosureTests(unittest.TestCase):
 
     def test_exact_rules_and_binding(self):
         manifest = surface_closure.load_manifest(MANIFEST)
-        self.assertEqual(surface_closure.bind_request("POST", "/api/records/v1/main_ops", manifest), "main")
-        self.assertEqual(surface_closure.bind_request("POST", "/api/records/v1/aux_ops", manifest), "aux")
-        self.assertEqual(surface_closure.bind_request("POST", "/api/auth/v1/logout", manifest), "session")
-        self.assertIsNone(surface_closure.bind_request("POST", "/api/records/v1/other", manifest))
+        def req(target, body=b'{"op_key":"x","payload":"y"}'):
+            return surface_closure.ClosureRequest(b"POST", target, ((b"Content-Type", b"application/json"),), body)
+        self.assertEqual(surface_closure.bind_request(req(b"/api/records/v1/main_ops"), manifest).database, "main")
+        self.assertEqual(surface_closure.bind_request(req(b"/api/records/v1/aux_ops"), manifest).database, "aux")
+        logout = b'{"refresh_token":"' + b"A" * 86 + b'"}'
+        self.assertEqual(surface_closure.bind_request(req(b"/api/auth/v1/logout", logout), manifest).operation_kind, "logout_session")
+        self.assertIsNone(surface_closure.bind_request(req(b"/api/records/v1/other"), manifest))
 
     def test_top_level_and_nested_schema_rejections(self):
         manifest = surface_closure.load_manifest(MANIFEST)
