@@ -444,6 +444,8 @@ class SurfaceClosureTests(unittest.TestCase):
             return surface_closure.ClosureRequest(b"POST", target, ((b"Content-Type", b"application/json"),), body)
         self.assertEqual(surface_closure.bind_request(req(b"/api/records/v1/main_ops"), manifest).database, "main")
         self.assertEqual(surface_closure.bind_request(req(b"/api/records/v1/aux_ops"), manifest).database, "aux")
+        self.assertEqual(manifest["exact_allow_rules"]["POST /api/records/v1/main_ops"]["upstream"], "POST /api/records/v1/{name}")
+        self.assertEqual(manifest["exact_allow_rules"]["POST /api/records/v1/aux_ops"]["upstream"], "POST /api/records/v1/{name}")
         logout = b'{"refresh_token":"' + b"A" * 86 + b'"}'
         self.assertEqual(surface_closure.bind_request(req(b"/api/auth/v1/logout", logout), manifest).operation_kind, "logout_session")
         self.assertIsNone(surface_closure.bind_request(req(b"/api/records/v1/other"), manifest))
@@ -696,7 +698,7 @@ def valid_attestation_fixture():
         "4" * 64, "5" * 64, 9, "6" * 64, 100, 110, 200,
         ("trail", "serve"), (("PATH", "/usr/bin"),), request_hashes, tuple(conditions.items()),
         ("/private/q/main.db", "/private/q/session.db", "/private/q/config"),
-        "/private/q/logs.db", "manager-nonce", "0" * 64)
+        "/private/q/logs.db", "manager-nonce", (), "0" * 64)
     evidence = []
     sequence = 0
     def ev(kind):
@@ -773,7 +775,8 @@ def valid_attestation_fixture():
                "evidence_id": ev("probe")} for path in trust.protected_paths]
     telemetry = {"logs_only": True,
         "readers": [{"pid": 20, "operation": "read", "path": trust.logs_path, "evidence_id": ev("descriptor")}],
-        "writers": [{"pid": 20, "operation": "write", "path": trust.logs_path, "evidence_id": ev("descriptor")}]}
+        "writers": [{"pid": 20, "operation": "write", "path": trust.logs_path, "evidence_id": ev("descriptor") }],
+        "scan_evidence_id": ev("other")}
     evidence.append({"id": "receipt", "path": "receipt.json", "sha256": "9" * 64, "size": 1,
                      "kind": "receipt", "collector_source_sha256": trust.collector_source_sha256,
                      "created_mono_ns": 150})
@@ -811,7 +814,9 @@ def valid_attestation_fixture():
         "telemetry": telemetry, "attestation_sha256": "0" * 64,
     }
     attestation["attestation_sha256"] = surface_closure._canonical_digest(attestation, "attestation_sha256")
-    trust = replace(trust, attestation_sha256=attestation["attestation_sha256"])
+    trust = replace(trust,
+        evidence_inventory=tuple(sorted((x["id"], x["path"], x["sha256"], x["size"], x["kind"]) for x in evidence)),
+        attestation_sha256=attestation["attestation_sha256"])
     return manifest, trust, attestation
 
 
@@ -993,6 +998,12 @@ class AttestationTests(unittest.TestCase):
             surface_closure.validate_attestation(base, manifest, replace(trust, attestation_sha256=""))
         with self.assertRaises(surface_closure.SurfaceError):
             surface_closure.validate_attestation(base, manifest, replace(trust, positive_request_sha256=(("create_main", "a" * 64),)))
+        with self.assertRaises(surface_closure.SurfaceError):
+            surface_closure.validate_attestation(base, manifest, replace(trust, evidence_inventory=()))
+        value = copy.deepcopy(base)
+        value["telemetry"]["scan_evidence_id"] = value["connections"][0]["evidence_id"]
+        with self.assertRaises(surface_closure.SurfaceError):
+            surface_closure.validate_attestation(value, manifest, resigned(value, trust))
 
     def test_failures_never_reach_positive_callback(self):
         manifest, trust, base = valid_attestation_fixture()

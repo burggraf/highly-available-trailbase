@@ -18,7 +18,7 @@ ALLOWED = {("POST", "/api/records/v1/main_ops"): "main", ("POST", "/api/records/
 TOP_LEVEL = {"schema_version", "source", "source_scopes", "source_files", "capabilities", "graph_accounting", "unresolved_source_graph", "routes", "section_counts", "debug_only_routes", "exact_allow_rules", "listener_route_instances"}
 SAFE_PATH = re.compile(r"^(?!/)(?!$)(?!.*\\)(?!.*(?:^|/)\.{1,2}(?:/|$))[^\x00]+$")
 SOURCE_SCOPES = ["crates/core/src", "crates/wasm-runtime-axum/src", "crates/wasm-runtime-common/src", "crates/wasm-runtime-guest/src", "crates/wasm-runtime-host/src"]
-PINNED_MANIFEST_SHA256 = "4b83d9e581dda2760c112eb9b56594ea66db6d0678d093c5c5dfb5f179a6e322"
+PINNED_MANIFEST_SHA256 = "bb6854d24732fc192da5e7fc6fdc6a9b0927603900d91fe0727d6846c56488bf"
 MAX_ARTIFACT_BYTES = 1024 * 1024
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 REQUIRED_JOBS = ("Backup", "Heartbeat", "LogCleaner", "AuthCleaner", "QueryOptimizer", "FileDeletions")
@@ -391,7 +391,7 @@ def _validate_rules(m, routes):
     rules = _dict(m["exact_allow_rules"], "exact_allow_rules")
     if set(rules) != {"POST /api/records/v1/main_ops", "POST /api/records/v1/aux_ops", "POST /api/auth/v1/logout"}: raise SurfaceError("invalid exact allow rules")
     templates = {f"{r['method']} {r['path']}": r for r in routes}
-    expected = {"POST /api/records/v1/main_ops": ("POST /api/records/v1/{name}", "main"), "POST /api/records/v1/aux_ops": ("POST /api/transaction/v1/execute", "aux"), "POST /api/auth/v1/logout": ("POST /api/auth/v1/logout", "session")}
+    expected = {"POST /api/records/v1/main_ops": ("POST /api/records/v1/{name}", "main"), "POST /api/records/v1/aux_ops": ("POST /api/records/v1/{name}", "aux"), "POST /api/auth/v1/logout": ("POST /api/auth/v1/logout", "session")}
     for key, (upstream, db) in expected.items():
         x = _dict(rules[key], "exact allow rule"); _keys(x, {"upstream","database"}, "exact allow rule")
         if x["upstream"] != upstream or x["database"] != db or upstream not in templates: raise SurfaceError("rule-to-template mismatch")
@@ -677,6 +677,7 @@ class AttestationTrust:
     protected_paths: tuple[str, ...]
     logs_path: str
     manager_receipt_nonce: str
+    evidence_inventory: tuple[tuple[str, str, str, int, str], ...]
     attestation_sha256: str
 
 def _ao(v, keys, p):
@@ -744,7 +745,12 @@ def validate_attestation(attestation, manifest, trust):
                 or len(dict(trust.condition_resolutions)) != len(trust.condition_resolutions)
                 or set(dict(trust.condition_resolutions)) != ({r["condition"] for r in manifest["routes"] if r["condition"] != "always"} | {c["name"] for c in manifest["capabilities"] if c["class"] == "conditional"})
                 or type(trust.protected_paths) is not tuple or not trust.protected_paths
-                or any(type(x) is not str or not x.startswith("/") for x in trust.protected_paths)):
+                or any(type(x) is not str or not x.startswith("/") for x in trust.protected_paths)
+                or type(trust.evidence_inventory) is not tuple
+                or any(type(x) is not tuple or len(x) != 5 or type(x[0]) is not str or type(x[1]) is not str
+                       or type(x[2]) is not str or not HEX64.fullmatch(x[2]) or type(x[3]) is not int
+                       or x[3] < 0 or type(x[4]) is not str for x in trust.evidence_inventory)
+                or len(trust.evidence_inventory) != len(set(trust.evidence_inventory))):
             raise SurfaceError("invalid trust collections")
         if not (0 <= trust.collection_ready_mono_ns <= trust.collection_launched_mono_ns < trust.collection_deadline_mono_ns): raise SurfaceError("trust window")
         validate_manifest(manifest)
@@ -813,7 +819,8 @@ def validate_attestation(attestation, manifest, trust):
 def _absolute_path(value, name):
     _as(value, name)
     path = Path(value)
-    if not path.is_absolute() or str(path) != value or any(part in {".", ".."} for part in path.parts):
+    if (not path.is_absolute() or str(path) != value or value.startswith("//")
+            or os.path.normpath(value) != value or any(part in {".", ".."} for part in path.parts)):
         raise SurfaceError(f"{name}: canonical absolute path required")
 
 
@@ -921,6 +928,8 @@ def _validate_attestation_nested(a, trust, tree, manifest):
         if total > 268435456: raise SurfaceError("evidence total")
         evidence[item["id"]] = item
     if len(evidence) != len(a["evidence"]) or len({x["path"] for x in a["evidence"]}) != len(a["evidence"]): raise SurfaceError("duplicate evidence")
+    observed_inventory = tuple(sorted((x["id"], x["path"], x["sha256"], x["size"], x["kind"]) for x in a["evidence"]))
+    if observed_inventory != tuple(sorted(trust.evidence_inventory)): raise SurfaceError("evidence inventory trust")
     referenced = set()
     def evidence_ref(value, kinds=None):
         if type(value) is not str or value not in evidence: raise SurfaceError("missing evidence")
@@ -1033,8 +1042,9 @@ def _validate_attestation_nested(a, trust, tree, manifest):
                 or item["observed_absent"] is not True or "runtime_unknown" in item["query"]): raise SurfaceError("dynamic absence")
         evidence_ref(item["evidence_id"], {"absence"})
 
-    telemetry = _ao(a["telemetry"], ("logs_only","readers","writers"), "telemetry")
+    telemetry = _ao(a["telemetry"], ("logs_only","readers","writers","scan_evidence_id"), "telemetry")
     if telemetry["logs_only"] is not True: raise SurfaceError("telemetry")
+    evidence_ref(telemetry["scan_evidence_id"], {"other"})
     for kind in ("readers","writers"):
         for item in _al(telemetry[kind], "telemetry." + kind, 256):
             _ao(item, ("pid","operation","path","evidence_id"), "telemetry entry")

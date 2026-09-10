@@ -6243,7 +6243,7 @@
       "database": "main"
     },
     "POST /api/records/v1/aux_ops": {
-      "upstream": "POST /api/transaction/v1/execute",
+      "upstream": "POST /api/records/v1/{name}",
       "database": "aux"
     },
     "POST /api/auth/v1/logout": {
