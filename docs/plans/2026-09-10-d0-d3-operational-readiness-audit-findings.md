@@ -8,11 +8,11 @@ A command is **read-only** only when the complete checked-in command path does n
 
 The finding classes used below are exactly: `correct now`, `documentation correction`, `contract missing`, `operational qualification missing`, and `out of scope`.
 
-## Task4 verification checkpoint — clean `f781f0e`
+## Task4 verification checkpoint — clean `300ad70`
 
-The parent ran final verification once at clean `f781f0e` and did not rerun it. D4 unittest discovery ran **113 tests: 112 passed and one ERROR** in `test_native_adapter.NativeAdapterTests.test_default_command_timeout_stops_descendant_process_group`; `experiments/d4/native_adapter.py::_stop_group` encountered macOS `PermissionError: [Errno 1] Operation not permitted` from `os.killpg(process.pid, 0)`. This is a known recurring **macOS cleanup-observation uncertainty**, not a product regression. Earlier passing runs do not clear it, and it prevents a clean one-shot verification claim. Runtime discovery separately ran **107 tests OK**, with expected parser stderr and SQLite `ResourceWarning`s. `git diff --check`, the exact changed-path allowlist, and clean-worktree checks passed.
+The parent’s final verification completed at clean `300ad70`. D4 unittest discovery ran **115 tests OK**. Runtime discovery separately ran **107 tests OK**, with expected parser stderr and SQLite `ResourceWarning`s. Native-adapter source/test `py_compile` passed, and `git diff --check` passed. Commits `4ee1047` and `300ad70` add deterministic `EPERM` cleanup tests and fail-closed `CommandCleanupUncertain`: only `ESRCH`/`ProcessLookupError` proves process-group disappearance; persistent `EPERM` is bounded durable cleanup uncertainty, recorded as `proof_uncertain`, and never replayed. This is a source/test contract, not cancellation proof or proof of disappearance under `EPERM`; it does not establish D4 feasibility or any live behavior. Task 2/3 blocker dispositions are unchanged.
 
-This is a documentation-only record: no code/test changes, diagnosis, or fix were made. D4 stock-runtime infeasibility remains in force; Task 2 and Task 3 blocker dispositions are unchanged. The checkpoint records the observed result and does not convert it into a clean pass.
+The earlier clean `f781f0e` checkpoint remains historical non-clean evidence: D4 discovery ran **113 tests, 112 passed and one raw ERROR** from macOS `EPERM` at the post-termination `killpg(..., 0)` cleanup probe. The later green `300ad70` run does not erase that earlier non-clean result. This remains a documentation-only verification record; no code or test files were changed by this update.
 
 ## Exact documentation corrections
 
