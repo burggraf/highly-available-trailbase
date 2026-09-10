@@ -2,6 +2,7 @@
 from __future__ import annotations
 import hashlib
 import json
+import os
 import re
 import stat
 from pathlib import Path
@@ -14,7 +15,7 @@ ALLOWED = {("POST", "/api/records/v1/main_ops"): "main", ("POST", "/api/records/
 TOP_LEVEL = {"schema_version", "source", "source_scopes", "source_files", "capabilities", "graph_accounting", "unresolved_source_graph", "routes", "section_counts", "debug_only_routes", "exact_allow_rules", "listener_route_instances"}
 SAFE_PATH = re.compile(r"^(?!/)(?!$)(?!.*\\)(?!.*(?:^|/)\.{1,2}(?:/|$))[^\x00]+$")
 SOURCE_SCOPES = ["crates/core/src", "crates/wasm-runtime-axum/src", "crates/wasm-runtime-common/src", "crates/wasm-runtime-guest/src", "crates/wasm-runtime-host/src"]
-PINNED_SEMANTIC_FINGERPRINT = "6258275d38d9128f157778c72eed989dda99dd8642249fdf4e16427e847b8755"
+PINNED_MANIFEST_SHA256 = "4b83d9e581dda2760c112eb9b56594ea66db6d0678d093c5c5dfb5f179a6e322"
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 REQUIRED_JOBS = ("Backup", "Heartbeat", "LogCleaner", "AuthCleaner", "QueryOptimizer", "FileDeletions")
 REQUIRED_NON_ROUTE = {
@@ -250,18 +251,9 @@ def _source_path(source_root: Path, relative: str, name: str) -> tuple[Path, int
             raise SurfaceError(f"{name}: source path component is not a directory")
     return path, mode
 
-def _semantic_fingerprint(manifest: dict[str, Any]) -> str:
-    def normalized(value, path=()):
-        if type(value) is dict:
-            return {
-                key: normalized(item, path + (key,))
-                for key, item in value.items()
-                if key != "sha256" and not (path == ("source",) and key in {"root", "provenance"})
-            }
-        if type(value) is list:
-            return [normalized(item, path) for item in value]
-        return value
-    return hashlib.sha256(json.dumps(normalized(manifest), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+def _manifest_sha256(manifest: dict[str, Any]) -> str:
+    payload = json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 def _tagged_source(v: Any, name: str) -> None:
     v = _dict(v, name); _keys(v, {"file","sha256","line","contains"}, name)
@@ -381,7 +373,7 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
     accounting = _dict(m["graph_accounting"], "graph_accounting")
     _keys(accounting, set(EXPECTED_ACCOUNTING), "graph_accounting")
     if any(accounting[k] != v for k, v in EXPECTED_ACCOUNTING.items()): raise SurfaceError("source accounting mismatch")
-    if _semantic_fingerprint(m) != PINNED_SEMANTIC_FINGERPRINT: raise SurfaceError("semantic fingerprint mismatch")
+    if _manifest_sha256(m) != PINNED_MANIFEST_SHA256: raise SurfaceError("manifest SHA-256 pin mismatch")
 
 def _validate_debug(m, inventory):
     debug = _list(m["debug_only_routes"], "debug_only_routes")
@@ -433,60 +425,117 @@ def validate_eligibility_input(manifest):
     if any(r["resolution"] == "runtime_unknown" or r["classification"] == "runtime_unknown" for r in manifest["routes"]): raise SurfaceError("runtime_unknown is not eligible")
     if any(c["resolution"] == "runtime_unknown" for c in manifest["capabilities"]): raise SurfaceError("runtime_unknown capability is not eligible")
 
+def _open_at(root_fd: int, absolute: Path, name: str, directory: bool = False) -> int:
+    try:
+        if not absolute.is_absolute() or absolute.resolve(strict=True) != absolute:
+            raise SurfaceError(f"{name}: path must be canonical absolute path")
+        fd = os.dup(root_fd)
+        try:
+            for part in absolute.parts[1:]:
+                flags = os.O_RDONLY | os.O_NOFOLLOW | (os.O_DIRECTORY if directory or part != absolute.parts[-1] else 0)
+                new_fd = os.open(part, flags, dir_fd=fd)
+                os.close(fd); fd = new_fd
+            mode = os.fstat(fd).st_mode
+            if directory and not stat.S_ISDIR(mode): raise SurfaceError(f"{name}: not a directory")
+            return fd
+        except Exception:
+            os.close(fd); raise
+    except SurfaceError: raise
+    except (OSError, UnicodeError, RuntimeError) as exc: raise SurfaceError(f"{name}: cannot open canonical path") from exc
+
+def _open_relative(fd: int, parts: tuple[str, ...], name: str) -> int:
+    current = os.dup(fd)
+    try:
+        for part in parts:
+            child = os.open(part, os.O_RDONLY | os.O_NOFOLLOW | (os.O_DIRECTORY if part != parts[-1] else 0), dir_fd=current)
+            os.close(current); current = child
+        return current
+    except Exception:
+        os.close(current); raise
+
+def _fd_bytes(fd: int, name: str) -> bytes:
+    try:
+        mode = os.fstat(fd).st_mode
+        if not stat.S_ISREG(mode): raise SurfaceError(f"{name}: not a regular file")
+        chunks = []
+        while True:
+            chunk = os.read(fd, 1024 * 1024)
+            if not chunk: return b"".join(chunks)
+            chunks.append(chunk)
+    except SurfaceError: raise
+    except (OSError, UnicodeError, RuntimeError) as exc: raise SurfaceError(f"{name}: cannot read") from exc
+
 def verify_source(source_root: Path, provenance_path: Path, manifest: dict[str, Any]) -> None:
     if not isinstance(source_root, Path) or not isinstance(provenance_path, Path): raise SurfaceError("source paths must be Paths")
-    validate_manifest(manifest); p = manifest["source"]["provenance"]
-    if not _regular_file(provenance_path, "provenance") or hashlib.sha256(_read_bytes(provenance_path, "provenance")).hexdigest() != p["sha256"]: raise SurfaceError("provenance manifest missing or tampered")
-    try: recorded = json.loads(_read_text(provenance_path, "provenance"))
-    except (json.JSONDecodeError, TypeError, UnicodeError) as exc: raise SurfaceError("invalid provenance manifest") from exc
-    recorded = _dict(recorded, "provenance"); _keys(recorded, {"sources"}, "provenance"); sources = _list(recorded["sources"], "sources")
-    if len(sources) != 2: raise SurfaceError("provenance requires TrailBase and Litestream")
-    seen = set()
-    for s in sources:
-        s = _dict(s, "provenance source"); _keys(s, {"name","repo","tag","commit","url","archive_sha256","regular_files","expanded_bytes"}, "provenance source")
-        name = _str(s["name"], "provenance name")
-        if name in seen: raise SurfaceError("duplicate provenance source")
-        seen.add(name); identity = TRAILBASE if name == "trailbase" else LITESTREAM if name == "litestream" else None
-        if identity is None or tuple(s[k] for k in ("name","repo","tag","commit")) != identity: raise SurfaceError("invalid provenance identity")
-        _str(s["url"], "provenance url"); _hex(s["archive_sha256"], "archive digest")
-        expected_url = f"https://codeload.github.com/{identity[1]}/tar.gz/{identity[3]}"
-        expected_archive = {"trailbase":"78f694531b28e6f8eb7f600a6c4c63f37437b5e965a1a0a357c19dd5780fd852", "litestream":"cbfb487c66690679234ec46e28d03a2de60b795b7b4466f3444755fc4d39e7d8"}[name]
-        if s["url"] != expected_url or s["archive_sha256"] != expected_archive: raise SurfaceError("un pinned archive provenance")
-        if type(s["regular_files"]) is not int or s["regular_files"] <= 0 or type(s["expanded_bytes"]) is not int or s["expanded_bytes"] <= 0: raise SurfaceError("invalid provenance sizes")
-    if seen != {"trailbase","litestream"}: raise SurfaceError("missing provenance source")
-    if source_root.name != manifest["source"]["root"]: raise SurfaceError("source root mismatch")
-    root_mode = _lstat(source_root, "source root").st_mode
-    if stat.S_ISLNK(root_mode) or not stat.S_ISDIR(root_mode): raise SurfaceError("source root is missing or not a directory")
-    expected = {e["file"]: e for e in manifest["source_files"]}
-    for name,e in expected.items():
-        path, mode = _source_path(source_root, name, name)
-        if not stat.S_ISREG(mode) or hashlib.sha256(_read_bytes(path, name)).hexdigest()!=e["sha256"]: raise SurfaceError(f"missing or tampered source: {name}")
-        lines=_read_text(path, name).splitlines()
-        for a in e["anchors"]:
-            if a["line"] > len(lines) or a["contains"] not in lines[a["line"]-1]: raise SurfaceError(f"bad source anchor: {name}")
-    for r in manifest["routes"] + manifest["debug_only_routes"]:
-        _inventory_anchor({k:v for k,v in expected.items()}, r["source"], "route source")
-    for r in manifest["listener_route_instances"]:
-        _inventory_anchor({k:v for k,v in expected.items()}, r["source"], "listener source")
-    for c in manifest["capabilities"]:
-        _inventory_anchor({k:v for k,v in expected.items()}, c["source"], "capability source")
-    actual = set()
-    for scope in SOURCE_SCOPES:
-        directory, mode = _source_path(source_root, scope, "source enumeration")
-        if not stat.S_ISDIR(mode): raise SurfaceError("source scope is not a directory")
-        pending = [(directory, scope)]
-        while pending:
-            directory, relative = pending.pop()
-            try:
-                children = list(directory.iterdir())
-            except (OSError, UnicodeError, RuntimeError) as exc:
-                raise SurfaceError("source enumeration failed") from exc
-            for child in children:
-                child_relative = f"{relative}/{child.name}"
-                _, child_mode = _source_path(source_root, child_relative, "source enumeration")
-                if stat.S_ISDIR(child_mode): pending.append((child, child_relative))
-                elif stat.S_ISREG(child_mode) and child.suffix == ".rs": actual.add(child_relative)
-    if actual != set(expected): raise SurfaceError("source inventory does not exactly match configured scopes")
+    validate_manifest(manifest)
+    try:
+        root_fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    except (OSError, UnicodeError, RuntimeError) as exc:
+        raise SurfaceError("cannot open OS root") from exc
+    try:
+        source_fd = _open_at(root_fd, source_root, "source root", True)
+        provenance_fd = _open_at(root_fd, provenance_path, "provenance")
+        try:
+            p = manifest["source"]["provenance"]
+            if Path(provenance_path).name != p["file"]: raise SurfaceError("provenance path mismatch")
+            provenance_data = _fd_bytes(provenance_fd, "provenance")
+            if hashlib.sha256(provenance_data).hexdigest() != p["sha256"]: raise SurfaceError("provenance manifest missing or tampered")
+            try: recorded = json.loads(provenance_data.decode("utf-8"))
+            except (json.JSONDecodeError, TypeError, UnicodeError) as exc: raise SurfaceError("invalid provenance manifest") from exc
+            recorded = _dict(recorded, "provenance"); _keys(recorded, {"sources"}, "provenance"); sources = _list(recorded["sources"], "sources")
+            if len(sources) != 2: raise SurfaceError("provenance requires TrailBase and Litestream")
+            seen = set()
+            for s in sources:
+                s = _dict(s, "provenance source"); _keys(s, {"name","repo","tag","commit","url","archive_sha256","regular_files","expanded_bytes"}, "provenance source")
+                name = _str(s["name"], "provenance name")
+                if name in seen: raise SurfaceError("duplicate provenance source")
+                seen.add(name); identity = TRAILBASE if name == "trailbase" else LITESTREAM if name == "litestream" else None
+                if identity is None or tuple(s[k] for k in ("name","repo","tag","commit")) != identity: raise SurfaceError("invalid provenance identity")
+                _str(s["url"], "provenance url"); _hex(s["archive_sha256"], "archive digest")
+                expected_url = f"https://codeload.github.com/{identity[1]}/tar.gz/{identity[3]}"
+                expected_archive = {"trailbase":"78f694531b28e6f8eb7f600a6c4c63f37437b5e965a1a0a357c19dd5780fd852", "litestream":"cbfb487c66690679234ec46e28d03a2de60b795b7b4466f3444755fc4d39e7d8"}[name]
+                if s["url"] != expected_url or s["archive_sha256"] != expected_archive: raise SurfaceError("un pinned archive provenance")
+                if type(s["regular_files"]) is not int or s["regular_files"] <= 0 or type(s["expanded_bytes"]) is not int or s["expanded_bytes"] <= 0: raise SurfaceError("invalid provenance sizes")
+            if seen != {"trailbase","litestream"}: raise SurfaceError("missing provenance source")
+            if source_root.name != manifest["source"]["root"]: raise SurfaceError("source root mismatch")
+            expected = {e["file"]: e for e in manifest["source_files"]}
+            for name,e in expected.items():
+                fd = _open_relative(source_fd, tuple(Path(name).parts), name)
+                try:
+                    data = _fd_bytes(fd, name)
+                    if hashlib.sha256(data).hexdigest() != e["sha256"]: raise SurfaceError(f"missing or tampered source: {name}")
+                    try: lines = data.decode("utf-8").splitlines()
+                    except UnicodeError as exc: raise SurfaceError(f"{name}: cannot decode") from exc
+                    for a in e["anchors"]:
+                        if a["line"] > len(lines) or a["contains"] not in lines[a["line"]-1]: raise SurfaceError(f"bad source anchor: {name}")
+                finally: os.close(fd)
+            inventory = expected
+            for r in manifest["routes"] + manifest["debug_only_routes"]: _inventory_anchor(inventory, r["source"], "route source")
+            for r in manifest["listener_route_instances"]: _inventory_anchor(inventory, r["source"], "listener source")
+            for c in manifest["capabilities"]: _inventory_anchor(inventory, c["source"], "capability source")
+            actual = set(); pending = []
+            for scope in SOURCE_SCOPES:
+                pending.append((_open_relative(source_fd, tuple(Path(scope).parts), "source enumeration"), scope))
+            while pending:
+                directory, relative = pending.pop()
+                try:
+                    try:
+                        with os.scandir(directory) as entries:
+                            for entry in entries:
+                                child_relative = f"{relative}/{entry.name}"
+                                child_fd = os.open(entry.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
+                                mode = os.fstat(child_fd).st_mode
+                                if stat.S_ISDIR(mode): pending.append((child_fd, child_relative))
+                                elif stat.S_ISREG(mode) and entry.name.endswith(".rs"): actual.add(child_relative); os.close(child_fd)
+                                else: os.close(child_fd)
+                    except (OSError, UnicodeError, RuntimeError) as exc: raise SurfaceError("source enumeration failed") from exc
+                finally:
+                    os.close(directory)
+            if actual != set(expected): raise SurfaceError("source inventory does not exactly match configured scopes")
+        finally: os.close(provenance_fd); os.close(source_fd)
+    except SurfaceError: raise
+    except (OSError, UnicodeError, RuntimeError) as exc: raise SurfaceError("source verification failed") from exc
+    finally: os.close(root_fd)
 
 if __name__ == "__main__":
     import argparse

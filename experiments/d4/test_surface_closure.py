@@ -55,7 +55,8 @@ class SurfaceManifestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             tmp = Path(td)
             manifest, root, provenance = synthetic_fixture(tmp)
-            surface_closure.verify_source(root, provenance, manifest)
+            with mock.patch.object(surface_closure, "PINNED_MANIFEST_SHA256", surface_closure._manifest_sha256(manifest)):
+                surface_closure.verify_source(root, provenance, manifest)
             for entry in manifest["source_files"]:
                 path = root / entry["file"]
                 original = path.read_bytes()
@@ -121,8 +122,9 @@ class SurfaceManifestTests(unittest.TestCase):
             target = tmp / "trailbase-target"
             root.rename(target)
             root.symlink_to(target, target_is_directory=True)
-            with self.assertRaises(surface_closure.SurfaceError):
-                surface_closure.verify_source(root, provenance, manifest)
+            with mock.patch.object(surface_closure, "PINNED_MANIFEST_SHA256", surface_closure._manifest_sha256(manifest)):
+                with self.assertRaises(surface_closure.SurfaceError):
+                    surface_closure.verify_source(root, provenance, manifest)
 
     def test_symlinked_descendant_directory_is_rejected(self):
         with tempfile.TemporaryDirectory() as td:
@@ -132,8 +134,9 @@ class SurfaceManifestTests(unittest.TestCase):
             target = tmp / "core-target"
             directory.rename(target)
             directory.symlink_to(target, target_is_directory=True)
-            with self.assertRaises(surface_closure.SurfaceError):
-                surface_closure.verify_source(root, provenance, manifest)
+            with mock.patch.object(surface_closure, "PINNED_MANIFEST_SHA256", surface_closure._manifest_sha256(manifest)):
+                with self.assertRaises(surface_closure.SurfaceError):
+                    surface_closure.verify_source(root, provenance, manifest)
 
     def test_graph_is_one_to_one_and_reachable(self):
         manifest = surface_closure.load_manifest(MANIFEST)
@@ -155,6 +158,22 @@ class SurfaceClosureTests(unittest.TestCase):
         manifest = surface_closure.load_manifest(MANIFEST)
         self.assertEqual(len(manifest["routes"]), 82)
         self.assertEqual(manifest["source"]["commit"], surface_closure.COMMIT)
+
+    def test_complete_manifest_pin_rejects_security_metadata_changes(self):
+        base = surface_closure.load_manifest(MANIFEST)
+        mutations = [
+            lambda m: m["source_files"][0].__setitem__("sha256", "0" * 64),
+            lambda m: m["routes"][0]["source"].__setitem__("sha256", "0" * 64),
+            lambda m: m["source"]["provenance"].__setitem__("sha256", "0" * 64),
+            lambda m: m["source"].__setitem__("root", "other"),
+            lambda m: m["source"]["provenance"].__setitem__("file", "other.json"),
+            lambda m: m["routes"].__setitem__(0, {**m["routes"][0], "handler": "changed"}),
+            lambda m: m["capabilities"].__setitem__(0, {**m["capabilities"][0], "edges": []}),
+        ]
+        for mutate in mutations:
+            with self.subTest(mutation=mutate):
+                candidate = copy.deepcopy(base); mutate(candidate)
+                with self.assertRaises(surface_closure.SurfaceError): surface_closure.validate_manifest(candidate)
 
     def test_source_audited_non_route_inventory_is_exact(self):
         manifest = surface_closure.load_manifest(MANIFEST)
@@ -178,7 +197,8 @@ class SurfaceClosureTests(unittest.TestCase):
     def test_valid_synthetic_fixture(self):
         with tempfile.TemporaryDirectory() as td:
             manifest, root, provenance = synthetic_fixture(Path(td))
-            surface_closure.verify_source(root, provenance, manifest)
+            with mock.patch.object(surface_closure, "PINNED_MANIFEST_SHA256", surface_closure._manifest_sha256(manifest)):
+                surface_closure.verify_source(root, provenance, manifest)
 
     def test_route_handler_mutation_is_rejected(self):
         self.assert_semantic_mutation_rejected(lambda m: m["routes"][0].update(handler="changed_handler"))
