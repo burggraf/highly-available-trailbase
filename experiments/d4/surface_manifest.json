@@ -760,6 +760,22 @@
         {
           "line": 1,
           "contains": "use utoipa_axum::router::OpenApiRouter;"
+        },
+        {
+          "line": 68,
+          "contains": "api::login::login_handler"
+        },
+        {
+          "line": 77,
+          "contains": "api::status::login_status_handler"
+        },
+        {
+          "line": 80,
+          "contains": "api::logout::logout_handler"
+        },
+        {
+          "line": 82,
+          "contains": "api::logout::post_logout_handler"
         }
       ]
     },
@@ -804,6 +820,10 @@
         {
           "line": 1,
           "contains": "mod callback;"
+        },
+        {
+          "line": 20,
+          "contains": "oauth_router"
         }
       ]
     },
@@ -1364,6 +1384,14 @@
         {
           "line": 1,
           "contains": "use trailbase_sqlite::ConnectionType;"
+        },
+        {
+          "line": 68,
+          "contains": "enable_transactions"
+        },
+        {
+          "line": 69,
+          "contains": "transaction::record_transactions_handler"
         }
       ]
     },
@@ -1552,6 +1580,34 @@
         {
           "line": 1,
           "contains": "use chrono::{DateTime, Duration, Utc};"
+        },
+        {
+          "line": 542,
+          "contains": "job_ids"
+        },
+        {
+          "line": 285,
+          "contains": "SystemJobId::Backup"
+        },
+        {
+          "line": 316,
+          "contains": "SystemJobId::Heartbeat"
+        },
+        {
+          "line": 329,
+          "contains": "SystemJobId::LogCleaner"
+        },
+        {
+          "line": 362,
+          "contains": "SystemJobId::AuthCleaner"
+        },
+        {
+          "line": 396,
+          "contains": "SystemJobId::QueryOptimizer"
+        },
+        {
+          "line": 421,
+          "contains": "SystemJobId::FileDeletions"
         }
       ]
     },
@@ -1571,6 +1627,26 @@
       "anchors": [
         {
           "line": 549,
+          "contains": "healthcheck_handler"
+        },
+        {
+          "line": 421,
+          "contains": "enable_transactions"
+        },
+        {
+          "line": 456,
+          "contains": "merge(custom_router)"
+        },
+        {
+          "line": 545,
+          "contains": "/api/healthcheck"
+        },
+        {
+          "line": 444,
+          "contains": "/api/whoami"
+        },
+        {
+          "line": 436,
           "contains": "healthcheck_handler"
         }
       ]
@@ -1845,7 +1921,13 @@
         "route:GET /api/whoami"
       ],
       "condition": "source-reviewed",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/server/mod.rs",
+        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
+        "line": 421,
+        "contains": "enable_transactions"
+      }
     },
     {
       "name": "router:server",
@@ -1861,7 +1943,13 @@
         "listener:admin"
       ],
       "condition": "source-reviewed",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/server/mod.rs",
+        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
+        "line": 421,
+        "contains": "enable_transactions"
+      }
     },
     {
       "name": "router:auth",
@@ -1902,7 +1990,13 @@
         "route:POST /api/auth/v1/refresh"
       ],
       "condition": "source-reviewed",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/mod.rs",
+        "sha256": "264e289a46a1cc206a7dc1d86db6962bdf02484e856cce7ac875e6179d8a016f",
+        "line": 68,
+        "contains": "api::login::login_handler"
+      }
     },
     {
       "name": "router:oauth",
@@ -1918,7 +2012,13 @@
         "route:GET /api/_admin/oauth_providers"
       ],
       "condition": "source-reviewed",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/oauth/mod.rs",
+        "sha256": "9a68dd34dc3291e0371d84c305e5da970a8987cd3949586cbb8fb460ec4b83bf",
+        "line": 20,
+        "contains": "oauth_router"
+      }
     },
     {
       "name": "router:records",
@@ -1981,7 +2081,13 @@
         "route:GET /api/healthcheck"
       ],
       "condition": "source-reviewed",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/records/mod.rs",
+        "sha256": "b0c5aa8ca06b4d514b13ceb7a692d902944016d400474d234888f19bfefb9aa7",
+        "line": 68,
+        "contains": "enable_transactions"
+      }
     },
     {
       "name": "router:transaction",
@@ -1991,7 +2097,13 @@
       ],
       "edges": [],
       "condition": "source-reviewed",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/records/mod.rs",
+        "sha256": "b0c5aa8ca06b4d514b13ceb7a692d902944016d400474d234888f19bfefb9aa7",
+        "line": 68,
+        "contains": "enable_transactions"
+      }
     },
     {
       "name": "router:admin",
@@ -2002,15 +2114,25 @@
       "edges": [
         "router:wasm",
         "conditional:admin-disabled",
-        "job:backup",
-        "job:runtime",
         "writer:files",
         "writer:config",
         "writer:object",
-        "telemetry:logs"
+        "telemetry:logs",
+        "job:Backup",
+        "job:Heartbeat",
+        "job:LogCleaner",
+        "job:AuthCleaner",
+        "job:QueryOptimizer",
+        "job:FileDeletions"
       ],
       "condition": "source-reviewed",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/server/mod.rs",
+        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
+        "line": 421,
+        "contains": "enable_transactions"
+      }
     },
     {
       "name": "router:wasm",
@@ -2022,7 +2144,13 @@
         "dynamic:wasm-manifest"
       ],
       "condition": "source-reviewed",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/server/mod.rs",
+        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
+        "line": 421,
+        "contains": "enable_transactions"
+      }
     },
     {
       "name": "router:custom",
@@ -2034,7 +2162,13 @@
         "dynamic:custom-router"
       ],
       "condition": "source-reviewed",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/server/mod.rs",
+        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
+        "line": 456,
+        "contains": "merge(custom_router)"
+      }
     },
     {
       "name": "conditional:auth-disabled",
@@ -2044,7 +2178,13 @@
       ],
       "edges": [],
       "condition": "source-reviewed",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/mod.rs",
+        "sha256": "264e289a46a1cc206a7dc1d86db6962bdf02484e856cce7ac875e6179d8a016f",
+        "line": 1,
+        "contains": "use utoipa_axum::router::OpenApiRouter;"
+      }
     },
     {
       "name": "conditional:admin-disabled",
@@ -2054,27 +2194,13 @@
       ],
       "edges": [],
       "condition": "source-reviewed",
-      "resolution": "static"
-    },
-    {
-      "name": "job:backup",
-      "class": "job",
-      "source_files": [
-        "crates/core/src/admin/backup.rs"
-      ],
-      "edges": [],
-      "condition": "source-reviewed",
-      "resolution": "static"
-    },
-    {
-      "name": "job:runtime",
-      "class": "job",
-      "source_files": [
-        "crates/core/src/admin/jobs/run_job.rs"
-      ],
-      "edges": [],
-      "condition": "source-reviewed",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/mod.rs",
+        "sha256": "0694abe5cebd387b904cace6bb43a8e247475f48407b899a235a12e7c4c1d42d",
+        "line": 1,
+        "contains": "mod backup;"
+      }
     },
     {
       "name": "dynamic:wasm-manifest",
@@ -2084,7 +2210,13 @@
       ],
       "edges": [],
       "condition": "source-reviewed",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/wasm.rs",
+        "sha256": "2df4c7270ae69d14d013c9d54763ca867496394f3bf548314fe0bed70cef9cdd",
+        "line": 89,
+        "contains": "list_wasm_components_handler"
+      }
     },
     {
       "name": "dynamic:custom-router",
@@ -2094,7 +2226,13 @@
       ],
       "edges": [],
       "condition": "source-reviewed",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/server/mod.rs",
+        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
+        "line": 549,
+        "contains": "healthcheck_handler"
+      }
     },
     {
       "name": "listener:main",
@@ -2104,7 +2242,13 @@
       ],
       "edges": [],
       "condition": "source-reviewed",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/server/mod.rs",
+        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
+        "line": 549,
+        "contains": "healthcheck_handler"
+      }
     },
     {
       "name": "listener:admin",
@@ -2114,7 +2258,13 @@
       ],
       "edges": [],
       "condition": "source-reviewed",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/server/mod.rs",
+        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
+        "line": 549,
+        "contains": "healthcheck_handler"
+      }
     },
     {
       "name": "writer:db",
@@ -2124,7 +2274,13 @@
       ],
       "edges": [],
       "condition": "source-reviewed",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/records/mod.rs",
+        "sha256": "b0c5aa8ca06b4d514b13ceb7a692d902944016d400474d234888f19bfefb9aa7",
+        "line": 1,
+        "contains": "use trailbase_sqlite::ConnectionType;"
+      }
     },
     {
       "name": "writer:files",
@@ -2134,7 +2290,13 @@
       ],
       "edges": [],
       "condition": "source-reviewed",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/rows/read_files.rs",
+        "sha256": "39045c3167d0aa3b384f7bf341aa66668f6e59441806b639fdd9a37ea6a8bd35",
+        "line": 40,
+        "contains": "read_files_handler"
+      }
     },
     {
       "name": "writer:config",
@@ -2144,7 +2306,13 @@
       ],
       "edges": [],
       "condition": "source-reviewed",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/config/update_config.rs",
+        "sha256": "c891e35ebf3fe7e3d5db5bcb4008179ec5f0b9df3cc85b1e7ba0db98d0e9a230",
+        "line": 26,
+        "contains": "update_config_handler"
+      }
     },
     {
       "name": "writer:object",
@@ -2154,7 +2322,13 @@
       ],
       "edges": [],
       "condition": "source-reviewed",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/backup.rs",
+        "sha256": "0dac57c98710215904a24469532f2604e7c8f3794323342cf7ea501fe7fba89b",
+        "line": 28,
+        "contains": "list_backups_handler"
+      }
     },
     {
       "name": "writer:provider",
@@ -2164,7 +2338,13 @@
       ],
       "edges": [],
       "condition": "source-reviewed",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/oauth/mod.rs",
+        "sha256": "9a68dd34dc3291e0371d84c305e5da970a8987cd3949586cbb8fb460ec4b83bf",
+        "line": 1,
+        "contains": "mod callback;"
+      }
     },
     {
       "name": "telemetry:logs",
@@ -2174,7 +2354,13 @@
       ],
       "edges": [],
       "condition": "source-reviewed",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/logs/mod.rs",
+        "sha256": "c3357db089c3727bdd77c6e356d2f91be56600588fc377212f9dcb5c5993c3ea",
+        "line": 1,
+        "contains": "pub mod list_logs;"
+      }
     },
     {
       "name": "route:GET /api/records/v1/{name}",
@@ -2184,7 +2370,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/records/list_records.rs",
+        "sha256": "473ce4d4467bf1f67a198547aa720d73586d5e2e84a950349fb2575eae73020c",
+        "line": 85,
+        "contains": "list_records_handler"
+      }
     },
     {
       "name": "route:POST /api/records/v1/{name}",
@@ -2194,7 +2386,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/records/create_record.rs",
+        "sha256": "d2e7ef71dbfc1548c6f6595945101400f7215058c834c6ae9cd1b5daef7c2486",
+        "line": 82,
+        "contains": "create_record_handler"
+      }
     },
     {
       "name": "route:POST /api/transaction/v1/execute",
@@ -2204,7 +2402,13 @@
       ],
       "edges": [],
       "condition": "config:transactions_enabled",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/records/transaction.rs",
+        "sha256": "043d0e5ed7c4f74ba034f17f2edc7224ef13e0cac412dbc0a6e57501bdb7fb19",
+        "line": 66,
+        "contains": "record_transactions_handler"
+      }
     },
     {
       "name": "route:GET /api/records/v1/{name}/{record}",
@@ -2214,7 +2418,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/records/read_record.rs",
+        "sha256": "6ac91ab711e48c7da81ffc7b5cf4903ba357617d1c08b869d11e453b879f299f",
+        "line": 37,
+        "contains": "read_record_handler"
+      }
     },
     {
       "name": "route:GET /api/records/v1/{name}/{record}/file/{column_name}",
@@ -2224,7 +2434,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/records/read_record.rs",
+        "sha256": "6ac91ab711e48c7da81ffc7b5cf4903ba357617d1c08b869d11e453b879f299f",
+        "line": 156,
+        "contains": "get_uploaded_file_from_record_handler"
+      }
     },
     {
       "name": "route:GET /api/records/v1/{name}/{record}/files/{column_name}/{file_name}",
@@ -2234,7 +2450,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/records/read_record.rs",
+        "sha256": "6ac91ab711e48c7da81ffc7b5cf4903ba357617d1c08b869d11e453b879f299f",
+        "line": 212,
+        "contains": "get_uploaded_files_from_record_handler"
+      }
     },
     {
       "name": "route:PATCH /api/records/v1/{name}/{record}",
@@ -2244,7 +2466,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/records/update_record.rs",
+        "sha256": "8a5a2b7c444b49922d131f0011cd035007c3df6cac6fffa8947a5004cf9e9126",
+        "line": 20,
+        "contains": "update_record_handler"
+      }
     },
     {
       "name": "route:GET /api/records/v1/{name}/schema",
@@ -2254,7 +2482,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/records/json_schema.rs",
+        "sha256": "fd5c78e565fa980f18d3fc55dd02968dce628190e1795e63cc1371d83948939e",
+        "line": 25,
+        "contains": "json_schema_handler"
+      }
     },
     {
       "name": "route:DELETE /api/records/v1/{name}/{record}",
@@ -2264,7 +2498,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/records/delete_record.rs",
+        "sha256": "9b3cabf0de1d90998e37a45bd7dbd16ab7bcaff9356ed2c7e64431763a5d3f89",
+        "line": 21,
+        "contains": "delete_record_handler"
+      }
     },
     {
       "name": "route:GET /api/records/v1/{name}/subscribe/{record}",
@@ -2274,7 +2514,13 @@
       ],
       "edges": [],
       "condition": "config:sqlite",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/records/subscribe/handler.rs",
+        "sha256": "5b8ac2d4afd661117295fbf1e27e337f6dc379596edd96c3eb52020a4946d6ca",
+        "line": 52,
+        "contains": "add_subscription_sse_and_ws_handler"
+      }
     },
     {
       "name": "route:GET /api/auth/v1/oauth/{provider}/callback",
@@ -2284,7 +2530,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/oauth/callback.rs",
+        "sha256": "0e3d1525baa90ce2845be9983c67ef303f89bfee1523c467c4eacfe78eb3aea4",
+        "line": 50,
+        "contains": "callback_from_external_auth_provider_get"
+      }
     },
     {
       "name": "route:POST /api/auth/v1/oauth/{provider}/callback",
@@ -2294,7 +2546,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/oauth/callback.rs",
+        "sha256": "0e3d1525baa90ce2845be9983c67ef303f89bfee1523c467c4eacfe78eb3aea4",
+        "line": 70,
+        "contains": "callback_from_external_auth_provider_post"
+      }
     },
     {
       "name": "route:GET /api/auth/v1/oauth/{provider}/login",
@@ -2304,7 +2562,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/oauth/login.rs",
+        "sha256": "fb51e57ee88b2c38fa37cba15659f017a279026c73b1e73c44fc70c79ace296a",
+        "line": 26,
+        "contains": "login_with_external_auth_provider"
+      }
     },
     {
       "name": "route:GET /api/auth/v1/oauth/providers",
@@ -2314,7 +2578,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/oauth/list_providers.rs",
+        "sha256": "5b395f3abf936f6dc77156bf564f376ae542b529685526340efc0702191fa6c6",
+        "line": 26,
+        "contains": "list_configured_providers_handler"
+      }
     },
     {
       "name": "route:GET /api/auth/v1/avatar/{b64_user_id}",
@@ -2324,7 +2594,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/avatar.rs",
+        "sha256": "3731c67be1478d5426e0d2deb83605797b076ff70bfec41db9fbb94e0ddaab5f",
+        "line": 26,
+        "contains": "get_avatar_handler"
+      }
     },
     {
       "name": "route:POST /api/auth/v1/avatar",
@@ -2334,7 +2610,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/avatar.rs",
+        "sha256": "3731c67be1478d5426e0d2deb83605797b076ff70bfec41db9fbb94e0ddaab5f",
+        "line": 59,
+        "contains": "create_avatar_handler"
+      }
     },
     {
       "name": "route:DELETE /api/auth/v1/avatar",
@@ -2344,7 +2626,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/avatar.rs",
+        "sha256": "3731c67be1478d5426e0d2deb83605797b076ff70bfec41db9fbb94e0ddaab5f",
+        "line": 124,
+        "contains": "delete_avatar_handler"
+      }
     },
     {
       "name": "route:POST /api/auth/v1/change_username",
@@ -2354,7 +2642,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/change_username.rs",
+        "sha256": "9f6a14003621d8b163ebae4e3348b1f4ee509a7e8ddba8f2ab55593443714078",
+        "line": 48,
+        "contains": "change_username_handler"
+      }
     },
     {
       "name": "route:POST /api/auth/v1/otp/request",
@@ -2364,7 +2658,13 @@
       ],
       "edges": [],
       "condition": "config:otp_enabled",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/otp.rs",
+        "sha256": "5358123fa44d4c9ff9f4a8ab6f78714d96b12ae891a69cc26313af7e92031ad5",
+        "line": 74,
+        "contains": "request_otp_handler"
+      }
     },
     {
       "name": "route:POST /api/auth/v1/otp/login",
@@ -2374,7 +2674,13 @@
       ],
       "edges": [],
       "condition": "config:otp_enabled",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/otp.rs",
+        "sha256": "5358123fa44d4c9ff9f4a8ab6f78714d96b12ae891a69cc26313af7e92031ad5",
+        "line": 240,
+        "contains": "login_otp_handler"
+      }
     },
     {
       "name": "route:POST /api/auth/v1/token",
@@ -2384,7 +2690,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/token.rs",
+        "sha256": "e7b033f2d4eb463ab9a32bb56521a4a010d42f369dbcb14bbe4a4155220802c7",
+        "line": 42,
+        "contains": "auth_code_to_token_handler"
+      }
     },
     {
       "name": "route:GET /api/auth/v1/verify_email/trigger",
@@ -2394,7 +2706,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/verify_email.rs",
+        "sha256": "f488de46f7cb08d0802a9eed838bbf85cf45bad3dac78fde0a667f8f319e53b4",
+        "line": 37,
+        "contains": "request_email_verification_handler"
+      }
     },
     {
       "name": "route:GET /api/auth/v1/verify_email/confirm/{email_verification_token}",
@@ -2404,7 +2722,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/verify_email.rs",
+        "sha256": "f488de46f7cb08d0802a9eed838bbf85cf45bad3dac78fde0a667f8f319e53b4",
+        "line": 102,
+        "contains": "verify_email_handler"
+      }
     },
     {
       "name": "route:POST /api/auth/v1/register",
@@ -2414,7 +2738,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/register.rs",
+        "sha256": "4247768a8a90bb14865c7f69269510c9cd70a7dabb3b48bd810692eb80dd2eb5",
+        "line": 53,
+        "contains": "register_user_handler"
+      }
     },
     {
       "name": "route:POST /api/auth/v1/promote_anonymous",
@@ -2424,7 +2754,13 @@
       ],
       "edges": [],
       "condition": "config:anonymous_enabled",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/promote_anonymous.rs",
+        "sha256": "7e8ca89617114a8eab5a120d3cee3761a2c7ec0ee74e2b3c1440a3d055352316",
+        "line": 53,
+        "contains": "promote_anonymous_user_handler"
+      }
     },
     {
       "name": "route:GET /api/auth/v1/totp/register",
@@ -2434,7 +2770,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/totp.rs",
+        "sha256": "da153d3506dda259341f0a87d2eeafac36aee87b8ac293ad99bba0fc7a8b6d9a",
+        "line": 43,
+        "contains": "register_totp_request_handler"
+      }
     },
     {
       "name": "route:POST /api/auth/v1/totp/confirm",
@@ -2444,7 +2786,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/totp.rs",
+        "sha256": "da153d3506dda259341f0a87d2eeafac36aee87b8ac293ad99bba0fc7a8b6d9a",
+        "line": 102,
+        "contains": "register_totp_confirm_handler"
+      }
     },
     {
       "name": "route:POST /api/auth/v1/totp/unregister",
@@ -2454,7 +2802,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/totp.rs",
+        "sha256": "da153d3506dda259341f0a87d2eeafac36aee87b8ac293ad99bba0fc7a8b6d9a",
+        "line": 148,
+        "contains": "unregister_totp_handler"
+      }
     },
     {
       "name": "route:DELETE /api/auth/v1/delete",
@@ -2464,7 +2818,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/delete.rs",
+        "sha256": "d1bedac984b602ef784f8fd965df79f035ef4818e1ba95a994a03fa688c10d8b",
+        "line": 22,
+        "contains": "delete_handler"
+      }
     },
     {
       "name": "route:POST /api/auth/v1/change_password",
@@ -2474,7 +2834,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/change_password.rs",
+        "sha256": "fdf49c48766e6ca923cb01756a914877469c69606fd089f42e1bcc5ecdbaab2e",
+        "line": 50,
+        "contains": "change_password_handler"
+      }
     },
     {
       "name": "route:GET /api/auth/v1/logout",
@@ -2484,7 +2850,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/logout.rs",
+        "sha256": "2d37f0e1c836a2fb945271881877212b333f97fff58bfafd6b14d759063c91bd",
+        "line": 35,
+        "contains": "logout_handler"
+      }
     },
     {
       "name": "route:POST /api/auth/v1/logout",
@@ -2494,7 +2866,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/logout.rs",
+        "sha256": "2d37f0e1c836a2fb945271881877212b333f97fff58bfafd6b14d759063c91bd",
+        "line": 77,
+        "contains": "post_logout_handler"
+      }
     },
     {
       "name": "route:POST /api/auth/v1/login_anonymous",
@@ -2504,7 +2882,13 @@
       ],
       "edges": [],
       "condition": "config:anonymous_enabled",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/login_anonymous.rs",
+        "sha256": "7d134b80c771fcd13f416ede737ef8c7e6e05348bea8449e9c5286debd2e2e38",
+        "line": 38,
+        "contains": "login_anonymous_user_handler"
+      }
     },
     {
       "name": "route:GET /api/auth/v1/status",
@@ -2514,7 +2898,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/status.rs",
+        "sha256": "a86f94a735e49dee2910d8a88c3e19eb4cdb7a3a6db2ae7546f6d6c3d427e604",
+        "line": 30,
+        "contains": "login_status_handler"
+      }
     },
     {
       "name": "route:POST /api/auth/v1/login",
@@ -2524,7 +2914,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/login.rs",
+        "sha256": "cdd0036b5eaff037f91372d695a20a89914600344a1c5f7e77814d2822f50c71",
+        "line": 92,
+        "contains": "login_handler"
+      }
     },
     {
       "name": "route:POST /api/auth/v1/login_mfa",
@@ -2534,7 +2930,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/login.rs",
+        "sha256": "cdd0036b5eaff037f91372d695a20a89914600344a1c5f7e77814d2822f50c71",
+        "line": 426,
+        "contains": "login_mfa_handler"
+      }
     },
     {
       "name": "route:POST /api/auth/v1/change_email/request",
@@ -2544,7 +2946,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/change_email.rs",
+        "sha256": "71a242f4f8615edffd349f31c427acda7c84e8e402ec936e514dd94f62c44df3",
+        "line": 54,
+        "contains": "change_email_request_handler"
+      }
     },
     {
       "name": "route:GET /api/auth/v1/change_email/confirm/{email_verification_code}",
@@ -2554,7 +2962,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/change_email.rs",
+        "sha256": "71a242f4f8615edffd349f31c427acda7c84e8e402ec936e514dd94f62c44df3",
+        "line": 209,
+        "contains": "change_email_confirm_handler"
+      }
     },
     {
       "name": "route:POST /api/auth/v1/reset_password/request",
@@ -2564,7 +2978,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/reset_password.rs",
+        "sha256": "46e096d61c5f80aa10ebf2a946f07fe3a0f0b46e01d910605b58ff0840e9788b",
+        "line": 59,
+        "contains": "reset_password_request_handler"
+      }
     },
     {
       "name": "route:POST /api/auth/v1/reset_password/update",
@@ -2574,7 +2994,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/reset_password.rs",
+        "sha256": "46e096d61c5f80aa10ebf2a946f07fe3a0f0b46e01d910605b58ff0840e9788b",
+        "line": 169,
+        "contains": "reset_password_update_handler"
+      }
     },
     {
       "name": "route:POST /api/auth/v1/refresh",
@@ -2584,7 +3010,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/api/refresh.rs",
+        "sha256": "2a9cebfebfbde6e3646c443ae294d78a4903022ff0c4fe1506bae75c258e0649",
+        "line": 35,
+        "contains": "refresh_handler"
+      }
     },
     {
       "name": "route:GET /api/_admin/openapi.json",
@@ -2594,7 +3026,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/openapi.rs",
+        "sha256": "0e3a4c4951e419f4f1b1f8944ee90d59611f2680586b09a23338e845e93c027a",
+        "line": 14,
+        "contains": "openapi_handler"
+      }
     },
     {
       "name": "route:POST /api/_admin/query",
@@ -2604,7 +3042,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/query.rs",
+        "sha256": "fcda5077c835ea18e78f073ce5a8348a928fc2e4e7dfae10f34b46cce1d5d8e8",
+        "line": 45,
+        "contains": "query_handler"
+      }
     },
     {
       "name": "route:GET /api/_admin/backups",
@@ -2614,7 +3058,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/backup.rs",
+        "sha256": "0dac57c98710215904a24469532f2604e7c8f3794323342cf7ea501fe7fba89b",
+        "line": 28,
+        "contains": "list_backups_handler"
+      }
     },
     {
       "name": "route:POST /api/_admin/backups/trigger",
@@ -2624,7 +3074,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/backup.rs",
+        "sha256": "0dac57c98710215904a24469532f2604e7c8f3794323342cf7ea501fe7fba89b",
+        "line": 52,
+        "contains": "trigger_backup_handler"
+      }
     },
     {
       "name": "route:DELETE /api/_admin/backups/delete",
@@ -2634,7 +3090,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/backup.rs",
+        "sha256": "0dac57c98710215904a24469532f2604e7c8f3794323342cf7ea501fe7fba89b",
+        "line": 102,
+        "contains": "delete_backups_handler"
+      }
     },
     {
       "name": "route:PATCH /api/_admin/backups/restore",
@@ -2644,7 +3106,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/backup.rs",
+        "sha256": "0dac57c98710215904a24469532f2604e7c8f3794323342cf7ea501fe7fba89b",
+        "line": 134,
+        "contains": "restore_backup_handler"
+      }
     },
     {
       "name": "route:GET /api/_admin/public_key",
@@ -2654,7 +3122,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/jwt.rs",
+        "sha256": "15c7b881c79428b76f500b788444dcfca1640209dc4a4d73fcf03ddce634214f",
+        "line": 14,
+        "contains": "get_public_key"
+      }
     },
     {
       "name": "route:POST /api/_admin/parse",
@@ -2664,7 +3138,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/parse.rs",
+        "sha256": "feec14272a94f2b1596c02fedc124d2f5892117a960e16fd17893b74d0afec3a",
+        "line": 45,
+        "contains": "parse_handler"
+      }
     },
     {
       "name": "route:GET /api/_admin/info",
@@ -2674,7 +3154,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/info.rs",
+        "sha256": "7e694b30b2c6b5d9862721dd8c39c1a4dcc36305a0d7c525f6b62bd272c9e192",
+        "line": 41,
+        "contains": "info_handler"
+      }
     },
     {
       "name": "route:POST /api/_admin/mint",
@@ -2684,7 +3170,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/mint.rs",
+        "sha256": "578c5f0ec07fecc356840ceea5adca5b5913d6afd06ee7b7ac0a19a0244ce6c5",
+        "line": 27,
+        "contains": "mint_auth_tokens"
+      }
     },
     {
       "name": "route:POST /api/_admin/email/test",
@@ -2694,7 +3186,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/email.rs",
+        "sha256": "16a81ce099d295814ecba71c3e0c0197c0b73ce971d9bcc036f094d64fe9c954",
+        "line": 30,
+        "contains": "test_email_handler"
+      }
     },
     {
       "name": "route:GET /api/_admin/oauth_providers",
@@ -2704,7 +3202,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/oauth_providers.rs",
+        "sha256": "ce0ce610ef4232ec2c773dd4322988e8c53219c55380a9fd39e8177418def416",
+        "line": 31,
+        "contains": "available_oauth_providers_handler"
+      }
     },
     {
       "name": "route:GET /api/_admin/wasm",
@@ -2714,7 +3218,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/wasm.rs",
+        "sha256": "2df4c7270ae69d14d013c9d54763ca867496394f3bf548314fe0bed70cef9cdd",
+        "line": 89,
+        "contains": "list_wasm_components_handler"
+      }
     },
     {
       "name": "route:POST /api/_admin/wasm/install",
@@ -2724,7 +3234,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/wasm.rs",
+        "sha256": "2df4c7270ae69d14d013c9d54763ca867496394f3bf548314fe0bed70cef9cdd",
+        "line": 184,
+        "contains": "install_wasm_component_handler"
+      }
     },
     {
       "name": "route:POST /api/_admin/wasm/uninstall",
@@ -2734,7 +3250,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/wasm.rs",
+        "sha256": "2df4c7270ae69d14d013c9d54763ca867496394f3bf548314fe0bed70cef9cdd",
+        "line": 233,
+        "contains": "uninstall_wasm_component_handler"
+      }
     },
     {
       "name": "route:GET /api/_admin/config",
@@ -2744,7 +3266,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/config/get_config.rs",
+        "sha256": "d1e1464515fdae06538a207259f7bd5b9b8bbecbd796d6db5e60b2fdb43229c6",
+        "line": 20,
+        "contains": "get_config_handler"
+      }
     },
     {
       "name": "route:POST /api/_admin/config",
@@ -2754,7 +3282,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/config/update_config.rs",
+        "sha256": "c891e35ebf3fe7e3d5db5bcb4008179ec5f0b9df3cc85b1e7ba0db98d0e9a230",
+        "line": 26,
+        "contains": "update_config_handler"
+      }
     },
     {
       "name": "route:GET /api/_admin/schema/{record_api_name}/schema.json",
@@ -2764,7 +3298,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/json_schema/get_api_json_schema.rs",
+        "sha256": "72a444c097f1f792b425184b3bf8576657d98d46948366f153b4a8b80d29bafc",
+        "line": 26,
+        "contains": "get_api_json_schema_handler"
+      }
     },
     {
       "name": "route:GET /api/_admin/schema",
@@ -2774,7 +3314,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/json_schema/mod.rs",
+        "sha256": "f14ae788c6d6059b354b41360e810df1dc5a839a9ead0251f3e9c404d524ee68",
+        "line": 33,
+        "contains": "list_schemas_handler"
+      }
     },
     {
       "name": "route:POST /api/_admin/user",
@@ -2784,7 +3330,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/user/create_user.rs",
+        "sha256": "e51e05aa945bfe0d6960872ac78239db8edc0b6d92a843bcb0ac900fc1663227",
+        "line": 47,
+        "contains": "create_user_handler"
+      }
     },
     {
       "name": "route:GET /api/_admin/user",
@@ -2794,7 +3346,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/user/list_users.rs",
+        "sha256": "4e960b375756fd29b3504fbb9be1e5f2aa4860d8f3674ee19d619b5802a7ee3d",
+        "line": 67,
+        "contains": "list_users_handler"
+      }
     },
     {
       "name": "route:PATCH /api/_admin/user",
@@ -2804,7 +3362,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/user/update_user.rs",
+        "sha256": "804ad8ea09bc8b8efa1ead101f5b39f73c7867c6404b77d6b582de313d28d749",
+        "line": 46,
+        "contains": "update_user_handler"
+      }
     },
     {
       "name": "route:DELETE /api/_admin/user",
@@ -2814,7 +3378,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/user/delete_user.rs",
+        "sha256": "656e659da79b5b48102be79ae4b56f259e1c7cbe621d568feee1545f376cda97",
+        "line": 33,
+        "contains": "delete_user_handler"
+      }
     },
     {
       "name": "route:PATCH /api/_admin/table/{table_name}",
@@ -2824,7 +3394,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/rows/update_row.rs",
+        "sha256": "6ac72e8ededc269b43c10a35d73ee9df45ab205db734e85badec1dd27ef55218",
+        "line": 36,
+        "contains": "update_row_handler"
+      }
     },
     {
       "name": "route:GET /api/_admin/table/{table_name}/rows",
@@ -2834,7 +3410,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/rows/list_rows.rs",
+        "sha256": "2632444c89947461f473b4dce20e1431d37ff760ceacfcf6b92d9aad0756bb00",
+        "line": 45,
+        "contains": "list_rows_handler"
+      }
     },
     {
       "name": "route:GET /api/_admin/table/{table_name}/files",
@@ -2844,7 +3426,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/rows/read_files.rs",
+        "sha256": "39045c3167d0aa3b384f7bf341aa66668f6e59441806b639fdd9a37ea6a8bd35",
+        "line": 40,
+        "contains": "read_files_handler"
+      }
     },
     {
       "name": "route:DELETE /api/_admin/table/{table_name}",
@@ -2854,7 +3442,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/rows/delete_rows.rs",
+        "sha256": "a45bae1f75f414ff458a296a70c4a34eddbb6fc0374b7f7f64e9beebbc4108e6",
+        "line": 34,
+        "contains": "delete_row_handler"
+      }
     },
     {
       "name": "route:DELETE /api/_admin/table/{table_name}/rows",
@@ -2864,7 +3458,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/rows/delete_rows.rs",
+        "sha256": "a45bae1f75f414ff458a296a70c4a34eddbb6fc0374b7f7f64e9beebbc4108e6",
+        "line": 113,
+        "contains": "delete_rows_handler"
+      }
     },
     {
       "name": "route:POST /api/_admin/table/{table_name}",
@@ -2874,7 +3474,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/rows/insert_row.rs",
+        "sha256": "65c13d8ecdd3d9b79bfe3f4256af0f2d25dfec9472e0349d4dc71986f0bc66c3",
+        "line": 36,
+        "contains": "insert_row_handler"
+      }
     },
     {
       "name": "route:GET /api/_admin/logs/list",
@@ -2884,7 +3490,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/logs/list_logs.rs",
+        "sha256": "865739593978eb31d490000310cd060b030e9a55f49d318084e65b45feb81525",
+        "line": 36,
+        "contains": "list_logs_handler"
+      }
     },
     {
       "name": "route:GET /api/_admin/logs/stats",
@@ -2894,7 +3506,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/logs/stats.rs",
+        "sha256": "d158c54feb49d56655a9475e4a557fe9858d434b2eb4357f1ff08067cdd7739d",
+        "line": 37,
+        "contains": "fetch_stats_handler"
+      }
     },
     {
       "name": "route:PATCH /api/_admin/index",
@@ -2904,7 +3522,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/table/alter_index.rs",
+        "sha256": "14c7da2ed0ccfbfc655a31f99766d539227b6f84c3e1df75789517d3a8fb0c55",
+        "line": 34,
+        "contains": "alter_index_handler"
+      }
     },
     {
       "name": "route:POST /api/_admin/index",
@@ -2914,7 +3538,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/table/create_index.rs",
+        "sha256": "4de560596219a001e3d6dc81b674f068a52ad0347271d75699bd4e737b673b27",
+        "line": 32,
+        "contains": "create_index_handler"
+      }
     },
     {
       "name": "route:DELETE /api/_admin/index",
@@ -2924,7 +3554,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/table/drop_index.rs",
+        "sha256": "57c1da62da3a2cc181bcbc105bbc334419d8f88f3151f73779559583e137e1af",
+        "line": 33,
+        "contains": "drop_index_handler"
+      }
     },
     {
       "name": "route:GET /api/_admin/tables",
@@ -2934,7 +3570,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/table/list_tables.rs",
+        "sha256": "881400b21f720de0155bb44df3d4d6c0dce4c37e03d9713370bc9200824b4dda",
+        "line": 44,
+        "contains": "list_tables_handler"
+      }
     },
     {
       "name": "route:DELETE /api/_admin/table",
@@ -2944,7 +3586,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/table/drop_table.rs",
+        "sha256": "68f6540297332ba2fab6fe79628d1bf47a64fac04555a19358226c8d5cefe7aa",
+        "line": 36,
+        "contains": "drop_table_handler"
+      }
     },
     {
       "name": "route:POST /api/_admin/table",
@@ -2954,7 +3602,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/table/create_table.rs",
+        "sha256": "82682db07bc24b6d7bf90d763207d6cf5a3154478d89b48df6a931a88314838b",
+        "line": 32,
+        "contains": "create_table_handler"
+      }
     },
     {
       "name": "route:PATCH /api/_admin/table",
@@ -2964,7 +3618,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/table/alter_table.rs",
+        "sha256": "c2b28b4bb96175d9a6bceabe0a95bdde78823d9fcbfd5b7304fed7120e4d3adb",
+        "line": 51,
+        "contains": "alter_table_handler"
+      }
     },
     {
       "name": "route:GET /api/_admin/jobs",
@@ -2974,7 +3634,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/jobs/list_jobs.rs",
+        "sha256": "fd53061bb3e955334d146986824bc2f3ef21038fa76e764242c4511da84d828c",
+        "line": 35,
+        "contains": "list_jobs_handler"
+      }
     },
     {
       "name": "route:POST /api/_admin/job/run",
@@ -2984,7 +3650,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/jobs/run_job.rs",
+        "sha256": "94b8e413f0ef8ea2853114547d6707a8cb06f9ad45d010bf232c30cf4d49cb05",
+        "line": 29,
+        "contains": "run_job_handler"
+      }
     },
     {
       "name": "route:GET /api/healthcheck",
@@ -2994,7 +3666,13 @@
       ],
       "edges": [],
       "condition": "always",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/server/mod.rs",
+        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
+        "line": 545,
+        "contains": "/api/healthcheck"
+      }
     },
     {
       "name": "route:GET /api/whoami",
@@ -3004,7 +3682,109 @@
       ],
       "edges": [],
       "condition": "cfg(debug_assertions)",
-      "resolution": "static"
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/server/mod.rs",
+        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
+        "line": 444,
+        "contains": "/api/whoami"
+      }
+    },
+    {
+      "name": "job:Backup",
+      "class": "job",
+      "source_files": [
+        "crates/core/src/scheduler.rs"
+      ],
+      "edges": [],
+      "condition": "registered built-in",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/scheduler.rs",
+        "sha256": "46d4869fbff536ec0ac415f5b1d8424ec9e2e44353fbe1b21225adb9bb42a721",
+        "line": 285,
+        "contains": "SystemJobId::Backup"
+      }
+    },
+    {
+      "name": "job:Heartbeat",
+      "class": "job",
+      "source_files": [
+        "crates/core/src/scheduler.rs"
+      ],
+      "edges": [],
+      "condition": "registered built-in",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/scheduler.rs",
+        "sha256": "46d4869fbff536ec0ac415f5b1d8424ec9e2e44353fbe1b21225adb9bb42a721",
+        "line": 316,
+        "contains": "SystemJobId::Heartbeat"
+      }
+    },
+    {
+      "name": "job:LogCleaner",
+      "class": "job",
+      "source_files": [
+        "crates/core/src/scheduler.rs"
+      ],
+      "edges": [],
+      "condition": "registered built-in",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/scheduler.rs",
+        "sha256": "46d4869fbff536ec0ac415f5b1d8424ec9e2e44353fbe1b21225adb9bb42a721",
+        "line": 329,
+        "contains": "SystemJobId::LogCleaner"
+      }
+    },
+    {
+      "name": "job:AuthCleaner",
+      "class": "job",
+      "source_files": [
+        "crates/core/src/scheduler.rs"
+      ],
+      "edges": [],
+      "condition": "registered built-in",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/scheduler.rs",
+        "sha256": "46d4869fbff536ec0ac415f5b1d8424ec9e2e44353fbe1b21225adb9bb42a721",
+        "line": 362,
+        "contains": "SystemJobId::AuthCleaner"
+      }
+    },
+    {
+      "name": "job:QueryOptimizer",
+      "class": "job",
+      "source_files": [
+        "crates/core/src/scheduler.rs"
+      ],
+      "edges": [],
+      "condition": "registered built-in",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/scheduler.rs",
+        "sha256": "46d4869fbff536ec0ac415f5b1d8424ec9e2e44353fbe1b21225adb9bb42a721",
+        "line": 396,
+        "contains": "SystemJobId::QueryOptimizer"
+      }
+    },
+    {
+      "name": "job:FileDeletions",
+      "class": "job",
+      "source_files": [
+        "crates/core/src/scheduler.rs"
+      ],
+      "edges": [],
+      "condition": "registered built-in",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/scheduler.rs",
+        "sha256": "46d4869fbff536ec0ac415f5b1d8424ec9e2e44353fbe1b21225adb9bb42a721",
+        "line": 421,
+        "contains": "SystemJobId::FileDeletions"
+      }
     }
   ],
   "unresolved_source_graph": [],
@@ -4717,8 +5497,8 @@
       "source": {
         "file": "crates/core/src/server/mod.rs",
         "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
-        "line": 549,
-        "contains": "healthcheck_handler"
+        "line": 545,
+        "contains": "/api/healthcheck"
       },
       "condition": "always",
       "classification": "deny",
@@ -4748,8 +5528,12 @@
       "conditional:admin-disabled"
     ],
     "jobs": [
-      "job:backup",
-      "job:runtime"
+      "job:Backup",
+      "job:Heartbeat",
+      "job:LogCleaner",
+      "job:AuthCleaner",
+      "job:QueryOptimizer",
+      "job:FileDeletions"
     ],
     "dynamic_points": [
       "dynamic:wasm-manifest",
@@ -4865,8 +5649,8 @@
       "source": {
         "file": "crates/core/src/server/mod.rs",
         "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
-        "line": 549,
-        "contains": "healthcheck_handler"
+        "line": 444,
+        "contains": "/api/whoami"
       },
       "condition": "cfg(debug_assertions)",
       "classification": "deny",
@@ -4886,36 +5670,36 @@
       "path": "/api/auth/v1/login",
       "handler": "login_handler",
       "source": {
-        "file": "crates/core/src/auth/api/login.rs",
-        "sha256": "cdd0036b5eaff037f91372d695a20a89914600344a1c5f7e77814d2822f50c71",
-        "line": 92,
-        "contains": "login_handler"
+        "file": "crates/core/src/auth/mod.rs",
+        "sha256": "264e289a46a1cc206a7dc1d86db6962bdf02484e856cce7ac875e6179d8a016f",
+        "line": 68,
+        "contains": "api::login::login_handler"
       },
-      "condition": "always"
+      "condition": "independent_admin_listener"
     },
     {
       "method": "GET",
       "path": "/api/auth/v1/status",
       "handler": "login_status_handler",
       "source": {
-        "file": "crates/core/src/auth/api/status.rs",
-        "sha256": "a86f94a735e49dee2910d8a88c3e19eb4cdb7a3a6db2ae7546f6d6c3d427e604",
-        "line": 30,
-        "contains": "login_status_handler"
+        "file": "crates/core/src/auth/mod.rs",
+        "sha256": "264e289a46a1cc206a7dc1d86db6962bdf02484e856cce7ac875e6179d8a016f",
+        "line": 77,
+        "contains": "api::status::login_status_handler"
       },
-      "condition": "always"
+      "condition": "independent_admin_listener"
     },
     {
       "method": "GET",
       "path": "/api/auth/v1/logout",
       "handler": "logout_handler",
       "source": {
-        "file": "crates/core/src/auth/api/logout.rs",
-        "sha256": "2d37f0e1c836a2fb945271881877212b333f97fff58bfafd6b14d759063c91bd",
-        "line": 35,
-        "contains": "logout_handler"
+        "file": "crates/core/src/auth/mod.rs",
+        "sha256": "264e289a46a1cc206a7dc1d86db6962bdf02484e856cce7ac875e6179d8a016f",
+        "line": 80,
+        "contains": "api::logout::logout_handler"
       },
-      "condition": "always"
+      "condition": "independent_admin_listener"
     }
   ],
   "section_counts": {

@@ -35,7 +35,7 @@ def synthetic_fixture(tmp: Path):
         entry["sha256"] = hashlib.sha256(data).hexdigest()
     for route_index, route in enumerate(manifest["routes"] + manifest["debug_only_routes"] + manifest["listener_route_instances"]):
         source = route["source"]
-        token = f"synthetic route {route_index}"
+        token = f"synthetic route {route_index} {route['path']}"
         path = root / source["file"]
         data = path.read_text().splitlines()
         data[source["line"] - 1] += f" {token}"
@@ -47,6 +47,14 @@ def synthetic_fixture(tmp: Path):
         for route in manifest["routes"] + manifest["debug_only_routes"] + manifest["listener_route_instances"]:
             if route["source"]["file"] == entry["file"]:
                 route["source"]["sha256"] = digest
+        for capability in manifest["capabilities"]:
+            source = capability["source"]
+            if source["file"] == entry["file"]:
+                source["sha256"] = digest
+                source["contains"] = next(a["contains"] for a in entry["anchors"] if a["line"] == source["line"])
+    for route in manifest["routes"] + manifest["debug_only_routes"]:
+        node = next(c for c in manifest["capabilities"] if c["name"] == f"route:{route['method']} {route['path']}")
+        node["source"] = copy.deepcopy(route["source"])
     recorded = {"sources": [
         {"name": "trailbase", "repo": "trailbaseio/trailbase", "tag": "v0.33.11", "commit": surface_closure.COMMIT,
          "url": "https://codeload.github.com/trailbaseio/trailbase/tar.gz/f24291b894bb6c6696608e5f4c2f68666fe97686",

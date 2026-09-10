@@ -14,6 +14,12 @@ TOP_LEVEL = {"schema_version", "source", "source_scopes", "source_files", "capab
 SAFE_PATH = re.compile(r"^(?!/)(?!$)(?!.*\\)(?!.*(?:^|/)\.{1,2}(?:/|$))[^\x00]+$")
 SOURCE_SCOPES = ["crates/core/src", "crates/wasm-runtime-axum/src", "crates/wasm-runtime-common/src", "crates/wasm-runtime-guest/src", "crates/wasm-runtime-host/src"]
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
+REQUIRED_JOBS = ("Backup", "Heartbeat", "LogCleaner", "AuthCleaner", "QueryOptimizer", "FileDeletions")
+REQUIRED_ROUTER_SOURCES = {
+    "router:oauth": ("crates/core/src/auth/oauth/mod.rs", "oauth_router"),
+    "router:transaction": ("crates/core/src/records/mod.rs", "enable_transactions"),
+    "router:custom": ("crates/core/src/server/mod.rs", "custom_router"),
+}
 
 class SurfaceError(ValueError): pass
 
@@ -112,6 +118,7 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         pairs.add(pair)
         if r["path"] in {"/api/records/v1/main_ops", "/api/records/v1/aux_ops"}: raise SurfaceError("synthetic policy path in upstream routes")
         if r["classification"] != "deny": raise SurfaceError("upstream routes must default deny")
+        if r["path"] == "/api/healthcheck" and (r["method"], r["handler"], r["condition"], r["source"]["file"]) != ("GET", "healthcheck_handler", "always", "crates/core/src/server/mod.rs"): raise SurfaceError("invalid healthcheck route")
     if ("DELETE", "/api/auth/v1/delete") not in pairs: raise SurfaceError("account delete route missing")
     if m["section_counts"] != {"records":10,"auth":31,"admin":40,"server":1}: raise SurfaceError("section count mismatch")
     _validate_debug(m, inventory)
@@ -120,13 +127,16 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
     caps = _list(m["capabilities"], "capabilities"); names = set()
     for raw in caps:
         raw = _dict(raw, "capability")
-        _keys(raw, {"name","class","source_files","edges","condition","resolution"}, "capability")
+        _keys(raw, {"name","class","source_files","edges","condition","resolution","source"}, "capability")
         _str(raw["name"], "capability.name")
         if raw["name"] in names: raise SurfaceError("duplicate capability")
         names.add(raw["name"])
     for c in caps:
-        c = _dict(c, "capability"); _keys(c, {"name","class","source_files","edges","condition","resolution"}, "capability")
+        c = _dict(c, "capability"); _keys(c, {"name","class","source_files","edges","condition","resolution","source"}, "capability")
         _str(c["name"], "capability.name"); _str(c["class"], "capability.class"); _str(c["condition"], "capability.condition")
+        _tagged_source(c["source"], "capability.source")
+        if c["source"]["file"] not in inventory or c["source"]["sha256"] != inventory[c["source"]["file"]]: raise SurfaceError("capability source digest mismatch")
+        if not any(a["line"] == c["source"]["line"] for e in m["source_files"] if e["file"] == c["source"]["file"] for a in e["anchors"]): raise SurfaceError("capability source anchor missing from inventory")
         sf = _list(c["source_files"], "capability.source_files")
         if not sf or any(type(x) is not str or x not in inventory for x in sf) or len(set(sf)) != len(sf): raise SurfaceError("invalid capability sources")
         edges = _list(c["edges"], "capability.edges")
@@ -134,11 +144,15 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
         if c["class"] not in {"router","conditional","job","dynamic_router","listener","direct_writer","provider","telemetry","route"}: raise SurfaceError("invalid capability class")
         if c["resolution"] not in {"static","runtime_unknown"}: raise SurfaceError("invalid capability resolution")
     byname = {c["name"]: c for c in caps}
+    if {n for n in byname if n.startswith("job:")} != {"job:" + n for n in REQUIRED_JOBS}: raise SurfaceError("registered job inventory mismatch")
+    for name, (file, contains) in REQUIRED_ROUTER_SOURCES.items():
+        source = byname[name]["source"]
+        if source["file"] != file: raise SurfaceError("router source anchor mismatch")
     route_nodes = {f"route:{r['method']} {r['path']}": r for r in routes}
     if any(name not in byname or byname[name]["class"] != "route" for name in route_nodes): raise SurfaceError("each route requires a route capability")
     for name, r in route_nodes.items():
         node = byname[name]
-        if node["source_files"] != [r["source"]["file"]] or node["condition"] != r["condition"]: raise SurfaceError("route capability metadata mismatch")
+        if node["source_files"] != [r["source"]["file"]] or node["condition"] != r["condition"] or node["source"] != r["source"]: raise SurfaceError("route capability metadata mismatch")
     debug_node_names = {f"route:{r['method']} {r['path']}" for r in m["debug_only_routes"]}
     if any(c["class"] == "route" and c["name"] not in route_nodes and c["name"] not in debug_node_names for c in caps): raise SurfaceError("unaccounted route capability")
     if len([c for c in caps if c["name"] == "root"]) != 1: raise SurfaceError("one root required")
@@ -170,7 +184,8 @@ def _validate_debug(m, inventory):
     debug = _list(m["debug_only_routes"], "debug_only_routes")
     if len(debug) != 1: raise SurfaceError("exactly one debug route required")
     r = debug[0]; _tagged_route(r, inventory, "debug route")
-    if (r["method"], r["path"], r["condition"]) != ("GET", "/api/whoami", "cfg(debug_assertions)"): raise SurfaceError("invalid debug route")
+    if (r["method"], r["path"], r["handler"], r["condition"]) != ("GET", "/api/whoami", "whoami_handler", "cfg(debug_assertions)"): raise SurfaceError("invalid debug route")
+    if r["source"]["file"] != "crates/core/src/server/mod.rs" or "/api/whoami" not in r["source"]["contains"]: raise SurfaceError("invalid debug route anchor")
     node = next((c for c in m["capabilities"] if c["name"] == "route:GET /api/whoami"), None)
     if node is None or node["class"] != "route" or node["condition"] != r["condition"]: raise SurfaceError("debug capability mismatch")
 
@@ -188,6 +203,9 @@ def _validate_listener(m, inventory):
         for k in ("method","path","handler","condition"): _str(x[k], "listener route." + k)
         _tagged_source(x["source"], "listener route.source")
         if x["source"]["file"] not in inventory: raise SurfaceError("listener source missing")
+        if x["condition"] != "independent_admin_listener": raise SurfaceError("invalid listener condition")
+        expected = {("POST", "/api/auth/v1/login", "login_handler"), ("GET", "/api/auth/v1/status", "login_status_handler"), ("GET", "/api/auth/v1/logout", "logout_handler")}
+        if (x["method"], x["path"], x["handler"]) not in expected or x["source"]["file"] != "crates/core/src/auth/mod.rs": raise SurfaceError("invalid listener route")
         key = (x["method"],x["path"],x["handler"],x["source"]["file"],x["condition"])
         if key in seen: raise SurfaceError("duplicate listener route")
         seen.add(key)
