@@ -8,6 +8,12 @@ A command is **read-only** only when the complete checked-in command path does n
 
 The finding classes used below are exactly: `correct now`, `documentation correction`, `contract missing`, `operational qualification missing`, and `out of scope`.
 
+## Task4 verification checkpoint — clean `f781f0e`
+
+The parent ran final verification once at clean `f781f0e` and did not rerun it. D4 unittest discovery ran **113 tests: 112 passed and one ERROR** in `test_native_adapter.NativeAdapterTests.test_default_command_timeout_stops_descendant_process_group`; `experiments/d4/native_adapter.py::_stop_group` encountered macOS `PermissionError: [Errno 1] Operation not permitted` from `os.killpg(process.pid, 0)`. This is a known recurring **macOS cleanup-observation uncertainty**, not a product regression. Earlier passing runs do not clear it, and it prevents a clean one-shot verification claim. Runtime discovery separately ran **107 tests OK**, with expected parser stderr and SQLite `ResourceWarning`s. `git diff --check`, the exact changed-path allowlist, and clean-worktree checks passed.
+
+This is a documentation-only record: no code/test changes, diagnosis, or fix were made. D4 stock-runtime infeasibility remains in force; Task 2 and Task 3 blocker dispositions are unchanged. The checkpoint records the observed result and does not convert it into a clean pass.
+
 ## Exact documentation corrections
 
 - The runbook now states the current envelope is manual D0–D3 only, D4 is infeasible on the stock runtime, and automatic HA is not provided.
