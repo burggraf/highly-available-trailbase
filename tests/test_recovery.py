@@ -73,9 +73,11 @@ class RecoveryTests(unittest.TestCase):
 
     def test_acceptance_phase_matrix_and_result_are_exact(self):
         m=self.module(); operation={'id':'a'*32,'source':'A','target':'B','source_epoch':'d1-source','new_epoch':'d1-'+'a'*32}
-        self.assertEqual(m.derive_restore_profile(operation,'compare',False),('comparison','d1-source',5))
-        self.assertEqual(m.derive_restore_profile(operation,'baseline',False),('baseline','d1-'+'a'*32,7))
-        for phase,fault in (('compare',True),('reconciled-compare',False),('bogus',False)):
+        self.assertEqual(m.derive_restore_profile(operation,'compare',False),('comparison','d1-source',5,False))
+        self.assertEqual(m.derive_restore_profile(operation,'baseline',False),('baseline','d1-'+'a'*32,7,False))
+        self.assertEqual(m.derive_restore_profile(operation,'reconciled-compare',False),('comparison','d1-source',5,True))
+        self.assertEqual(m.derive_restore_profile(operation,'verification-baseline',False),('baseline','d1-'+'a'*32,9,True))
+        for phase,fault in (('compare',True),('verification-baseline',True),('bogus',False)):
             with self.assertRaises(ValueError):m.derive_restore_profile(operation,phase,fault)
         with self.assertRaises(ValueError):m.derive_restore_profile({'id':'b'*32,'source':'B','target':'A','source_epoch':'d1-s','new_epoch':'d1-'+('b'*32)},'compare',False)
 
@@ -90,8 +92,25 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(m.validate_fault_outcomes(result,events),result)
         for bad in (result|{'lost':['main_ops/d3-a']},result|{'recovered':[]},result|{'extra':[]}):
             with self.assertRaises(ValueError):m.validate_fault_outcomes(bad,events)
-        self.assertEqual(m.validate_fault_outcomes({k:[] for k in ('recovered','lost','ambiguous','unacknowledged_recovered','rejected')},[]),
-                         {k:[] for k in ('recovered','lost','ambiguous','unacknowledged_recovered','rejected')})
+        empty_events=[events[0],{'event':'stop','submitted':0,'acknowledged':0,'rejected':0,'uncertain':0,'time_ns':2,'utc':'2026-01-01T00:00:01Z'}]
+        empty={k:[] for k in ('recovered','lost','ambiguous','unacknowledged_recovered','rejected')}
+        self.assertEqual(m.validate_fault_outcomes(empty,empty_events),empty)
+        for bad in (result|{'recovered':[{}]},result|{'recovered':['main_ops/not-d3']},result|{'recovered':[1]}):
+            with self.assertRaises(ValueError):m.validate_fault_outcomes(bad,events)
+
+    def test_fault_ledger_bounds_ids_times_and_semantics(self):
+        m=self.module(); start={'event':'start','run_id':'d3-'+'a'*32,'source_epoch':'d1-source','time_ns':1,'utc':'2026-01-01T00:00:00Z'}
+        sub={'event':'submitted','api':'main_ops','row':{'op_key':'d3-a','payload':'x'},'time_ns':2}
+        ack={'event':'acknowledged','api':'main_ops','row':sub['row'],'id':'1','time_ns':3}
+        stop={'event':'stop','submitted':1,'acknowledged':1,'rejected':0,'uncertain':0,'time_ns':4,'utc':'2026-01-01T00:00:01Z'}
+        for patch,index in (({'id':'9223372036854775808'},2),({'time_ns':True},3),({'utc':'bad'},3),({'time_ns':2},2)):
+            rows=[start,sub,ack,stop]; rows[index]=rows[index]|patch
+            with self.assertRaises(ValueError):m.fault_operations(rows)
+        with self.assertRaises(ValueError):m.fault_operations([start]+[sub,ack]*1001+[stop])
+        rejected=ack|{'event':'rejected'}; rejected.pop('id')
+        events=[start,sub,rejected,stop|{'acknowledged':0,'rejected':1}]
+        bad={'recovered':['main_ops/d3-a'],'lost':[],'ambiguous':[],'unacknowledged_recovered':[],'rejected':[]}
+        with self.assertRaises(ValueError):m.validate_fault_outcomes(bad,events)
 
     def test_protected_ledger_future_grammar_is_strict(self):
         m=self.module()
@@ -107,6 +126,7 @@ class RecoveryTests(unittest.TestCase):
         for bad in (raw.replace(b'\n',b'\r\n'),b'\xef\xbb\xbf'+raw,raw.replace(b'd1-main',b'd1-main2')+b'\x00'):
             with self.assertRaises(ValueError):m._protected_ledger(bad)
         with self.assertRaises(ValueError):m._protected_ledger(raw.replace(b'"smoke_pass"',b'"unexpected"'))
+        with self.assertRaises(ValueError):m._protected_ledger(raw.replace(b'"id":"1"',b'"id":"9223372036854775808"'))
 
     def test_raw_canonical_parsers_and_nested_malformed_values_refuse(self):
         m=self.module()
@@ -114,6 +134,7 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(m.parse_canonical_json(m.canonical_json(value)),value)
         for raw in (b'{"a":1,"a":2}',b'{ "a": 1}',b'\xff'):
             with self.assertRaises(ValueError):m.parse_canonical_json(raw)
+        with self.assertRaises(ValueError):m.parse_acceptance_request(b'{ "a":1}',{'id':'a'*32,'source':'A','target':'B','source_epoch':'d1-source','new_epoch':'d1-'+'a'*32})
         operation={'id':'a'*32,'source':'A','target':'B','source_epoch':'d1-source','new_epoch':'d1-'+'a'*32}
         bad={'schema':'hat-restore-input-authority-1','operation':operation['id'],'origin':'d2-preflight','ledger':None,'support':None,'binaries':None}
         with self.assertRaises(ValueError):m.validate_acceptance_request({'schema':'x'},operation)
@@ -122,12 +143,40 @@ class RecoveryTests(unittest.TestCase):
         with self.assertRaises(ValueError):m.fault_operations([{'event':'garbage'}])
         with self.assertRaises(ValueError):m.validate_fault_outcomes({'recovered':[],'lost':[],'ambiguous':[],'unacknowledged_recovered':[],'rejected':[]},[{'event':'garbage'}])
 
+    def test_valid_results_bind_original_operation_for_each_profile(self):
+        m=self.module()
+        for source,target,phase,fault in (('A','B','compare',False),('B','A','compare',True),('A','B','baseline',False),('A','B','new-writes',False)):
+            with self.subTest(phase=phase,source=source):
+                ident=('a' if source=='A' else 'b')*32
+                operation={'id':ident,'source':source,'target':target,'source_epoch':'d1-source','new_epoch':'d1-'+ident}
+                profile,epoch,_,_=m.derive_restore_profile(operation,phase,fault)
+                support={name:'b'*64 for name in ('config.textproto','migrations/main/U100__hat_ops.sql','migrations/aux/U100__hat_ops.sql','secrets/keys/private_key.pem','secrets/keys/public_key.pem')}
+                authority={'schema':'hat-restore-input-authority-1','operation':ident,'origin':'current-verify-exclusive' if phase=='new-writes' else ('d2-preflight' if source=='A' else 'd3-recovery-input'),
+                           'ledger':{'path':'/var/lib/hat-demo/ledger.jsonl','device':1,'inode':2,'mode':384,'uid':0,'links':1,'bytes':10,'sha256':'a'*64},
+                           'support':support,'binaries':{'trail':'c'*64,'litestream':'d'*64}}
+                inputs={'replica_config_sha256':'e'*64,'ledger_sha256':'a'*64,'ledger_authority':authority,
+                        'restore_points':{db:{'source':'/var/lib/hat-demo/depot/data/'+db+'.db','position':1} for db in ('main','session','aux')},
+                        'support':support,'binaries':authority['binaries']}
+                if fault:
+                    operations=['main_ops/d3-a'];inputs|={'fault_ledger_sha256':'f'*64,'fault_operations':operations,'fault_operation_count':1,
+                                                         'fault_operations_sha256':__import__('hashlib').sha256(m.canonical_json(operations)).hexdigest()}
+                request={'schema':'hat-restore-acceptance-1','operation':ident,'phase':phase,'source':source,'target':target,'epoch':epoch,
+                         'positions':{db:1 for db in ('main','session','aux')},'profile':profile,'inputs':inputs}
+                checks={'records':'PASS','authentication':'PASS'}
+                if fault:checks|={'fault_outcomes':{'recovered':['main_ops/d3-a'],'lost':[],'ambiguous':[],'unacknowledged_recovered':[],'rejected':[]},'acknowledged_loss':'NONE'}
+                result={'schema':'hat-restore-acceptance-1','request':request,'request_sha256':__import__('hashlib').sha256(m.canonical_json(request)).hexdigest(),
+                        'databases':{db:{'position':1,'sha256':'a'*64,'integrity':'PASS','foreign_keys':'PASS'} for db in ('main','session','aux')},
+                        'signature':{db:'b'*64 for db in ('main','session','aux')},'checks':checks}
+                self.assertEqual(m.validate_acceptance_result(result,request,operation),result)
+                self.assertEqual(m.parse_acceptance_result(m.canonical_json(result),request,operation),result)
+
     def test_acceptance_result_rejects_legacy_and_mismatch(self):
         m=self.module(); operation={'id':'a'*32,'source':'A','target':'B','source_epoch':'d1-source','new_epoch':'d1-'+'a'*32}
         request={'schema':'hat-restore-acceptance-1','operation':operation['id'],'phase':'compare','source':'A','target':'B','epoch':'d1-source','positions':{'main':1,'session':1,'aux':1},'profile':'comparison','inputs':{}}
         db={name:{'position':1,'sha256':'a'*64,'integrity':'PASS','foreign_keys':'PASS'} for name in ('main','session','aux')}
         result={'schema':'hat-restore-acceptance-1','request':request,'request_sha256':'x'*64,'databases':db,'signature':{name:'b'*64 for name in ('main','session','aux')},'checks':{'records':'PASS','authentication':'PASS'}}
-        with self.assertRaises(ValueError):m.validate_acceptance_result(result,request)
-        with self.assertRaises(ValueError):m.validate_acceptance_result(result|{'auth_and_records':'PASS'},request)
+        with self.assertRaises(ValueError):m.validate_acceptance_result(result,request,operation)
+        with self.assertRaises(ValueError):m.validate_acceptance_result(result|{'auth_and_records':'PASS'},request,operation)
+        with self.assertRaises(ValueError):m.parse_acceptance_result(m.canonical_json(result),request,operation)
 
 if __name__=='__main__':unittest.main()
