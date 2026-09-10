@@ -208,6 +208,14 @@
         {
           "line": 1,
           "contains": "mod backup;"
+        },
+        {
+          "line": 77,
+          "contains": "routes!(query::query_handler)"
+        },
+        {
+          "line": 42,
+          "contains": "table::create_index::create_index_handler"
         }
       ]
     },
@@ -480,6 +488,14 @@
         {
           "line": 1,
           "contains": "use log::*;"
+        },
+        {
+          "line": 58,
+          "contains": "conn"
+        },
+        {
+          "line": 598,
+          "contains": "build_objectstore"
         }
       ]
     },
@@ -776,6 +792,22 @@
         {
           "line": 82,
           "contains": "api::logout::post_logout_handler"
+        },
+        {
+          "line": 49,
+          "contains": "let mut router = OpenApiRouter::new()"
+        },
+        {
+          "line": 113,
+          "contains": "pub(super) fn admin_auth_router"
+        },
+        {
+          "line": 93,
+          "contains": "if config.auth.enable_anonymous_signin()"
+        },
+        {
+          "line": 101,
+          "contains": "if config.auth.enable_otp_signin()"
         }
       ]
     },
@@ -924,6 +956,46 @@
         {
           "line": 1,
           "contains": "mod apple;"
+        },
+        {
+          "line": 50,
+          "contains": "AppleOAuthProvider::registry_entry()"
+        },
+        {
+          "line": 51,
+          "contains": "DiscordOAuthProvider"
+        },
+        {
+          "line": 52,
+          "contains": "GitlabOAuthProvider"
+        },
+        {
+          "line": 53,
+          "contains": "GithubOAuthProvider::registry_entry()"
+        },
+        {
+          "line": 54,
+          "contains": "GoogleOAuthProvider"
+        },
+        {
+          "line": 55,
+          "contains": "FacebookOAuthProvider"
+        },
+        {
+          "line": 56,
+          "contains": "MicrosoftOAuthProvider"
+        },
+        {
+          "line": 57,
+          "contains": "TwitchOAuthProvider"
+        },
+        {
+          "line": 58,
+          "contains": "YandexOAuthProvider"
+        },
+        {
+          "line": 48,
+          "contains": "oidc::OidcProvider::registry_entry(0)"
         }
       ]
     },
@@ -1124,6 +1196,14 @@
         {
           "line": 1,
           "contains": "use parking_lot::RwLock;"
+        },
+        {
+          "line": 568,
+          "contains": "pub fn init_session_db"
+        },
+        {
+          "line": 542,
+          "contains": "pub(super) fn init_logs_db"
         }
       ]
     },
@@ -1154,6 +1234,14 @@
         {
           "line": 1,
           "contains": "use lettre::address::AddressError;"
+        },
+        {
+          "line": 329,
+          "contains": "fn new_smtp"
+        },
+        {
+          "line": 368,
+          "contains": "fn new_local"
         }
       ]
     },
@@ -1264,6 +1352,10 @@
         {
           "line": 1,
           "contains": "use axum::body::Body;"
+        },
+        {
+          "line": 230,
+          "contains": "pub fn new"
         }
       ]
     },
@@ -1392,6 +1484,14 @@
         {
           "line": 69,
           "contains": "transaction::record_transactions_handler"
+        },
+        {
+          "line": 35,
+          "contains": "pub(crate) fn router"
+        },
+        {
+          "line": 59,
+          "contains": "matches!(connection_type, ConnectionType::Sqlite)"
         }
       ]
     },
@@ -1648,6 +1748,54 @@
         {
           "line": 436,
           "contains": "healthcheck_handler"
+        },
+        {
+          "line": 423,
+          "contains": "OpenApiRouter::new()"
+        },
+        {
+          "line": 385,
+          "contains": "pub(crate) fn build_admin_router"
+        },
+        {
+          "line": 142,
+          "contains": "crate::wasm::install_routes_and_jobs"
+        },
+        {
+          "line": 131,
+          "contains": "custom_router.into_iter()"
+        },
+        {
+          "line": 421,
+          "contains": "let enable_transactions"
+        },
+        {
+          "line": 137,
+          "contains": "#[cfg(feature = \"wasm\")]"
+        },
+        {
+          "line": 166,
+          "contains": "if let Some(admin_address)"
+        },
+        {
+          "line": 459,
+          "contains": "if let Some(public_dir)"
+        },
+        {
+          "line": 469,
+          "contains": "if public_dir_spa"
+        },
+        {
+          "line": 157,
+          "contains": "if !state.dev_mode()"
+        },
+        {
+          "line": 368,
+          "contains": "start_listen(addr, router"
+        },
+        {
+          "line": 192,
+          "contains": "Some((admin_address, admin_router))"
         }
       ]
     },
@@ -1718,6 +1866,14 @@
         {
           "line": 1,
           "contains": "use std::path::PathBuf;"
+        },
+        {
+          "line": 130,
+          "contains": "pub(crate) async fn install_routes_and_jobs"
+        },
+        {
+          "line": 170,
+          "contains": "install_routes_and_jobs::<AppState>"
         }
       ]
     },
@@ -1903,465 +2059,6 @@
     }
   ],
   "capabilities": [
-    {
-      "name": "root",
-      "class": "router",
-      "source_files": [
-        "crates/core/src/server/mod.rs"
-      ],
-      "edges": [
-        "router:server",
-        "router:auth",
-        "router:oauth",
-        "router:records",
-        "router:transaction",
-        "router:admin",
-        "router:wasm",
-        "router:custom",
-        "route:GET /api/whoami"
-      ],
-      "condition": "source-reviewed",
-      "resolution": "static",
-      "source": {
-        "file": "crates/core/src/server/mod.rs",
-        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
-        "line": 421,
-        "contains": "enable_transactions"
-      }
-    },
-    {
-      "name": "router:server",
-      "class": "router",
-      "source_files": [
-        "crates/core/src/server/mod.rs"
-      ],
-      "edges": [
-        "router:auth",
-        "router:records",
-        "router:admin",
-        "listener:main",
-        "listener:admin"
-      ],
-      "condition": "source-reviewed",
-      "resolution": "static",
-      "source": {
-        "file": "crates/core/src/server/mod.rs",
-        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
-        "line": 421,
-        "contains": "enable_transactions"
-      }
-    },
-    {
-      "name": "router:auth",
-      "class": "router",
-      "source_files": [
-        "crates/core/src/auth/mod.rs"
-      ],
-      "edges": [
-        "router:oauth",
-        "conditional:auth-disabled",
-        "writer:provider",
-        "route:GET /api/auth/v1/avatar/{b64_user_id}",
-        "route:POST /api/auth/v1/avatar",
-        "route:DELETE /api/auth/v1/avatar",
-        "route:POST /api/auth/v1/change_username",
-        "route:POST /api/auth/v1/otp/request",
-        "route:POST /api/auth/v1/otp/login",
-        "route:POST /api/auth/v1/token",
-        "route:GET /api/auth/v1/verify_email/trigger",
-        "route:GET /api/auth/v1/verify_email/confirm/{email_verification_token}",
-        "route:POST /api/auth/v1/register",
-        "route:POST /api/auth/v1/promote_anonymous",
-        "route:GET /api/auth/v1/totp/register",
-        "route:POST /api/auth/v1/totp/confirm",
-        "route:POST /api/auth/v1/totp/unregister",
-        "route:DELETE /api/auth/v1/delete",
-        "route:POST /api/auth/v1/change_password",
-        "route:GET /api/auth/v1/logout",
-        "route:POST /api/auth/v1/logout",
-        "route:POST /api/auth/v1/login_anonymous",
-        "route:GET /api/auth/v1/status",
-        "route:POST /api/auth/v1/login",
-        "route:POST /api/auth/v1/login_mfa",
-        "route:POST /api/auth/v1/change_email/request",
-        "route:GET /api/auth/v1/change_email/confirm/{email_verification_code}",
-        "route:POST /api/auth/v1/reset_password/request",
-        "route:POST /api/auth/v1/reset_password/update",
-        "route:POST /api/auth/v1/refresh"
-      ],
-      "condition": "source-reviewed",
-      "resolution": "static",
-      "source": {
-        "file": "crates/core/src/auth/mod.rs",
-        "sha256": "264e289a46a1cc206a7dc1d86db6962bdf02484e856cce7ac875e6179d8a016f",
-        "line": 68,
-        "contains": "api::login::login_handler"
-      }
-    },
-    {
-      "name": "router:oauth",
-      "class": "router",
-      "source_files": [
-        "crates/core/src/admin/backup.rs"
-      ],
-      "edges": [
-        "route:GET /api/auth/v1/oauth/{provider}/callback",
-        "route:POST /api/auth/v1/oauth/{provider}/callback",
-        "route:GET /api/auth/v1/oauth/{provider}/login",
-        "route:GET /api/auth/v1/oauth/providers",
-        "route:GET /api/_admin/oauth_providers"
-      ],
-      "condition": "source-reviewed",
-      "resolution": "static",
-      "source": {
-        "file": "crates/core/src/auth/oauth/mod.rs",
-        "sha256": "9a68dd34dc3291e0371d84c305e5da970a8987cd3949586cbb8fb460ec4b83bf",
-        "line": 20,
-        "contains": "oauth_router"
-      }
-    },
-    {
-      "name": "router:records",
-      "class": "router",
-      "source_files": [
-        "crates/core/src/records/mod.rs"
-      ],
-      "edges": [
-        "router:transaction",
-        "writer:db",
-        "route:GET /api/records/v1/{name}",
-        "route:POST /api/records/v1/{name}",
-        "route:POST /api/transaction/v1/execute",
-        "route:GET /api/records/v1/{name}/{record}",
-        "route:GET /api/records/v1/{name}/{record}/file/{column_name}",
-        "route:GET /api/records/v1/{name}/{record}/files/{column_name}/{file_name}",
-        "route:PATCH /api/records/v1/{name}/{record}",
-        "route:GET /api/records/v1/{name}/schema",
-        "route:DELETE /api/records/v1/{name}/{record}",
-        "route:GET /api/records/v1/{name}/subscribe/{record}",
-        "route:GET /api/_admin/openapi.json",
-        "route:POST /api/_admin/query",
-        "route:GET /api/_admin/backups",
-        "route:POST /api/_admin/backups/trigger",
-        "route:DELETE /api/_admin/backups/delete",
-        "route:PATCH /api/_admin/backups/restore",
-        "route:GET /api/_admin/public_key",
-        "route:POST /api/_admin/parse",
-        "route:GET /api/_admin/info",
-        "route:POST /api/_admin/mint",
-        "route:POST /api/_admin/email/test",
-        "route:GET /api/_admin/wasm",
-        "route:POST /api/_admin/wasm/install",
-        "route:POST /api/_admin/wasm/uninstall",
-        "route:GET /api/_admin/config",
-        "route:POST /api/_admin/config",
-        "route:GET /api/_admin/schema/{record_api_name}/schema.json",
-        "route:GET /api/_admin/schema",
-        "route:POST /api/_admin/user",
-        "route:GET /api/_admin/user",
-        "route:PATCH /api/_admin/user",
-        "route:DELETE /api/_admin/user",
-        "route:PATCH /api/_admin/table/{table_name}",
-        "route:GET /api/_admin/table/{table_name}/rows",
-        "route:GET /api/_admin/table/{table_name}/files",
-        "route:DELETE /api/_admin/table/{table_name}",
-        "route:DELETE /api/_admin/table/{table_name}/rows",
-        "route:POST /api/_admin/table/{table_name}",
-        "route:GET /api/_admin/logs/list",
-        "route:GET /api/_admin/logs/stats",
-        "route:PATCH /api/_admin/index",
-        "route:POST /api/_admin/index",
-        "route:DELETE /api/_admin/index",
-        "route:GET /api/_admin/tables",
-        "route:DELETE /api/_admin/table",
-        "route:POST /api/_admin/table",
-        "route:PATCH /api/_admin/table",
-        "route:GET /api/_admin/jobs",
-        "route:POST /api/_admin/job/run",
-        "route:GET /api/healthcheck"
-      ],
-      "condition": "source-reviewed",
-      "resolution": "static",
-      "source": {
-        "file": "crates/core/src/records/mod.rs",
-        "sha256": "b0c5aa8ca06b4d514b13ceb7a692d902944016d400474d234888f19bfefb9aa7",
-        "line": 68,
-        "contains": "enable_transactions"
-      }
-    },
-    {
-      "name": "router:transaction",
-      "class": "router",
-      "source_files": [
-        "crates/core/src/admin/backup.rs"
-      ],
-      "edges": [],
-      "condition": "source-reviewed",
-      "resolution": "static",
-      "source": {
-        "file": "crates/core/src/records/mod.rs",
-        "sha256": "b0c5aa8ca06b4d514b13ceb7a692d902944016d400474d234888f19bfefb9aa7",
-        "line": 68,
-        "contains": "enable_transactions"
-      }
-    },
-    {
-      "name": "router:admin",
-      "class": "router",
-      "source_files": [
-        "crates/core/src/admin/mod.rs"
-      ],
-      "edges": [
-        "router:wasm",
-        "conditional:admin-disabled",
-        "writer:files",
-        "writer:config",
-        "writer:object",
-        "telemetry:logs",
-        "job:Backup",
-        "job:Heartbeat",
-        "job:LogCleaner",
-        "job:AuthCleaner",
-        "job:QueryOptimizer",
-        "job:FileDeletions"
-      ],
-      "condition": "source-reviewed",
-      "resolution": "static",
-      "source": {
-        "file": "crates/core/src/server/mod.rs",
-        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
-        "line": 421,
-        "contains": "enable_transactions"
-      }
-    },
-    {
-      "name": "router:wasm",
-      "class": "router",
-      "source_files": [
-        "crates/core/src/wasm/mod.rs"
-      ],
-      "edges": [
-        "dynamic:wasm-manifest"
-      ],
-      "condition": "source-reviewed",
-      "resolution": "static",
-      "source": {
-        "file": "crates/core/src/server/mod.rs",
-        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
-        "line": 421,
-        "contains": "enable_transactions"
-      }
-    },
-    {
-      "name": "router:custom",
-      "class": "router",
-      "source_files": [
-        "crates/core/src/admin/backup.rs"
-      ],
-      "edges": [
-        "dynamic:custom-router"
-      ],
-      "condition": "source-reviewed",
-      "resolution": "static",
-      "source": {
-        "file": "crates/core/src/server/mod.rs",
-        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
-        "line": 456,
-        "contains": "merge(custom_router)"
-      }
-    },
-    {
-      "name": "conditional:auth-disabled",
-      "class": "conditional",
-      "source_files": [
-        "crates/core/src/auth/mod.rs"
-      ],
-      "edges": [],
-      "condition": "source-reviewed",
-      "resolution": "static",
-      "source": {
-        "file": "crates/core/src/auth/mod.rs",
-        "sha256": "264e289a46a1cc206a7dc1d86db6962bdf02484e856cce7ac875e6179d8a016f",
-        "line": 1,
-        "contains": "use utoipa_axum::router::OpenApiRouter;"
-      }
-    },
-    {
-      "name": "conditional:admin-disabled",
-      "class": "conditional",
-      "source_files": [
-        "crates/core/src/admin/mod.rs"
-      ],
-      "edges": [],
-      "condition": "source-reviewed",
-      "resolution": "static",
-      "source": {
-        "file": "crates/core/src/admin/mod.rs",
-        "sha256": "0694abe5cebd387b904cace6bb43a8e247475f48407b899a235a12e7c4c1d42d",
-        "line": 1,
-        "contains": "mod backup;"
-      }
-    },
-    {
-      "name": "dynamic:wasm-manifest",
-      "class": "dynamic_router",
-      "source_files": [
-        "crates/core/src/admin/wasm.rs"
-      ],
-      "edges": [],
-      "condition": "source-reviewed",
-      "resolution": "static",
-      "source": {
-        "file": "crates/core/src/admin/wasm.rs",
-        "sha256": "2df4c7270ae69d14d013c9d54763ca867496394f3bf548314fe0bed70cef9cdd",
-        "line": 89,
-        "contains": "list_wasm_components_handler"
-      }
-    },
-    {
-      "name": "dynamic:custom-router",
-      "class": "dynamic_router",
-      "source_files": [
-        "crates/core/src/server/mod.rs"
-      ],
-      "edges": [],
-      "condition": "source-reviewed",
-      "resolution": "static",
-      "source": {
-        "file": "crates/core/src/server/mod.rs",
-        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
-        "line": 549,
-        "contains": "healthcheck_handler"
-      }
-    },
-    {
-      "name": "listener:main",
-      "class": "listener",
-      "source_files": [
-        "crates/core/src/server/mod.rs"
-      ],
-      "edges": [],
-      "condition": "source-reviewed",
-      "resolution": "static",
-      "source": {
-        "file": "crates/core/src/server/mod.rs",
-        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
-        "line": 549,
-        "contains": "healthcheck_handler"
-      }
-    },
-    {
-      "name": "listener:admin",
-      "class": "listener",
-      "source_files": [
-        "crates/core/src/server/mod.rs"
-      ],
-      "edges": [],
-      "condition": "source-reviewed",
-      "resolution": "static",
-      "source": {
-        "file": "crates/core/src/server/mod.rs",
-        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
-        "line": 549,
-        "contains": "healthcheck_handler"
-      }
-    },
-    {
-      "name": "writer:db",
-      "class": "direct_writer",
-      "source_files": [
-        "crates/core/src/records/mod.rs"
-      ],
-      "edges": [],
-      "condition": "source-reviewed",
-      "resolution": "static",
-      "source": {
-        "file": "crates/core/src/records/mod.rs",
-        "sha256": "b0c5aa8ca06b4d514b13ceb7a692d902944016d400474d234888f19bfefb9aa7",
-        "line": 1,
-        "contains": "use trailbase_sqlite::ConnectionType;"
-      }
-    },
-    {
-      "name": "writer:files",
-      "class": "direct_writer",
-      "source_files": [
-        "crates/core/src/admin/rows/read_files.rs"
-      ],
-      "edges": [],
-      "condition": "source-reviewed",
-      "resolution": "static",
-      "source": {
-        "file": "crates/core/src/admin/rows/read_files.rs",
-        "sha256": "39045c3167d0aa3b384f7bf341aa66668f6e59441806b639fdd9a37ea6a8bd35",
-        "line": 40,
-        "contains": "read_files_handler"
-      }
-    },
-    {
-      "name": "writer:config",
-      "class": "direct_writer",
-      "source_files": [
-        "crates/core/src/admin/config/update_config.rs"
-      ],
-      "edges": [],
-      "condition": "source-reviewed",
-      "resolution": "static",
-      "source": {
-        "file": "crates/core/src/admin/config/update_config.rs",
-        "sha256": "c891e35ebf3fe7e3d5db5bcb4008179ec5f0b9df3cc85b1e7ba0db98d0e9a230",
-        "line": 26,
-        "contains": "update_config_handler"
-      }
-    },
-    {
-      "name": "writer:object",
-      "class": "direct_writer",
-      "source_files": [
-        "crates/core/src/admin/backup.rs"
-      ],
-      "edges": [],
-      "condition": "source-reviewed",
-      "resolution": "static",
-      "source": {
-        "file": "crates/core/src/admin/backup.rs",
-        "sha256": "0dac57c98710215904a24469532f2604e7c8f3794323342cf7ea501fe7fba89b",
-        "line": 28,
-        "contains": "list_backups_handler"
-      }
-    },
-    {
-      "name": "writer:provider",
-      "class": "provider",
-      "source_files": [
-        "crates/core/src/auth/oauth/mod.rs"
-      ],
-      "edges": [],
-      "condition": "source-reviewed",
-      "resolution": "static",
-      "source": {
-        "file": "crates/core/src/auth/oauth/mod.rs",
-        "sha256": "9a68dd34dc3291e0371d84c305e5da970a8987cd3949586cbb8fb460ec4b83bf",
-        "line": 1,
-        "contains": "mod callback;"
-      }
-    },
-    {
-      "name": "telemetry:logs",
-      "class": "telemetry",
-      "source_files": [
-        "crates/core/src/admin/logs/mod.rs"
-      ],
-      "edges": [],
-      "condition": "source-reviewed",
-      "resolution": "static",
-      "source": {
-        "file": "crates/core/src/admin/logs/mod.rs",
-        "sha256": "c3357db089c3727bdd77c6e356d2f91be56600588fc377212f9dcb5c5993c3ea",
-        "line": 1,
-        "contains": "pub mod list_logs;"
-      }
-    },
     {
       "name": "route:GET /api/records/v1/{name}",
       "class": "route",
@@ -3691,13 +3388,443 @@
       }
     },
     {
+      "name": "router:server",
+      "class": "router",
+      "source_files": [
+        "crates/core/src/server/mod.rs"
+      ],
+      "edges": [
+        "router:records",
+        "router:auth",
+        "router:admin",
+        "router:wasm",
+        "router:custom",
+        "listener:main",
+        "listener:admin",
+        "route:GET /api/healthcheck",
+        "route:GET /api/whoami",
+        "conditional:independent-admin-listener",
+        "conditional:public-dir",
+        "conditional:public-dir-spa"
+      ],
+      "condition": "always; main assembly; enable_transactions read at :421",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/server/mod.rs",
+        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
+        "line": 423,
+        "contains": "OpenApiRouter::new()"
+      }
+    },
+    {
+      "name": "router:records",
+      "class": "router",
+      "source_files": [
+        "crates/core/src/records/mod.rs"
+      ],
+      "edges": [
+        "router:transaction",
+        "writer:main-db",
+        "route:GET /api/records/v1/{name}",
+        "route:POST /api/records/v1/{name}",
+        "route:POST /api/transaction/v1/execute",
+        "route:GET /api/records/v1/{name}/{record}",
+        "route:GET /api/records/v1/{name}/{record}/file/{column_name}",
+        "route:GET /api/records/v1/{name}/{record}/files/{column_name}/{file_name}",
+        "route:PATCH /api/records/v1/{name}/{record}",
+        "route:GET /api/records/v1/{name}/schema",
+        "route:DELETE /api/records/v1/{name}/{record}",
+        "route:GET /api/records/v1/{name}/subscribe/{record}",
+        "conditional:transactions-enabled",
+        "conditional:records-subscribe-sqlite"
+      ],
+      "condition": "always; transaction child conditional",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/records/mod.rs",
+        "sha256": "b0c5aa8ca06b4d514b13ceb7a692d902944016d400474d234888f19bfefb9aa7",
+        "line": 35,
+        "contains": "pub(crate) fn router"
+      }
+    },
+    {
+      "name": "router:transaction",
+      "class": "router",
+      "source_files": [
+        "crates/core/src/records/mod.rs"
+      ],
+      "edges": [],
+      "condition": "config.server.enable_record_transactions() true",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/records/mod.rs",
+        "sha256": "b0c5aa8ca06b4d514b13ceb7a692d902944016d400474d234888f19bfefb9aa7",
+        "line": 69,
+        "contains": "transaction::record_transactions_handler"
+      }
+    },
+    {
+      "name": "router:auth",
+      "class": "router",
+      "source_files": [
+        "crates/core/src/auth/mod.rs"
+      ],
+      "edges": [
+        "router:oauth",
+        "router:admin-auth",
+        "conditional:auth-anonymous-signin",
+        "conditional:auth-otp-signin",
+        "writer:session-db",
+        "provider:email-smtp",
+        "provider:email-sendmail",
+        "route:GET /api/auth/v1/avatar/{b64_user_id}",
+        "route:POST /api/auth/v1/avatar",
+        "route:DELETE /api/auth/v1/avatar",
+        "route:POST /api/auth/v1/change_username",
+        "route:POST /api/auth/v1/otp/request",
+        "route:POST /api/auth/v1/otp/login",
+        "route:POST /api/auth/v1/token",
+        "route:GET /api/auth/v1/verify_email/trigger",
+        "route:GET /api/auth/v1/verify_email/confirm/{email_verification_token}",
+        "route:POST /api/auth/v1/register",
+        "route:POST /api/auth/v1/promote_anonymous",
+        "route:GET /api/auth/v1/totp/register",
+        "route:POST /api/auth/v1/totp/confirm",
+        "route:POST /api/auth/v1/totp/unregister",
+        "route:DELETE /api/auth/v1/delete",
+        "route:POST /api/auth/v1/change_password",
+        "route:GET /api/auth/v1/logout",
+        "route:POST /api/auth/v1/logout",
+        "route:POST /api/auth/v1/login_anonymous",
+        "route:GET /api/auth/v1/status",
+        "route:POST /api/auth/v1/login",
+        "route:POST /api/auth/v1/login_mfa",
+        "route:POST /api/auth/v1/change_email/request",
+        "route:GET /api/auth/v1/change_email/confirm/{email_verification_code}",
+        "route:POST /api/auth/v1/reset_password/request",
+        "route:POST /api/auth/v1/reset_password/update",
+        "route:POST /api/auth/v1/refresh",
+        "conditional:auth-rate-limit"
+      ],
+      "condition": "always; anonymous arms at :86-90; OTP arms at :93-97",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/mod.rs",
+        "sha256": "264e289a46a1cc206a7dc1d86db6962bdf02484e856cce7ac875e6179d8a016f",
+        "line": 49,
+        "contains": "let mut router = OpenApiRouter::new()"
+      }
+    },
+    {
+      "name": "router:oauth",
+      "class": "router",
+      "source_files": [
+        "crates/core/src/auth/oauth/mod.rs"
+      ],
+      "edges": [
+        "provider:oauth-oidc",
+        "provider:oauth-apple",
+        "provider:oauth-discord",
+        "provider:oauth-gitlab",
+        "provider:oauth-github",
+        "provider:oauth-google",
+        "provider:oauth-facebook",
+        "provider:oauth-microsoft",
+        "provider:oauth-twitch",
+        "provider:oauth-yandex",
+        "route:GET /api/auth/v1/oauth/{provider}/callback",
+        "route:POST /api/auth/v1/oauth/{provider}/callback",
+        "route:GET /api/auth/v1/oauth/{provider}/login",
+        "route:GET /api/auth/v1/oauth/providers"
+      ],
+      "condition": "always; merged by auth",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/oauth/mod.rs",
+        "sha256": "9a68dd34dc3291e0371d84c305e5da970a8987cd3949586cbb8fb460ec4b83bf",
+        "line": 20,
+        "contains": "oauth_router"
+      }
+    },
+    {
+      "name": "router:admin",
+      "class": "router",
+      "source_files": [
+        "crates/core/src/server/mod.rs"
+      ],
+      "edges": [
+        "router:admin-auth",
+        "writer:sql-query",
+        "writer:ddl",
+        "writer:config",
+        "writer:backup",
+        "writer:restore",
+        "writer:filesystem",
+        "writer:object-store",
+        "telemetry:logs",
+        "job:Backup",
+        "job:Heartbeat",
+        "job:LogCleaner",
+        "job:AuthCleaner",
+        "job:QueryOptimizer",
+        "job:FileDeletions",
+        "route:GET /api/_admin/openapi.json",
+        "route:POST /api/_admin/query",
+        "route:GET /api/_admin/backups",
+        "route:POST /api/_admin/backups/trigger",
+        "route:DELETE /api/_admin/backups/delete",
+        "route:PATCH /api/_admin/backups/restore",
+        "route:GET /api/_admin/public_key",
+        "route:POST /api/_admin/parse",
+        "route:GET /api/_admin/info",
+        "route:POST /api/_admin/mint",
+        "route:POST /api/_admin/email/test",
+        "route:GET /api/_admin/oauth_providers",
+        "route:GET /api/_admin/wasm",
+        "route:POST /api/_admin/wasm/install",
+        "route:POST /api/_admin/wasm/uninstall",
+        "route:GET /api/_admin/config",
+        "route:POST /api/_admin/config",
+        "route:GET /api/_admin/schema/{record_api_name}/schema.json",
+        "route:GET /api/_admin/schema",
+        "route:POST /api/_admin/user",
+        "route:GET /api/_admin/user",
+        "route:PATCH /api/_admin/user",
+        "route:DELETE /api/_admin/user",
+        "route:PATCH /api/_admin/table/{table_name}",
+        "route:GET /api/_admin/table/{table_name}/rows",
+        "route:GET /api/_admin/table/{table_name}/files",
+        "route:DELETE /api/_admin/table/{table_name}",
+        "route:DELETE /api/_admin/table/{table_name}/rows",
+        "route:POST /api/_admin/table/{table_name}",
+        "route:GET /api/_admin/logs/list",
+        "route:GET /api/_admin/logs/stats",
+        "route:PATCH /api/_admin/index",
+        "route:POST /api/_admin/index",
+        "route:DELETE /api/_admin/index",
+        "route:GET /api/_admin/tables",
+        "route:DELETE /api/_admin/table",
+        "route:POST /api/_admin/table",
+        "route:PATCH /api/_admin/table",
+        "route:GET /api/_admin/jobs",
+        "route:POST /api/_admin/job/run"
+      ],
+      "condition": "always when admin is built; independent or main placement decided :166-197",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/server/mod.rs",
+        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
+        "line": 385,
+        "contains": "pub(crate) fn build_admin_router"
+      }
+    },
+    {
+      "name": "router:admin-auth",
+      "class": "router",
+      "source_files": [
+        "crates/core/src/auth/mod.rs"
+      ],
+      "edges": [
+        "conditional:auth-rate-limit"
+      ],
+      "condition": "only independent admin router",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/mod.rs",
+        "sha256": "264e289a46a1cc206a7dc1d86db6962bdf02484e856cce7ac875e6179d8a016f",
+        "line": 113,
+        "contains": "pub(super) fn admin_auth_router"
+      }
+    },
+    {
+      "name": "router:wasm",
+      "class": "router",
+      "source_files": [
+        "crates/core/src/server/mod.rs"
+      ],
+      "edges": [
+        "dynamic:wasm-manifest",
+        "conditional:wasm-feature"
+      ],
+      "condition": "compile feature wasm; runtime component(s) present; each returned router pushed",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/server/mod.rs",
+        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
+        "line": 142,
+        "contains": "crate::wasm::install_routes_and_jobs"
+      }
+    },
+    {
+      "name": "router:custom",
+      "class": "router",
+      "source_files": [
+        "crates/core/src/server/mod.rs"
+      ],
+      "edges": [
+        "dynamic:custom-router"
+      ],
+      "condition": "ServerOptions.custom_router supplied",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/server/mod.rs",
+        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
+        "line": 131,
+        "contains": "custom_router.into_iter()"
+      }
+    },
+    {
+      "name": "conditional:transactions-enabled",
+      "class": "conditional",
+      "source_files": [
+        "crates/core/src/server/mod.rs"
+      ],
+      "edges": [],
+      "condition": "config flag true",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/server/mod.rs",
+        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
+        "line": 421,
+        "contains": "let enable_transactions"
+      }
+    },
+    {
+      "name": "conditional:records-subscribe-sqlite",
+      "class": "conditional",
+      "source_files": [
+        "crates/core/src/records/mod.rs"
+      ],
+      "edges": [],
+      "condition": "SQLite connection",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/records/mod.rs",
+        "sha256": "b0c5aa8ca06b4d514b13ceb7a692d902944016d400474d234888f19bfefb9aa7",
+        "line": 59,
+        "contains": "matches!(connection_type, ConnectionType::Sqlite)"
+      }
+    },
+    {
+      "name": "conditional:auth-anonymous-signin",
+      "class": "conditional",
+      "source_files": [
+        "crates/core/src/auth/mod.rs"
+      ],
+      "edges": [],
+      "condition": "anonymous auth enabled",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/mod.rs",
+        "sha256": "264e289a46a1cc206a7dc1d86db6962bdf02484e856cce7ac875e6179d8a016f",
+        "line": 93,
+        "contains": "if config.auth.enable_anonymous_signin()"
+      }
+    },
+    {
+      "name": "conditional:auth-otp-signin",
+      "class": "conditional",
+      "source_files": [
+        "crates/core/src/auth/mod.rs"
+      ],
+      "edges": [],
+      "condition": "OTP auth enabled",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/mod.rs",
+        "sha256": "264e289a46a1cc206a7dc1d86db6962bdf02484e856cce7ac875e6179d8a016f",
+        "line": 101,
+        "contains": "if config.auth.enable_otp_signin()"
+      }
+    },
+    {
+      "name": "conditional:wasm-feature",
+      "class": "conditional",
+      "source_files": [
+        "crates/core/src/server/mod.rs"
+      ],
+      "edges": [],
+      "condition": "compile feature",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/server/mod.rs",
+        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
+        "line": 137,
+        "contains": "#[cfg(feature = \"wasm\")]"
+      }
+    },
+    {
+      "name": "conditional:independent-admin-listener",
+      "class": "conditional",
+      "source_files": [
+        "crates/core/src/server/mod.rs"
+      ],
+      "edges": [],
+      "condition": "admin address differs from main",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/server/mod.rs",
+        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
+        "line": 166,
+        "contains": "if let Some(admin_address)"
+      }
+    },
+    {
+      "name": "conditional:public-dir",
+      "class": "conditional",
+      "source_files": [
+        "crates/core/src/server/mod.rs"
+      ],
+      "edges": [],
+      "condition": "public directory supplied",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/server/mod.rs",
+        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
+        "line": 459,
+        "contains": "if let Some(public_dir)"
+      }
+    },
+    {
+      "name": "conditional:public-dir-spa",
+      "class": "conditional",
+      "source_files": [
+        "crates/core/src/server/mod.rs"
+      ],
+      "edges": [],
+      "condition": "SPA option and public dir",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/server/mod.rs",
+        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
+        "line": 469,
+        "contains": "if public_dir_spa"
+      }
+    },
+    {
+      "name": "conditional:auth-rate-limit",
+      "class": "conditional",
+      "source_files": [
+        "crates/core/src/server/mod.rs"
+      ],
+      "edges": [],
+      "condition": "non-dev + configured positive limit",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/server/mod.rs",
+        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
+        "line": 157,
+        "contains": "if !state.dev_mode()"
+      }
+    },
+    {
       "name": "job:Backup",
       "class": "job",
       "source_files": [
         "crates/core/src/scheduler.rs"
       ],
       "edges": [],
-      "condition": "registered built-in",
+      "condition": "registry always constructs; disabled by default (:295), config can enable",
       "resolution": "static",
       "source": {
         "file": "crates/core/src/scheduler.rs",
@@ -3713,7 +3840,7 @@
         "crates/core/src/scheduler.rs"
       ],
       "edges": [],
-      "condition": "registered built-in",
+      "condition": "enabled default",
       "resolution": "static",
       "source": {
         "file": "crates/core/src/scheduler.rs",
@@ -3728,8 +3855,10 @@
       "source_files": [
         "crates/core/src/scheduler.rs"
       ],
-      "edges": [],
-      "condition": "registered built-in",
+      "edges": [
+        "writer:logs-db"
+      ],
+      "condition": "enabled default; config retention",
       "resolution": "static",
       "source": {
         "file": "crates/core/src/scheduler.rs",
@@ -3744,8 +3873,10 @@
       "source_files": [
         "crates/core/src/scheduler.rs"
       ],
-      "edges": [],
-      "condition": "registered built-in",
+      "edges": [
+        "writer:session-db"
+      ],
+      "condition": "enabled default",
       "resolution": "static",
       "source": {
         "file": "crates/core/src/scheduler.rs",
@@ -3760,8 +3891,10 @@
       "source_files": [
         "crates/core/src/scheduler.rs"
       ],
-      "edges": [],
-      "condition": "registered built-in",
+      "edges": [
+        "writer:main-db"
+      ],
+      "condition": "enabled default",
       "resolution": "static",
       "source": {
         "file": "crates/core/src/scheduler.rs",
@@ -3776,14 +3909,469 @@
       "source_files": [
         "crates/core/src/scheduler.rs"
       ],
-      "edges": [],
-      "condition": "registered built-in",
+      "edges": [
+        "writer:object-store"
+      ],
+      "condition": "enabled default; iterates main/configured DBs :440-464",
       "resolution": "static",
       "source": {
         "file": "crates/core/src/scheduler.rs",
         "sha256": "46d4869fbff536ec0ac415f5b1d8424ec9e2e44353fbe1b21225adb9bb42a721",
         "line": 421,
         "contains": "SystemJobId::FileDeletions"
+      }
+    },
+    {
+      "name": "dynamic:wasm-manifest",
+      "class": "dynamic_router",
+      "source_files": [
+        "crates/core/src/wasm/mod.rs"
+      ],
+      "edges": [
+        "writer:wasm"
+      ],
+      "condition": "wasm feature/runtime present",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/wasm/mod.rs",
+        "sha256": "9208abb5baa1fad59c11583ad3af5f9a58b9e16588b0a10e2b9ff44bd3bdc1d4",
+        "line": 170,
+        "contains": "install_routes_and_jobs::<AppState>"
+      }
+    },
+    {
+      "name": "dynamic:custom-router",
+      "class": "dynamic_router",
+      "source_files": [
+        "crates/core/src/server/mod.rs"
+      ],
+      "edges": [],
+      "condition": "custom router option supplied",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/server/mod.rs",
+        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
+        "line": 456,
+        "contains": "merge(custom_router)"
+      }
+    },
+    {
+      "name": "listener:main",
+      "class": "listener",
+      "source_files": [
+        "crates/core/src/server/mod.rs"
+      ],
+      "edges": [],
+      "condition": "always main; UDS :719-737 or TCP :742-774",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/server/mod.rs",
+        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
+        "line": 368,
+        "contains": "start_listen(addr, router"
+      }
+    },
+    {
+      "name": "listener:admin",
+      "class": "listener",
+      "source_files": [
+        "crates/core/src/server/mod.rs"
+      ],
+      "edges": [
+        "router:admin-auth",
+        "router:admin"
+      ],
+      "condition": "admin_address present and differs from main",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/server/mod.rs",
+        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
+        "line": 192,
+        "contains": "Some((admin_address, admin_router))"
+      }
+    },
+    {
+      "name": "writer:main-db",
+      "class": "direct_writer",
+      "source_files": [
+        "crates/core/src/app_state.rs"
+      ],
+      "edges": [],
+      "condition": "always; main connection initialized by manager (connection.rs:121-150)",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/app_state.rs",
+        "sha256": "1df436ac02459c82cee776012949a13ad38d690572276f5abcb3c2590191a206",
+        "line": 58,
+        "contains": "conn"
+      }
+    },
+    {
+      "name": "writer:session-db",
+      "class": "direct_writer",
+      "source_files": [
+        "crates/core/src/connection.rs"
+      ],
+      "edges": [],
+      "condition": "always",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/connection.rs",
+        "sha256": "64ec264642faebab75dd83715f312de647f7b3001dc91f71e72913058f71842b",
+        "line": 568,
+        "contains": "pub fn init_session_db"
+      }
+    },
+    {
+      "name": "writer:logs-db",
+      "class": "direct_writer",
+      "source_files": [
+        "crates/core/src/connection.rs"
+      ],
+      "edges": [],
+      "condition": "always; one writer (num_threads: Some(1))",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/connection.rs",
+        "sha256": "64ec264642faebab75dd83715f312de647f7b3001dc91f71e72913058f71842b",
+        "line": 542,
+        "contains": "pub(super) fn init_logs_db"
+      }
+    },
+    {
+      "name": "writer:sql-query",
+      "class": "direct_writer",
+      "source_files": [
+        "crates/core/src/admin/mod.rs"
+      ],
+      "edges": [],
+      "condition": "admin route capability; SQL query handler is HTTP route",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/mod.rs",
+        "sha256": "0694abe5cebd387b904cace6bb43a8e247475f48407b899a235a12e7c4c1d42d",
+        "line": 77,
+        "contains": "routes!(query::query_handler)"
+      }
+    },
+    {
+      "name": "writer:ddl",
+      "class": "direct_writer",
+      "source_files": [
+        "crates/core/src/admin/mod.rs"
+      ],
+      "edges": [],
+      "condition": "admin capability",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/mod.rs",
+        "sha256": "0694abe5cebd387b904cace6bb43a8e247475f48407b899a235a12e7c4c1d42d",
+        "line": 42,
+        "contains": "table::create_index::create_index_handler"
+      }
+    },
+    {
+      "name": "writer:config",
+      "class": "direct_writer",
+      "source_files": [
+        "crates/core/src/admin/config/update_config.rs"
+      ],
+      "edges": [],
+      "condition": "admin capability; config update",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/config/update_config.rs",
+        "sha256": "c891e35ebf3fe7e3d5db5bcb4008179ec5f0b9df3cc85b1e7ba0db98d0e9a230",
+        "line": 26,
+        "contains": "update_config_handler"
+      }
+    },
+    {
+      "name": "writer:backup",
+      "class": "direct_writer",
+      "source_files": [
+        "crates/core/src/admin/backup.rs"
+      ],
+      "edges": [],
+      "condition": "admin capability; backup trigger",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/backup.rs",
+        "sha256": "0dac57c98710215904a24469532f2604e7c8f3794323342cf7ea501fe7fba89b",
+        "line": 52,
+        "contains": "trigger_backup_handler"
+      }
+    },
+    {
+      "name": "writer:restore",
+      "class": "direct_writer",
+      "source_files": [
+        "crates/core/src/admin/backup.rs"
+      ],
+      "edges": [],
+      "condition": "admin capability; restore",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/backup.rs",
+        "sha256": "0dac57c98710215904a24469532f2604e7c8f3794323342cf7ea501fe7fba89b",
+        "line": 134,
+        "contains": "restore_backup_handler"
+      }
+    },
+    {
+      "name": "writer:filesystem",
+      "class": "direct_writer",
+      "source_files": [
+        "crates/core/src/admin/rows/read_files.rs"
+      ],
+      "edges": [],
+      "condition": "admin/files capability; file read/delete paths are handled here and record file code",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/admin/rows/read_files.rs",
+        "sha256": "39045c3167d0aa3b384f7bf341aa66668f6e59441806b639fdd9a37ea6a8bd35",
+        "line": 40,
+        "contains": "read_files_handler"
+      }
+    },
+    {
+      "name": "writer:object-store",
+      "class": "direct_writer",
+      "source_files": [
+        "crates/core/src/app_state.rs"
+      ],
+      "edges": [],
+      "condition": "S3 config present -> AWS object store :602-632; absent -> local uploads filesystem :634-636",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/app_state.rs",
+        "sha256": "1df436ac02459c82cee776012949a13ad38d690572276f5abcb3c2590191a206",
+        "line": 598,
+        "contains": "build_objectstore"
+      }
+    },
+    {
+      "name": "writer:wasm",
+      "class": "direct_writer",
+      "source_files": [
+        "crates/core/src/wasm/mod.rs"
+      ],
+      "edges": [],
+      "condition": "wasm feature/runtime present; guest may expose routes/jobs and DB/file effects",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/wasm/mod.rs",
+        "sha256": "9208abb5baa1fad59c11583ad3af5f9a58b9e16588b0a10e2b9ff44bd3bdc1d4",
+        "line": 130,
+        "contains": "pub(crate) async fn install_routes_and_jobs"
+      }
+    },
+    {
+      "name": "provider:email-smtp",
+      "class": "provider",
+      "source_files": [
+        "crates/core/src/email.rs"
+      ],
+      "edges": [],
+      "condition": "valid email SMTP config",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/email.rs",
+        "sha256": "fa1e1792822c1344a667583bf39f155af3de699f8396c8d0facf2c6de4714226",
+        "line": 329,
+        "contains": "fn new_smtp"
+      }
+    },
+    {
+      "name": "provider:email-sendmail",
+      "class": "provider",
+      "source_files": [
+        "crates/core/src/email.rs"
+      ],
+      "edges": [],
+      "condition": "SMTP config absent/invalid; fallback :392-397",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/email.rs",
+        "sha256": "fa1e1792822c1344a667583bf39f155af3de699f8396c8d0facf2c6de4714226",
+        "line": 368,
+        "contains": "fn new_local"
+      }
+    },
+    {
+      "name": "provider:oauth-oidc",
+      "class": "provider",
+      "source_files": [
+        "crates/core/src/auth/oauth/providers/mod.rs"
+      ],
+      "edges": [],
+      "condition": "statically registered; instantiated only configured provider entry",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/oauth/providers/mod.rs",
+        "sha256": "489dccb691877e8bc4d3636a2cc487f7e2c62561d58fbb0ab863783a6f806614",
+        "line": 48,
+        "contains": "oidc::OidcProvider::registry_entry(0)"
+      }
+    },
+    {
+      "name": "provider:oauth-apple",
+      "class": "provider",
+      "source_files": [
+        "crates/core/src/auth/oauth/providers/mod.rs"
+      ],
+      "edges": [],
+      "condition": "static registry; configured entry",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/oauth/providers/mod.rs",
+        "sha256": "489dccb691877e8bc4d3636a2cc487f7e2c62561d58fbb0ab863783a6f806614",
+        "line": 50,
+        "contains": "AppleOAuthProvider::registry_entry()"
+      }
+    },
+    {
+      "name": "provider:oauth-discord",
+      "class": "provider",
+      "source_files": [
+        "crates/core/src/auth/oauth/providers/mod.rs"
+      ],
+      "edges": [],
+      "condition": "static registry; configured entry",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/oauth/providers/mod.rs",
+        "sha256": "489dccb691877e8bc4d3636a2cc487f7e2c62561d58fbb0ab863783a6f806614",
+        "line": 51,
+        "contains": "DiscordOAuthProvider"
+      }
+    },
+    {
+      "name": "provider:oauth-gitlab",
+      "class": "provider",
+      "source_files": [
+        "crates/core/src/auth/oauth/providers/mod.rs"
+      ],
+      "edges": [],
+      "condition": "static registry; configured entry",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/oauth/providers/mod.rs",
+        "sha256": "489dccb691877e8bc4d3636a2cc487f7e2c62561d58fbb0ab863783a6f806614",
+        "line": 52,
+        "contains": "GitlabOAuthProvider"
+      }
+    },
+    {
+      "name": "provider:oauth-github",
+      "class": "provider",
+      "source_files": [
+        "crates/core/src/auth/oauth/providers/mod.rs"
+      ],
+      "edges": [],
+      "condition": "static registry; configured entry",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/oauth/providers/mod.rs",
+        "sha256": "489dccb691877e8bc4d3636a2cc487f7e2c62561d58fbb0ab863783a6f806614",
+        "line": 53,
+        "contains": "GithubOAuthProvider::registry_entry()"
+      }
+    },
+    {
+      "name": "provider:oauth-google",
+      "class": "provider",
+      "source_files": [
+        "crates/core/src/auth/oauth/providers/mod.rs"
+      ],
+      "edges": [],
+      "condition": "static registry; configured entry",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/oauth/providers/mod.rs",
+        "sha256": "489dccb691877e8bc4d3636a2cc487f7e2c62561d58fbb0ab863783a6f806614",
+        "line": 54,
+        "contains": "GoogleOAuthProvider"
+      }
+    },
+    {
+      "name": "provider:oauth-facebook",
+      "class": "provider",
+      "source_files": [
+        "crates/core/src/auth/oauth/providers/mod.rs"
+      ],
+      "edges": [],
+      "condition": "static registry; configured entry",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/oauth/providers/mod.rs",
+        "sha256": "489dccb691877e8bc4d3636a2cc487f7e2c62561d58fbb0ab863783a6f806614",
+        "line": 55,
+        "contains": "FacebookOAuthProvider"
+      }
+    },
+    {
+      "name": "provider:oauth-microsoft",
+      "class": "provider",
+      "source_files": [
+        "crates/core/src/auth/oauth/providers/mod.rs"
+      ],
+      "edges": [],
+      "condition": "static registry; configured entry",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/oauth/providers/mod.rs",
+        "sha256": "489dccb691877e8bc4d3636a2cc487f7e2c62561d58fbb0ab863783a6f806614",
+        "line": 56,
+        "contains": "MicrosoftOAuthProvider"
+      }
+    },
+    {
+      "name": "provider:oauth-twitch",
+      "class": "provider",
+      "source_files": [
+        "crates/core/src/auth/oauth/providers/mod.rs"
+      ],
+      "edges": [],
+      "condition": "static registry; configured entry",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/oauth/providers/mod.rs",
+        "sha256": "489dccb691877e8bc4d3636a2cc487f7e2c62561d58fbb0ab863783a6f806614",
+        "line": 57,
+        "contains": "TwitchOAuthProvider"
+      }
+    },
+    {
+      "name": "provider:oauth-yandex",
+      "class": "provider",
+      "source_files": [
+        "crates/core/src/auth/oauth/providers/mod.rs"
+      ],
+      "edges": [],
+      "condition": "static registry; configured entry",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/auth/oauth/providers/mod.rs",
+        "sha256": "489dccb691877e8bc4d3636a2cc487f7e2c62561d58fbb0ab863783a6f806614",
+        "line": 58,
+        "contains": "YandexOAuthProvider"
+      }
+    },
+    {
+      "name": "telemetry:logs",
+      "class": "telemetry",
+      "source_files": [
+        "crates/core/src/logging.rs"
+      ],
+      "edges": [],
+      "condition": "tracing/default layers installed; async writer :238-258; inserts _logs :306-318",
+      "resolution": "static",
+      "source": {
+        "file": "crates/core/src/logging.rs",
+        "sha256": "97367fa728d0f7dba11d1614d6051df8db196df871c3541943a811a1b94be78c",
+        "line": 230,
+        "contains": "pub fn new"
       }
     }
   ],
@@ -5515,17 +6103,25 @@
   "graph_accounting": {
     "routers": [
       "router:server",
-      "router:auth",
-      "router:oauth",
       "router:records",
       "router:transaction",
+      "router:auth",
+      "router:oauth",
       "router:admin",
+      "router:admin-auth",
       "router:wasm",
       "router:custom"
     ],
     "conditional_arms": [
-      "conditional:auth-disabled",
-      "conditional:admin-disabled"
+      "conditional:transactions-enabled",
+      "conditional:records-subscribe-sqlite",
+      "conditional:auth-anonymous-signin",
+      "conditional:auth-otp-signin",
+      "conditional:wasm-feature",
+      "conditional:independent-admin-listener",
+      "conditional:public-dir",
+      "conditional:public-dir-spa",
+      "conditional:auth-rate-limit"
     ],
     "jobs": [
       "job:Backup",
@@ -5544,101 +6140,34 @@
       "listener:admin"
     ],
     "writers": [
-      "writer:db",
-      "writer:files",
+      "writer:main-db",
+      "writer:session-db",
+      "writer:logs-db",
+      "writer:sql-query",
+      "writer:ddl",
       "writer:config",
-      "writer:object",
-      "writer:provider"
+      "writer:backup",
+      "writer:restore",
+      "writer:filesystem",
+      "writer:object-store",
+      "writer:wasm"
+    ],
+    "providers": [
+      "provider:email-smtp",
+      "provider:email-sendmail",
+      "provider:oauth-oidc",
+      "provider:oauth-apple",
+      "provider:oauth-discord",
+      "provider:oauth-gitlab",
+      "provider:oauth-github",
+      "provider:oauth-google",
+      "provider:oauth-facebook",
+      "provider:oauth-microsoft",
+      "provider:oauth-twitch",
+      "provider:oauth-yandex"
     ],
     "telemetry": [
       "telemetry:logs"
-    ],
-    "routes": [
-      "route:GET /api/records/v1/{name}",
-      "route:POST /api/records/v1/{name}",
-      "route:POST /api/transaction/v1/execute",
-      "route:GET /api/records/v1/{name}/{record}",
-      "route:GET /api/records/v1/{name}/{record}/file/{column_name}",
-      "route:GET /api/records/v1/{name}/{record}/files/{column_name}/{file_name}",
-      "route:PATCH /api/records/v1/{name}/{record}",
-      "route:GET /api/records/v1/{name}/schema",
-      "route:DELETE /api/records/v1/{name}/{record}",
-      "route:GET /api/records/v1/{name}/subscribe/{record}",
-      "route:GET /api/auth/v1/oauth/{provider}/callback",
-      "route:POST /api/auth/v1/oauth/{provider}/callback",
-      "route:GET /api/auth/v1/oauth/{provider}/login",
-      "route:GET /api/auth/v1/oauth/providers",
-      "route:GET /api/auth/v1/avatar/{b64_user_id}",
-      "route:POST /api/auth/v1/avatar",
-      "route:DELETE /api/auth/v1/avatar",
-      "route:POST /api/auth/v1/change_username",
-      "route:POST /api/auth/v1/otp/request",
-      "route:POST /api/auth/v1/otp/login",
-      "route:POST /api/auth/v1/token",
-      "route:GET /api/auth/v1/verify_email/trigger",
-      "route:GET /api/auth/v1/verify_email/confirm/{email_verification_token}",
-      "route:POST /api/auth/v1/register",
-      "route:POST /api/auth/v1/promote_anonymous",
-      "route:GET /api/auth/v1/totp/register",
-      "route:POST /api/auth/v1/totp/confirm",
-      "route:POST /api/auth/v1/totp/unregister",
-      "route:DELETE /api/auth/v1/delete",
-      "route:POST /api/auth/v1/change_password",
-      "route:GET /api/auth/v1/logout",
-      "route:POST /api/auth/v1/logout",
-      "route:POST /api/auth/v1/login_anonymous",
-      "route:GET /api/auth/v1/status",
-      "route:POST /api/auth/v1/login",
-      "route:POST /api/auth/v1/login_mfa",
-      "route:POST /api/auth/v1/change_email/request",
-      "route:GET /api/auth/v1/change_email/confirm/{email_verification_code}",
-      "route:POST /api/auth/v1/reset_password/request",
-      "route:POST /api/auth/v1/reset_password/update",
-      "route:POST /api/auth/v1/refresh",
-      "route:GET /api/_admin/openapi.json",
-      "route:POST /api/_admin/query",
-      "route:GET /api/_admin/backups",
-      "route:POST /api/_admin/backups/trigger",
-      "route:DELETE /api/_admin/backups/delete",
-      "route:PATCH /api/_admin/backups/restore",
-      "route:GET /api/_admin/public_key",
-      "route:POST /api/_admin/parse",
-      "route:GET /api/_admin/info",
-      "route:POST /api/_admin/mint",
-      "route:POST /api/_admin/email/test",
-      "route:GET /api/_admin/oauth_providers",
-      "route:GET /api/_admin/wasm",
-      "route:POST /api/_admin/wasm/install",
-      "route:POST /api/_admin/wasm/uninstall",
-      "route:GET /api/_admin/config",
-      "route:POST /api/_admin/config",
-      "route:GET /api/_admin/schema/{record_api_name}/schema.json",
-      "route:GET /api/_admin/schema",
-      "route:POST /api/_admin/user",
-      "route:GET /api/_admin/user",
-      "route:PATCH /api/_admin/user",
-      "route:DELETE /api/_admin/user",
-      "route:PATCH /api/_admin/table/{table_name}",
-      "route:GET /api/_admin/table/{table_name}/rows",
-      "route:GET /api/_admin/table/{table_name}/files",
-      "route:DELETE /api/_admin/table/{table_name}",
-      "route:DELETE /api/_admin/table/{table_name}/rows",
-      "route:POST /api/_admin/table/{table_name}",
-      "route:GET /api/_admin/logs/list",
-      "route:GET /api/_admin/logs/stats",
-      "route:PATCH /api/_admin/index",
-      "route:POST /api/_admin/index",
-      "route:DELETE /api/_admin/index",
-      "route:GET /api/_admin/tables",
-      "route:DELETE /api/_admin/table",
-      "route:POST /api/_admin/table",
-      "route:PATCH /api/_admin/table",
-      "route:GET /api/_admin/jobs",
-      "route:POST /api/_admin/job/run",
-      "route:GET /api/healthcheck"
-    ],
-    "debug_routes": [
-      "route:GET /api/whoami"
     ]
   },
   "debug_only_routes": [
