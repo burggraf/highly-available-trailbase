@@ -1,6 +1,7 @@
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -146,12 +147,134 @@ class SurfaceManifestTests(unittest.TestCase):
             real.mkdir(); provenance.rename(real / provenance.name)
             link_parent = tmp / "linked"
             link_parent.symlink_to(real, target_is_directory=True)
-            linked = (link_parent / provenance.name).resolve()
             # The canonical path resolves through the symlink, but the supplied
             # pathname remains a symlinked parent and must not be trusted.
             with mock.patch.object(surface_closure, "PINNED_MANIFEST_SHA256", surface_closure._manifest_sha256(manifest)):
                 with self.assertRaises(surface_closure.SurfaceError):
                     surface_closure.verify_source(root, link_parent / provenance.name, manifest)
+
+    def test_regular_leaf_replacement_after_acquisition_uses_pinned_snapshot(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            manifest, root, provenance = synthetic_fixture(tmp)
+            expected_count = len(manifest["source_files"])
+            target = root / manifest["source_files"][0]["file"]
+            replacement = tmp / "replacement.rs"
+            replacement.write_bytes(b"// replacement must not be consumed\n")
+            real_open, real_fd_bytes = os.open, surface_closure._fd_bytes
+            rs_opens = 0
+
+            def tracked_open(path, flags, *args, **kwargs):
+                nonlocal rs_opens
+                fd = real_open(path, flags, *args, **kwargs)
+                if isinstance(path, str) and path.endswith(".rs"):
+                    rs_opens += 1
+                    if rs_opens == expected_count:
+                        os.replace(replacement, target)
+                return fd
+
+            def checked_fd_bytes(fd, name, identity=None):
+                if name != "provenance": self.assertEqual(rs_opens, expected_count)
+                return real_fd_bytes(fd, name, identity)
+
+            pin = mock.patch.object(surface_closure, "PINNED_MANIFEST_SHA256", surface_closure._manifest_sha256(manifest))
+            with pin, mock.patch.object(surface_closure.os, "open", side_effect=tracked_open), mock.patch.object(surface_closure, "_fd_bytes", side_effect=checked_fd_bytes):
+                surface_closure.verify_source(root, provenance, manifest)
+            self.assertEqual(rs_opens, expected_count)
+            self.assertEqual(target.read_bytes(), b"// replacement must not be consumed\n")
+
+    def test_source_inode_identity_is_bound_during_enumeration(self):
+        with tempfile.TemporaryDirectory() as td:
+            manifest, root, provenance = synthetic_fixture(Path(td))
+            expected_count = len(manifest["source_files"])
+            real_open, real_fstat, real_fd_bytes = os.open, os.fstat, surface_closure._fd_bytes
+            source_fds, identities = set(), {}
+
+            def tracked_open(path, flags, *args, **kwargs):
+                fd = real_open(path, flags, *args, **kwargs)
+                if isinstance(path, str) and path.endswith(".rs"): source_fds.add(fd)
+                return fd
+
+            def tracked_fstat(fd):
+                st = real_fstat(fd)
+                if fd in source_fds: identities[fd] = (st.st_dev, st.st_ino, st.st_size)
+                return st
+
+            def checked_fd_bytes(fd, name, identity=None):
+                if name != "provenance":
+                    self.assertEqual(len(identities), expected_count)
+                    self.assertEqual(identity, identities[fd])
+                return real_fd_bytes(fd, name, identity)
+
+            pin = mock.patch.object(surface_closure, "PINNED_MANIFEST_SHA256", surface_closure._manifest_sha256(manifest))
+            with pin, mock.patch.object(surface_closure.os, "open", side_effect=tracked_open), mock.patch.object(surface_closure.os, "fstat", side_effect=tracked_fstat), mock.patch.object(surface_closure, "_fd_bytes", side_effect=checked_fd_bytes):
+                surface_closure.verify_source(root, provenance, manifest)
+
+    def test_verify_source_does_not_use_path_reads(self):
+        with tempfile.TemporaryDirectory() as td:
+            manifest, root, provenance = synthetic_fixture(Path(td))
+            pin = mock.patch.object(surface_closure, "PINNED_MANIFEST_SHA256", surface_closure._manifest_sha256(manifest))
+            with pin, mock.patch.object(Path, "read_bytes", side_effect=AssertionError("Path read")), mock.patch.object(Path, "read_text", side_effect=AssertionError("Path read")):
+                surface_closure.verify_source(root, provenance, manifest)
+
+    def test_regular_leaf_replacement_before_acquisition_fails(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            manifest, root, provenance = synthetic_fixture(tmp)
+            target = root / manifest["source_files"][0]["file"]
+            parent_identity = (target.parent.stat().st_dev, target.parent.stat().st_ino)
+            replacement = tmp / "replacement.rs"
+            replacement.write_bytes(b"// altered before acquisition\n")
+            real_open, swapped = os.open, False
+
+            def replacing_open(path, flags, *args, **kwargs):
+                nonlocal swapped
+                dir_fd = kwargs.get("dir_fd")
+                if not swapped and path == target.name and dir_fd is not None:
+                    st = os.fstat(dir_fd)
+                    if (st.st_dev, st.st_ino) == parent_identity:
+                        os.replace(replacement, target)
+                        swapped = True
+                return real_open(path, flags, *args, **kwargs)
+
+            pin = mock.patch.object(surface_closure, "PINNED_MANIFEST_SHA256", surface_closure._manifest_sha256(manifest))
+            with pin, mock.patch.object(surface_closure.os, "open", side_effect=replacing_open):
+                with self.assertRaises(surface_closure.SurfaceError):
+                    surface_closure.verify_source(root, provenance, manifest)
+            self.assertTrue(swapped)
+
+    def test_regular_leaf_symlink_swap_before_acquisition_fails(self):
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            manifest, root, provenance = synthetic_fixture(tmp)
+            target = root / manifest["source_files"][0]["file"]
+            parent_identity = (target.parent.stat().st_dev, target.parent.stat().st_ino)
+            replacement = tmp / "replacement.rs"
+            replacement.write_bytes(target.read_bytes())
+            real_open, swapped = os.open, False
+
+            def replacing_open(path, flags, *args, **kwargs):
+                nonlocal swapped
+                dir_fd = kwargs.get("dir_fd")
+                if not swapped and path == target.name and dir_fd is not None:
+                    st = os.fstat(dir_fd)
+                    if (st.st_dev, st.st_ino) == parent_identity:
+                        target.unlink()
+                        target.symlink_to(replacement)
+                        swapped = True
+                return real_open(path, flags, *args, **kwargs)
+
+            pin = mock.patch.object(surface_closure, "PINNED_MANIFEST_SHA256", surface_closure._manifest_sha256(manifest))
+            with pin, mock.patch.object(surface_closure.os, "open", side_effect=replacing_open):
+                with self.assertRaises(surface_closure.SurfaceError):
+                    surface_closure.verify_source(root, provenance, manifest)
+            self.assertTrue(swapped)
+
+    def test_load_manifest_hides_os_error_details(self):
+        missing = Path("missing-sensitive-manifest-name.json")
+        with self.assertRaises(surface_closure.SurfaceError) as raised:
+            surface_closure.load_manifest(missing)
+        self.assertEqual(str(raised.exception), "cannot load manifest")
 
     def test_fd_faults_are_surface_errors(self):
         with mock.patch.object(surface_closure.os, "fstat", side_effect=OSError("boom")):
