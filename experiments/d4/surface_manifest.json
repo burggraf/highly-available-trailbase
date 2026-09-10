@@ -1841,7 +1841,8 @@
         "router:transaction",
         "router:admin",
         "router:wasm",
-        "router:custom"
+        "router:custom",
+        "route:GET /api/whoami"
       ],
       "condition": "source-reviewed",
       "resolution": "static"
@@ -1929,8 +1930,8 @@
         "router:transaction",
         "writer:db",
         "route:GET /api/records/v1/{name}",
-        "route:POST /api/records/v1/main_ops",
-        "route:POST /api/records/v1/aux_ops",
+        "route:POST /api/records/v1/{name}",
+        "route:POST /api/transaction/v1/execute",
         "route:GET /api/records/v1/{name}/{record}",
         "route:GET /api/records/v1/{name}/{record}/file/{column_name}",
         "route:GET /api/records/v1/{name}/{record}/files/{column_name}/{file_name}",
@@ -1977,7 +1978,7 @@
         "route:PATCH /api/_admin/table",
         "route:GET /api/_admin/jobs",
         "route:POST /api/_admin/job/run",
-        "route:GET /api/api/healthcheck"
+        "route:GET /api/healthcheck"
       ],
       "condition": "source-reviewed",
       "resolution": "static"
@@ -2186,7 +2187,7 @@
       "resolution": "static"
     },
     {
-      "name": "route:POST /api/records/v1/main_ops",
+      "name": "route:POST /api/records/v1/{name}",
       "class": "route",
       "source_files": [
         "crates/core/src/records/create_record.rs"
@@ -2196,13 +2197,13 @@
       "resolution": "static"
     },
     {
-      "name": "route:POST /api/records/v1/aux_ops",
+      "name": "route:POST /api/transaction/v1/execute",
       "class": "route",
       "source_files": [
         "crates/core/src/records/transaction.rs"
       ],
       "edges": [],
-      "condition": "always",
+      "condition": "config:transactions_enabled",
       "resolution": "static"
     },
     {
@@ -2272,7 +2273,7 @@
         "crates/core/src/records/subscribe/handler.rs"
       ],
       "edges": [],
-      "condition": "always",
+      "condition": "config:sqlite",
       "resolution": "static"
     },
     {
@@ -2362,7 +2363,7 @@
         "crates/core/src/auth/api/otp.rs"
       ],
       "edges": [],
-      "condition": "always",
+      "condition": "config:otp_enabled",
       "resolution": "static"
     },
     {
@@ -2372,7 +2373,7 @@
         "crates/core/src/auth/api/otp.rs"
       ],
       "edges": [],
-      "condition": "always",
+      "condition": "config:otp_enabled",
       "resolution": "static"
     },
     {
@@ -2422,7 +2423,7 @@
         "crates/core/src/auth/api/promote_anonymous.rs"
       ],
       "edges": [],
-      "condition": "always",
+      "condition": "config:anonymous_enabled",
       "resolution": "static"
     },
     {
@@ -2502,7 +2503,7 @@
         "crates/core/src/auth/api/login_anonymous.rs"
       ],
       "edges": [],
-      "condition": "always",
+      "condition": "config:anonymous_enabled",
       "resolution": "static"
     },
     {
@@ -2986,13 +2987,23 @@
       "resolution": "static"
     },
     {
-      "name": "route:GET /api/api/healthcheck",
+      "name": "route:GET /api/healthcheck",
       "class": "route",
       "source_files": [
         "crates/core/src/server/mod.rs"
       ],
       "edges": [],
       "condition": "always",
+      "resolution": "static"
+    },
+    {
+      "name": "route:GET /api/whoami",
+      "class": "route",
+      "source_files": [
+        "crates/core/src/server/mod.rs"
+      ],
+      "edges": [],
+      "condition": "cfg(debug_assertions)",
       "resolution": "static"
     }
   ],
@@ -3016,11 +3027,12 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "records"
     },
     {
       "method": "POST",
-      "path": "/api/records/v1/main_ops",
+      "path": "/api/records/v1/{name}",
       "handler": "create_record_handler",
       "source": {
         "file": "crates/core/src/records/create_record.rs",
@@ -3029,18 +3041,19 @@
         "contains": "create_record_handler"
       },
       "condition": "always",
-      "classification": "allow",
+      "classification": "deny",
       "effects": [
         "allow route dispatch"
       ],
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "records"
     },
     {
       "method": "POST",
-      "path": "/api/records/v1/aux_ops",
+      "path": "/api/transaction/v1/execute",
       "handler": "record_transactions_handler",
       "source": {
         "file": "crates/core/src/records/transaction.rs",
@@ -3048,15 +3061,16 @@
         "line": 66,
         "contains": "record_transactions_handler"
       },
-      "condition": "always",
-      "classification": "allow",
+      "condition": "config:transactions_enabled",
+      "classification": "deny",
       "effects": [
         "allow route dispatch"
       ],
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "records"
     },
     {
       "method": "GET",
@@ -3076,7 +3090,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "records"
     },
     {
       "method": "GET",
@@ -3096,7 +3111,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "records"
     },
     {
       "method": "GET",
@@ -3116,7 +3132,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "records"
     },
     {
       "method": "PATCH",
@@ -3136,7 +3153,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "records"
     },
     {
       "method": "GET",
@@ -3156,7 +3174,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "records"
     },
     {
       "method": "DELETE",
@@ -3176,7 +3195,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "records"
     },
     {
       "method": "GET",
@@ -3188,7 +3208,7 @@
         "line": 52,
         "contains": "add_subscription_sse_and_ws_handler"
       },
-      "condition": "always",
+      "condition": "config:sqlite",
       "classification": "deny",
       "effects": [
         "deny route dispatch"
@@ -3196,7 +3216,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "records"
     },
     {
       "method": "GET",
@@ -3216,7 +3237,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "POST",
@@ -3236,7 +3258,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "GET",
@@ -3256,7 +3279,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "GET",
@@ -3276,7 +3300,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "GET",
@@ -3296,7 +3321,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "POST",
@@ -3316,7 +3342,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "DELETE",
@@ -3336,7 +3363,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "POST",
@@ -3356,7 +3384,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "POST",
@@ -3368,7 +3397,7 @@
         "line": 74,
         "contains": "request_otp_handler"
       },
-      "condition": "always",
+      "condition": "config:otp_enabled",
       "classification": "deny",
       "effects": [
         "deny route dispatch"
@@ -3376,7 +3405,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "POST",
@@ -3388,7 +3418,7 @@
         "line": 240,
         "contains": "login_otp_handler"
       },
-      "condition": "always",
+      "condition": "config:otp_enabled",
       "classification": "deny",
       "effects": [
         "deny route dispatch"
@@ -3396,7 +3426,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "POST",
@@ -3416,7 +3447,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "GET",
@@ -3436,7 +3468,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "GET",
@@ -3456,7 +3489,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "POST",
@@ -3476,7 +3510,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "POST",
@@ -3488,7 +3523,7 @@
         "line": 53,
         "contains": "promote_anonymous_user_handler"
       },
-      "condition": "always",
+      "condition": "config:anonymous_enabled",
       "classification": "deny",
       "effects": [
         "deny route dispatch"
@@ -3496,7 +3531,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "GET",
@@ -3516,7 +3552,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "POST",
@@ -3536,7 +3573,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "POST",
@@ -3556,7 +3594,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "DELETE",
@@ -3576,7 +3615,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "POST",
@@ -3596,7 +3636,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "GET",
@@ -3616,7 +3657,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "POST",
@@ -3629,14 +3671,15 @@
         "contains": "post_logout_handler"
       },
       "condition": "always",
-      "classification": "allow",
+      "classification": "deny",
       "effects": [
         "allow route dispatch"
       ],
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "POST",
@@ -3648,7 +3691,7 @@
         "line": 38,
         "contains": "login_anonymous_user_handler"
       },
-      "condition": "always",
+      "condition": "config:anonymous_enabled",
       "classification": "deny",
       "effects": [
         "deny route dispatch"
@@ -3656,7 +3699,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "GET",
@@ -3676,7 +3720,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "POST",
@@ -3696,7 +3741,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "POST",
@@ -3716,7 +3762,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "POST",
@@ -3736,7 +3783,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "GET",
@@ -3756,7 +3804,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "POST",
@@ -3776,7 +3825,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "POST",
@@ -3796,7 +3846,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "POST",
@@ -3816,7 +3867,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "auth"
     },
     {
       "method": "GET",
@@ -3836,7 +3888,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "POST",
@@ -3856,7 +3909,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "GET",
@@ -3876,7 +3930,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "POST",
@@ -3896,7 +3951,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "DELETE",
@@ -3916,7 +3972,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "PATCH",
@@ -3936,7 +3993,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "GET",
@@ -3956,7 +4014,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "POST",
@@ -3976,7 +4035,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "GET",
@@ -3996,7 +4056,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "POST",
@@ -4016,7 +4077,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "POST",
@@ -4036,7 +4098,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "GET",
@@ -4056,7 +4119,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "GET",
@@ -4076,7 +4140,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "POST",
@@ -4096,7 +4161,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "POST",
@@ -4116,7 +4182,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "GET",
@@ -4136,7 +4203,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "POST",
@@ -4156,7 +4224,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "GET",
@@ -4176,7 +4245,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "GET",
@@ -4196,7 +4266,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "POST",
@@ -4216,7 +4287,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "GET",
@@ -4236,7 +4308,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "PATCH",
@@ -4256,7 +4329,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "DELETE",
@@ -4276,7 +4350,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "PATCH",
@@ -4296,7 +4371,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "GET",
@@ -4316,7 +4392,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "GET",
@@ -4336,7 +4413,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "DELETE",
@@ -4356,7 +4434,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "DELETE",
@@ -4376,7 +4455,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "POST",
@@ -4396,7 +4476,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "GET",
@@ -4416,7 +4497,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "GET",
@@ -4436,7 +4518,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "PATCH",
@@ -4456,7 +4539,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "POST",
@@ -4476,7 +4560,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "DELETE",
@@ -4496,7 +4581,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "GET",
@@ -4516,7 +4602,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "DELETE",
@@ -4536,7 +4623,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "POST",
@@ -4556,7 +4644,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "PATCH",
@@ -4576,7 +4665,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "GET",
@@ -4596,7 +4686,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "POST",
@@ -4616,11 +4707,12 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "admin"
     },
     {
       "method": "GET",
-      "path": "/api/api/healthcheck",
+      "path": "/api/healthcheck",
       "handler": "healthcheck_handler",
       "source": {
         "file": "crates/core/src/server/mod.rs",
@@ -4636,7 +4728,8 @@
       "secondary_effects": [
         "none (source-reviewed)"
       ],
-      "resolution": "static"
+      "resolution": "static",
+      "section": "server"
     }
   ],
   "graph_accounting": {
@@ -4678,8 +4771,8 @@
     ],
     "routes": [
       "route:GET /api/records/v1/{name}",
-      "route:POST /api/records/v1/main_ops",
-      "route:POST /api/records/v1/aux_ops",
+      "route:POST /api/records/v1/{name}",
+      "route:POST /api/transaction/v1/execute",
       "route:GET /api/records/v1/{name}/{record}",
       "route:GET /api/records/v1/{name}/{record}/file/{column_name}",
       "route:GET /api/records/v1/{name}/{record}/files/{column_name}/{file_name}",
@@ -4758,7 +4851,91 @@
       "route:PATCH /api/_admin/table",
       "route:GET /api/_admin/jobs",
       "route:POST /api/_admin/job/run",
-      "route:GET /api/api/healthcheck"
+      "route:GET /api/healthcheck"
+    ],
+    "debug_routes": [
+      "route:GET /api/whoami"
     ]
+  },
+  "debug_only_routes": [
+    {
+      "method": "GET",
+      "path": "/api/whoami",
+      "handler": "whoami_handler",
+      "source": {
+        "file": "crates/core/src/server/mod.rs",
+        "sha256": "fca738132838330e347da5015dc9a13f3ff52cb9c43f8b90bc3ec5dd7e5a4013",
+        "line": 549,
+        "contains": "healthcheck_handler"
+      },
+      "condition": "cfg(debug_assertions)",
+      "classification": "deny",
+      "effects": [
+        "deny route dispatch"
+      ],
+      "secondary_effects": [
+        "none (source-reviewed)"
+      ],
+      "resolution": "static",
+      "section": "server"
+    }
+  ],
+  "listener_route_instances": [
+    {
+      "method": "POST",
+      "path": "/api/auth/v1/login",
+      "handler": "login_handler",
+      "source": {
+        "file": "crates/core/src/auth/api/login.rs",
+        "sha256": "cdd0036b5eaff037f91372d695a20a89914600344a1c5f7e77814d2822f50c71",
+        "line": 92,
+        "contains": "login_handler"
+      },
+      "condition": "always"
+    },
+    {
+      "method": "GET",
+      "path": "/api/auth/v1/status",
+      "handler": "login_status_handler",
+      "source": {
+        "file": "crates/core/src/auth/api/status.rs",
+        "sha256": "a86f94a735e49dee2910d8a88c3e19eb4cdb7a3a6db2ae7546f6d6c3d427e604",
+        "line": 30,
+        "contains": "login_status_handler"
+      },
+      "condition": "always"
+    },
+    {
+      "method": "GET",
+      "path": "/api/auth/v1/logout",
+      "handler": "logout_handler",
+      "source": {
+        "file": "crates/core/src/auth/api/logout.rs",
+        "sha256": "2d37f0e1c836a2fb945271881877212b333f97fff58bfafd6b14d759063c91bd",
+        "line": 35,
+        "contains": "logout_handler"
+      },
+      "condition": "always"
+    }
+  ],
+  "section_counts": {
+    "records": 10,
+    "auth": 31,
+    "admin": 40,
+    "server": 1
+  },
+  "exact_allow_rules": {
+    "POST /api/records/v1/main_ops": {
+      "upstream": "POST /api/records/v1/{name}",
+      "database": "main"
+    },
+    "POST /api/records/v1/aux_ops": {
+      "upstream": "POST /api/transaction/v1/execute",
+      "database": "aux"
+    },
+    "POST /api/auth/v1/logout": {
+      "upstream": "POST /api/auth/v1/logout",
+      "database": "session"
+    }
   }
 }

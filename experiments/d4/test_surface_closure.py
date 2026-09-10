@@ -19,7 +19,7 @@ def synthetic_fixture(tmp: Path):
     requirements = {}
     for entry in manifest["source_files"]:
         requirements.setdefault(entry["file"], set()).update(a["line"] for a in entry["anchors"])
-    for route in manifest["routes"]:
+    for route in manifest["routes"] + manifest["debug_only_routes"] + manifest["listener_route_instances"]:
         requirements.setdefault(route["source"]["file"], set()).add(route["source"]["line"])
     for index, entry in enumerate(manifest["source_files"]):
         name = entry["file"]
@@ -33,7 +33,7 @@ def synthetic_fixture(tmp: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
         entry["sha256"] = hashlib.sha256(data).hexdigest()
-    for route_index, route in enumerate(manifest["routes"]):
+    for route_index, route in enumerate(manifest["routes"] + manifest["debug_only_routes"] + manifest["listener_route_instances"]):
         source = route["source"]
         token = f"synthetic route {route_index}"
         path = root / source["file"]
@@ -44,7 +44,7 @@ def synthetic_fixture(tmp: Path):
     for entry in manifest["source_files"]:
         digest = hashlib.sha256((root / entry["file"]).read_bytes()).hexdigest()
         entry["sha256"] = digest
-        for route in manifest["routes"]:
+        for route in manifest["routes"] + manifest["debug_only_routes"] + manifest["listener_route_instances"]:
             if route["source"]["file"] == entry["file"]:
                 route["source"]["sha256"] = digest
     recorded = {"sources": [
