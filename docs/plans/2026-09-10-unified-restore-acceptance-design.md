@@ -102,16 +102,21 @@ All other hashes use raw bytes. The entire request is serialized canonically wit
 
 ## Input identity and file handling
 
-The identities refer to the exact inputs exposed to the oracle:
+The identities refer to exact inputs exposed to the oracle and must originate from authorized evidence, not from self-describing local files:
 
-- byte-for-byte copied `replica.yml` and selected ledger raw bytes, including encoding and final newlines;
-- exact logical Litestream restore points `(source path, TXID)` for all three databases;
-- the fixed five-key non-bootstrap support set (`config.textproto`, both fixed `U100__hat_ops.sql` migrations, and the private/public signing keys) and exact two-key binary set (`trail`, `litestream`), each with raw-file SHA-256;
-- the byte-for-byte sealed copied fault ledger for recovery comparison.
+- D2's selected protected ledger is exactly the operation-owned ledger exclusive-created by its preflight action; its root-owned/private/single-link descriptor identity and final raw SHA-256 are committed in preflight evidence before later oracle phases;
+- D3's protected ledger is exactly the root-owned/private/single-link path authorized by the already validated root-owned recovery input; `_load_input` records its descriptor identity/raw SHA-256 in new-operation preflight evidence before later oracle phases;
+- a `new-writes` ledger is exactly the operation-work file exclusive-created by the current verify action; its initial trusted directory/file identity is established by the controller before writes, and its closed descriptor identity/hash is retained before oracle use;
+- byte-for-byte copied `replica.yml` and selected ledger raw bytes include encoding and final newlines;
+- exact logical Litestream restore points are `(source path, TXID)` for all three databases;
+- expected hashes for the fixed five-key non-bootstrap support set (`config.textproto`, both fixed `U100__hat_ops.sql` migrations, and private/public signing keys) and exact two-key binary set (`trail`, `litestream`) come from the operation's already-authorized writer configuration: matching A/B probes in D2 or root-owned recovery input/source-health evidence in D3. The oracle's installed files must match those expected hashes; it may not establish expectations from itself;
+- the fault ledger is exactly the byte-for-byte sealed copy whose hash/identity was durably bound before `Journal.begin` and then renamed into the new operation directory.
+
+Every source ledger/support/binary is opened from its authorized path or trusted root descriptor with `O_NOFOLLOW`, and must be owned by the expected root/controller identity, regular, singly linked, non-group/world-writable (ledgers are `0600`), within trusted non-writable ancestry, and equal to the pre-established descriptor/hash. The oracle-readable copies are additionally bound to those expected hashes. A file that is merely internally self-consistent but lacks this prior authority refuses before parsing.
 
 A remote Litestream source path is not falsely claimed to have a local immutable file hash. Its identity is the exact replica-config hash, request epoch, fixed database source path, and selected TXID. Acceptance binds the resulting restored file through its raw SHA-256, `logical_signature`, ledger/auth checks, and candidate/oracle signature equality.
 
-Before any directory or file creation, a pure `derive_restore_profile(operation, phase, has_fault)` validates the exact matrix and returns the profile/epoch. Only then may the controller read inputs. It opens source inputs descriptor-relatively beneath pre-opened trusted root descriptors, rejects symlink components, and records `(st_dev, st_ino, st_mode, st_uid, st_gid, st_nlink, st_size)` plus SHA-256. It copies with binary reads/writes only, fsyncs each exclusive-created file and its containing directory, then verifies destination bytes/hash and rechecks source identity/hash. Newline or encoding conversion is a mismatch.
+Before any directory or file creation, a pure `derive_restore_profile(operation, phase, has_fault)` validates the exact matrix and returns the profile/epoch. It also returns the required journal phase/position: compare and reconciled-compare→`compare|intent` at position 5; baseline→`baseline|intent` at position 7; new-writes→`verify|intent` at position 9; verification-baseline→`verify|intent` at position 9. `ControlIO.oracle` verifies under the locked journal that this operation uses the new contract, the complete ordered phase prefix ends at exactly that pending intent, no done/later row exists, and the caller's operation object equals the journal row. Ordinary calls additionally require `Journal.step`'s current `pending`/`next` state; reconciliation calls require their exact `_boundary` plus one durable unused reconciliation-intent file. A completed or earlier/later phase, reused request/result path, or downgrade/replay refuses before artifacts or commands. Only then may the controller read inputs. It opens source inputs descriptor-relatively beneath pre-opened trusted root descriptors, rejects symlink components, and records `(st_dev, st_ino, st_mode, st_uid, st_gid, st_nlink, st_size)` plus SHA-256. It copies with binary reads/writes only, fsyncs each exclusive-created file and its containing directory, then verifies destination bytes/hash and rechecks source identity/hash. Newline or encoding conversion is a mismatch.
 
 Directory traversal uses component-by-component `os.open(..., dir_fd=parent_fd, O_DIRECTORY|O_NOFOLLOW)` from a trusted root descriptor; files use `dir_fd` plus `O_NOFOLLOW`. Open descriptors remain held through validation/copy. External commands necessarily receive paths, so every ancestor and file identity is rechecked after command completion. Root compromise or a malicious process with root write authority is outside this local ownership trust model; replacement by the unprivileged oracle or other users is in scope and refuses.
 
@@ -214,7 +219,19 @@ Existing stronger checks remain: candidate/oracle signatures match, report posit
 
 Requests/results contain hashes, identifiers, positions, and structural outcomes only. They never contain tokens, credentials, record payloads, database/WAL bytes, request bodies, or raw logs. Existing private ledgers, databases, and command logs remain outside Git. Parser and subprocess errors use bounded generic messages; secret-bearing exception text or stderr is not placed in journal evidence.
 
-## Failure behavior
+## Durable happens-before and failure behavior
+
+The acceptance order is normative:
+
+1. `Journal.step` (or an exact named reconciliation boundary) commits and fsyncs the operation phase intent before any oracle artifact or command. Reconciliation also durably creates its one-shot intent first.
+2. Under the journal lock, `ControlIO.oracle` validates the exact operation contract and pending phase/position, authorized input identities, and phase matrix.
+3. The canonical request is exclusive-created/fsynced in the operation directory; its directory is fsynced. The identical oracle copy and every binary input copy are then exclusive-created/fsynced, followed by their directory fsyncs.
+4. `ControlIO.command` durably writes/fsyncs its exact argv intent before starting `systemd-run`; no process starts without both journal and command intent.
+5. The oracle validates request and inputs, performs restores/checks, then exclusive-creates and fsyncs canonical result plus directory before successful exit.
+6. After command completion, the controller revalidates input/request/result identities and content, validates the exact result, exclusive-creates/fsyncs the retained operation result plus directory, and only then returns from the action.
+7. `Journal.step`, `accept_comparison`, or `accept_verification` rechecks lock/operation/phase authority and transactionally commits the exact result as phase-done evidence with synchronous `EXTRA`. Only that commit is restore acceptance.
+
+On reopen, no request, command success, oracle result, or retained result without the matching committed phase-done row counts as acceptance. A done row missing its schema-valid embedded result is corruption and refuses. A pending intent—whether it has no artifacts, a partial request, completed command, or complete retained result—never auto-completes or reruns; only an already defined exact one-shot reconciliation may gather fresh evidence, and it never promotes an old result by assertion. A crash after phase-done but before later activation/routing resumes at the ordinary exact next phase only where the existing controller already defines that progression; legacy/unknown states refuse.
 
 Unavailable, malformed, stale, mismatched, partial, duplicate-key, unknown-field, noncanonical, timeout, or uncertain evidence refuses the phase. Existing intent/failure evidence remains retained. No previous action is replayed, no later passing check substitutes for a failure, and no legacy report is upgraded by assertion.
 
@@ -231,10 +248,10 @@ Failing-first tests cover:
 - fault fields on non-recovery profiles, malformed/overlapping/incomplete classifications, equality of sealed-ledger/request/result submitted sets, zero-submission semantics, wrong count/hash, and nonempty acknowledged loss;
 - exact old/new journal schema migration; crash before/inside/after migration commit; every named operations-table reader; completed-legacy authority/reconciliation behavior; unfinished-legacy refusal; new-operation schema selection;
 - every production call site and fake using the new shape, ignored `verification-baseline` refusal, and forbidden D3 post-oracle epoch injection;
-- pure matrix rejection before zero artifact creation or command intent for every unsupported combination;
-- descriptor-parent, request, input, and result replacement races within the unprivileged threat model;
+- pure matrix and exact pending journal phase/position rejection before zero artifact creation or command intent for every unsupported, stale, completed, lower, later, replayed, or reconciliation-mismatched call;
+- unauthorized-but-self-consistent ledgers, support trees, signing keys, and binaries; descriptor/hash mismatch against preflight/recovery-input evidence; descriptor-parent, request, input, and result replacement races within the unprivileged threat model;
 - refusal before activation, ingress start, route change, or reconciliation completion;
-- injected crashes before/after every request/result file fsync, directory fsync, retained-result fsync, and journal commit, proving no acceptance from partial evidence.
+- injected crashes before/after journal intent, reconciliation intent, request/result file fsync, directory fsync, command-intent fsync/start, retained-result fsync, and phase-done journal commit; reopen tests prove only the final matching done row is acceptance and partial evidence never auto-runs or auto-completes.
 
 Focused contract tests precede implementation. Then run runtime and D4 suites once, preserving any failure without rerun substitution.
 
