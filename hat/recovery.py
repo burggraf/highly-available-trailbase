@@ -162,13 +162,16 @@ def _acceptance_operation(value):
 
 def derive_restore_profile(operation, phase, has_fault):
     operation = _acceptance_operation(operation)
+    if type(has_fault) is not bool: raise ValueError('invalid restore fault selection')
     matrix = {
-        ('A','B','compare',False): ('comparison', operation['source_epoch'], 5),
-        ('A','B','baseline',False): ('baseline', operation['new_epoch'], 7),
-        ('A','B','new-writes',False): ('fresh-writes', operation['new_epoch'], 9),
-        ('B','A','compare',True): ('recovery-comparison', operation['source_epoch'], 5),
-        ('B','A','baseline',False): ('baseline', operation['new_epoch'], 7),
-        ('B','A','new-writes',False): ('fresh-writes', operation['new_epoch'], 9),
+        ('A','B','compare',False): ('comparison', operation['source_epoch'], 5, False),
+        ('A','B','reconciled-compare',False): ('comparison', operation['source_epoch'], 5, True),
+        ('A','B','baseline',False): ('baseline', operation['new_epoch'], 7, False),
+        ('A','B','verification-baseline',False): ('baseline', operation['new_epoch'], 9, True),
+        ('A','B','new-writes',False): ('fresh-writes', operation['new_epoch'], 9, False),
+        ('B','A','compare',True): ('recovery-comparison', operation['source_epoch'], 5, False),
+        ('B','A','baseline',False): ('baseline', operation['new_epoch'], 7, False),
+        ('B','A','new-writes',False): ('fresh-writes', operation['new_epoch'], 9, False),
     }
     try: return matrix[(operation['source'], operation['target'], phase, type(has_fault) is bool and has_fault)]
     except KeyError as exc: raise ValueError('unsupported restore acceptance phase') from exc
@@ -186,9 +189,12 @@ def _authority(value, operation, profile):
     ledger=value['ledger']
     if (not isinstance(ledger,dict) or set(ledger) != {'path','device','inode','mode','uid','links','bytes','sha256'}
             or not isinstance(ledger['path'],str) or not Path(ledger['path']).is_absolute() or os.path.normpath(ledger['path']) != ledger['path']
-            or any(type(ledger[k]) is not int or ledger[k] < 0 for k in ('device','uid','bytes'))
-            or type(ledger['inode']) is not int or ledger['inode'] <= 0 or ledger['mode'] != 0o600 or ledger['links'] != 1
-            or ledger['bytes'] > MAX_ARTIFACT or not _HEX64.fullmatch(ledger['sha256'])):
+            or any(type(ledger[k]) is not int or ledger[k] < 0 for k in ('device','uid'))
+            or type(ledger['inode']) is not int or ledger['inode'] <= 0
+            or type(ledger['mode']) is not int or ledger['mode'] != 0o600
+            or type(ledger['links']) is not int or ledger['links'] != 1
+            or type(ledger['bytes']) is not int or not 0 < ledger['bytes'] <= MAX_ARTIFACT
+            or not _HEX64.fullmatch(ledger['sha256'])):
         raise ValueError('invalid restore ledger authority')
     if set(value['binaries']) != {'trail','litestream'} or any(not isinstance(v,str) or not _HEX64.fullmatch(v) for v in value['binaries'].values()):
         raise ValueError('invalid restore binary authority')
@@ -197,13 +203,13 @@ def _authority(value, operation, profile):
         raise ValueError('invalid restore support authority')
 
 
-def validate_acceptance_request(request, operation):
+def _validate_acceptance_request(request, operation):
     operation = _acceptance_operation(operation)
     if not isinstance(request,dict) or set(request) != {'schema','operation','phase','source','target','epoch','positions','profile','inputs'}:
         raise ValueError('invalid restore acceptance request')
     if request['schema'] != _ACCEPTANCE_SCHEMA or request['operation'] != operation['id']:
         raise ValueError('restore request identity differs')
-    profile, epoch, _ = derive_restore_profile(operation, request['phase'], request['profile']=='recovery-comparison')
+    profile, epoch, _, _ = derive_restore_profile(operation, request['phase'], request['profile']=='recovery-comparison')
     if (request['source'],request['target'],request['epoch'],request['profile']) != (operation['source'],operation['target'],epoch,profile):
         raise ValueError('restore request binding differs')
     positions=request['positions']
@@ -211,7 +217,7 @@ def validate_acceptance_request(request, operation):
         raise ValueError('invalid restore positions')
     inputs=request['inputs']
     required={'replica_config_sha256','ledger_sha256','ledger_authority','restore_points','support','binaries'}
-    if not isinstance(inputs,dict) or not required <= set(inputs) or set(inputs)-required:
+    if not isinstance(inputs,dict) or not required <= set(inputs):
         raise ValueError('invalid restore request inputs')
     if not _HEX64.fullmatch(inputs['replica_config_sha256']) or not _HEX64.fullmatch(inputs['ledger_sha256']):
         raise ValueError('invalid restore input hashes')
@@ -236,56 +242,94 @@ def validate_acceptance_request(request, operation):
     return request
 
 
+def validate_acceptance_request(request, operation):
+    try: return _validate_acceptance_request(request, operation)
+    except ValueError: raise
+    except (KeyError,TypeError,AttributeError,OverflowError) as exc:
+        raise ValueError('invalid restore acceptance request') from exc
+
+
+def parse_acceptance_request(raw, operation):
+    return validate_acceptance_request(parse_canonical_json(raw), operation)
+
+
+def _canonical_id(value):
+    if type(value) is int:
+        if 0 < value <= 2**63-1: return str(value)
+    elif isinstance(value,str) and re.fullmatch(r'[1-9][0-9]{0,18}',value) and int(value) <= 2**63-1:
+        return value
+    raise ValueError('invalid record identity')
+
+
 def fault_operations(events):
-    if events == []: return []
-    if not isinstance(events, list) or len(events) < 2 or not isinstance(events[0],dict) or not isinstance(events[-1],dict):
-        raise ValueError('invalid closed fault ledger')
-    start, stop = events[0], events[-1]
-    if (set(start) != {'event','run_id','source_epoch','time_ns','utc'} or start.get('event') != 'start'
-            or not isinstance(start.get('run_id'),str) or not re.fullmatch(r'd3-[0-9a-f]{32}',start['run_id'])
-            or not isinstance(start.get('source_epoch'),str) or not _EPOCH.fullmatch(start['source_epoch'])
-            or type(start.get('time_ns')) is not int or start['time_ns'] <= 0
-            or not isinstance(start.get('utc'),str) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z',start['utc'])
-            or set(stop) != {'event','submitted','acknowledged','rejected','uncertain','time_ns','utc'} or stop.get('event') != 'stop'):
-        raise ValueError('invalid closed fault ledger')
-    submitted={}; outcomes={}; counts={'submitted':0,'acknowledged':0,'rejected':0,'uncertain':0}
-    for event in events[1:-1]:
-        if not isinstance(event,dict): raise ValueError('invalid fault event')
-        kind=event.get('event'); expected={'event','api','row','time_ns'} | ({'id'} if kind=='acknowledged' else set())
-        if kind not in counts or set(event) != expected or event.get('api') not in ('main_ops','aux_ops'):
-            raise ValueError('invalid fault event')
-        row=event.get('row')
-        if (not isinstance(row,dict) or set(row) != {'op_key','payload'} or not isinstance(row['op_key'],str)
-                or not re.fullmatch(r'd3-[A-Za-z0-9-]{1,125}',row['op_key']) or not isinstance(row['payload'],str) or len(row['payload'])>4096
-                or type(event.get('time_ns')) is not int or event['time_ns'] <= 0):
-            raise ValueError('invalid fault event')
-        key=(event['api'],row['op_key'])
-        if kind=='submitted':
-            if key in submitted: raise ValueError('duplicate fault submission')
-            submitted[key]=row
-        else:
-            if key not in submitted or key in outcomes or submitted[key] != row: raise ValueError('invalid fault outcome ordering')
-            if kind=='acknowledged' and (type(event.get('id')) not in (str,int) or not re.fullmatch(r'[1-9][0-9]{0,18}',str(event['id']))):
-                raise ValueError('invalid fault acknowledgement')
-            outcomes[key]=kind
-        counts[kind]+=1
-    if any(type(stop.get(k)) is not int or stop[k] != counts[k] for k in counts) or set(submitted) != set(outcomes):
-        raise ValueError('incomplete fault ledger')
-    return sorted(api+'/'+key for api,key in submitted)
+    try:
+        if (not isinstance(events,list) or not 2 <= len(events) <= 2002
+                or not isinstance(events[0],dict) or not isinstance(events[-1],dict)):
+            raise ValueError('invalid closed fault ledger')
+        start,stop=events[0],events[-1]
+        stamp=re.compile(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z')
+        if (set(start) != {'event','run_id','source_epoch','time_ns','utc'} or start.get('event')!='start'
+                or not isinstance(start.get('run_id'),str) or not re.fullmatch(r'd3-[0-9a-f]{32}',start['run_id'])
+                or not isinstance(start.get('source_epoch'),str) or not _EPOCH.fullmatch(start['source_epoch'])
+                or type(start.get('time_ns')) is not int or start['time_ns']<=0
+                or not isinstance(start.get('utc'),str) or not stamp.fullmatch(start['utc'])):
+            raise ValueError('invalid closed fault ledger')
+        datetime.datetime.strptime(start['utc'],'%Y-%m-%dT%H:%M:%SZ')
+        submitted={};outcomes={};counts={'submitted':0,'acknowledged':0,'rejected':0,'uncertain':0};previous=start['time_ns']
+        for event in events[1:-1]:
+            if not isinstance(event,dict): raise ValueError('invalid fault event')
+            kind=event.get('event');expected={'event','api','row','time_ns'}|({'id'} if kind=='acknowledged' else set())
+            if (kind not in counts or set(event)!=expected or event.get('api') not in ('main_ops','aux_ops')
+                    or type(event.get('time_ns')) is not int or event['time_ns']<=previous):
+                raise ValueError('invalid fault event')
+            previous=event['time_ns'];row=event.get('row')
+            if (not isinstance(row,dict) or set(row)!={'op_key','payload'} or not isinstance(row['op_key'],str)
+                    or not re.fullmatch(r'd3-[A-Za-z0-9-]{1,125}',row['op_key'])
+                    or not isinstance(row['payload'],str) or len(row['payload'])>4096): raise ValueError('invalid fault event')
+            key=(event['api'],row['op_key'])
+            if kind=='submitted':
+                if key in submitted or len(submitted)>=1000: raise ValueError('duplicate or excessive fault submission')
+                submitted[key]=row
+            else:
+                if key not in submitted or key in outcomes or submitted[key]!=row: raise ValueError('invalid fault outcome ordering')
+                if kind=='acknowledged': _canonical_id(event.get('id'))
+                outcomes[key]=kind
+            counts[kind]+=1
+        if (set(stop)!={'event','submitted','acknowledged','rejected','uncertain','time_ns','utc'} or stop.get('event')!='stop'
+                or type(stop.get('time_ns')) is not int or stop['time_ns']<=previous
+                or not isinstance(stop.get('utc'),str) or not stamp.fullmatch(stop['utc'])): raise ValueError('invalid fault stop')
+        datetime.datetime.strptime(stop['utc'],'%Y-%m-%dT%H:%M:%SZ')
+        if any(type(stop.get(k)) is not int or stop[k]!=counts[k] for k in counts) or set(submitted)!=set(outcomes):
+            raise ValueError('incomplete fault ledger')
+        return sorted(api+'/'+key for api,key in submitted)
+    except ValueError: raise
+    except (KeyError,TypeError,AttributeError,OverflowError) as exc: raise ValueError('invalid closed fault ledger') from exc
 
 
 def validate_fault_outcomes(value, events):
-    categories=('recovered','lost','ambiguous','unacknowledged_recovered','rejected')
-    if not isinstance(value,dict) or set(value) != set(categories) or any(not isinstance(value[k],list) or value[k] != sorted(value[k]) for k in categories):
-        raise ValueError('invalid fault outcomes')
-    expected=set(fault_operations(events)); flattened=[item for k in categories for item in value[k]]
-    if len(flattened) != len(set(flattened)) or set(flattened) != expected or value['lost']:
-        raise ValueError('fault outcomes are incomplete or acknowledge loss')
-    return value
+    try:
+        categories=('recovered','lost','ambiguous','unacknowledged_recovered','rejected');pattern=re.compile(r'(?:main|aux)_ops/d3-[A-Za-z0-9-]{1,125}')
+        if (not isinstance(value,dict) or set(value)!=set(categories)
+                or any(not isinstance(value[k],list) or value[k]!=sorted(value[k])
+                       or any(not isinstance(item,str) or not pattern.fullmatch(item) for item in value[k]) for k in categories)):
+            raise ValueError('invalid fault outcomes')
+        expected=set(fault_operations(events));flattened=[item for k in categories for item in value[k]]
+        if len(flattened)!=len(set(flattened)) or set(flattened)!=expected or value['lost']:
+            raise ValueError('fault outcomes are incomplete or acknowledge loss')
+        kinds={event['api']+'/'+event['row']['op_key']:event['event'] for event in events[1:-1] if event['event']!='submitted'}
+        for item in value['recovered']:
+            if kinds[item]!='acknowledged': raise ValueError('fault recovery semantics differ')
+        for item in value['rejected']:
+            if kinds[item]!='rejected': raise ValueError('fault rejection semantics differ')
+        for category in ('ambiguous','unacknowledged_recovered'):
+            if any(kinds[item]!='uncertain' for item in value[category]): raise ValueError('fault uncertainty semantics differ')
+        return value
+    except ValueError: raise
+    except (KeyError,TypeError,AttributeError) as exc: raise ValueError('invalid fault outcomes') from exc
 
 
-def validate_acceptance_result(result, request):
-    validate_acceptance_request(request, {'id':request['operation'],'source':request['source'],'target':request['target'],'source_epoch':request['epoch'],'new_epoch':'d1-'+request['operation']})
+def _validate_acceptance_result(result, request, operation):
+    validate_acceptance_request(request, operation)
     if not isinstance(result,dict) or set(result) != {'schema','request','request_sha256','databases','signature','checks'} or result['schema'] != _ACCEPTANCE_SCHEMA or result['request'] != request or result['request_sha256'] != hashlib.sha256(canonical_json(request)).hexdigest():
         raise ValueError('invalid restore acceptance result')
     if set(result['databases']) != set(_DBS) or set(result['signature']) != set(_DBS): raise ValueError('invalid restore result databases')
@@ -298,7 +342,10 @@ def validate_acceptance_result(result, request):
             raise ValueError('invalid recovery restore checks')
         outcomes=result['checks']['fault_outcomes']
         categories=('recovered','lost','ambiguous','unacknowledged_recovered','rejected')
-        if not isinstance(outcomes,dict) or set(outcomes) != set(categories) or any(not isinstance(outcomes[k],list) or outcomes[k] != sorted(outcomes[k]) for k in categories):
+        pattern=re.compile(r'(?:main|aux)_ops/d3-[A-Za-z0-9-]{1,125}')
+        if (not isinstance(outcomes,dict) or set(outcomes) != set(categories)
+                or any(not isinstance(outcomes[k],list) or outcomes[k] != sorted(outcomes[k])
+                       or any(not isinstance(item,str) or not pattern.fullmatch(item) for item in outcomes[k]) for k in categories)):
             raise ValueError('invalid recovery fault outcomes')
         expected=set(request['inputs']['fault_operations']); flattened=[v for k in categories for v in outcomes[k]]
         if len(flattened) != len(set(flattened)) or set(flattened) != expected or outcomes['lost']:
@@ -307,6 +354,17 @@ def validate_acceptance_result(result, request):
     elif result['checks'] != {'records':'PASS','authentication':'PASS'}:
         raise ValueError('invalid restore checks')
     return result
+
+
+def validate_acceptance_result(result, request, operation):
+    try: return _validate_acceptance_result(result, request, operation)
+    except ValueError: raise
+    except (KeyError,TypeError,AttributeError,OverflowError) as exc:
+        raise ValueError('invalid restore acceptance result') from exc
+
+
+def parse_acceptance_result(raw, request, operation):
+    return validate_acceptance_result(parse_canonical_json(raw), request, operation)
 
 
 def _json(raw):
@@ -430,7 +488,7 @@ def _protected_ledger(raw):
         raise ValueError('protected ledger is malformed') from exc
     if not isinstance(rows[0],dict) or set(rows[0]) != {'auth_token','retained_refresh','revoked_refresh'} or any(type(rows[0][k]) is not str or not rows[0][k] for k in rows[0]):
         raise ValueError('protected ledger auth frame is invalid')
-    seen_keys=set(); seen_ids=set(); submitted=[]; index=1
+    seen_keys=set();seen_ids=set();auth_pairs={(rows[0]['retained_refresh'],rows[0]['revoked_refresh'])};submitted=[];index=1
     for api in ('main_ops','aux_ops'):
         if index+1 >= len(rows): raise ValueError('protected ledger current pairs are incomplete')
         sub, ack=rows[index], rows[index+1]
@@ -440,9 +498,9 @@ def _protected_ledger(raw):
                 or not isinstance(sub['row']['op_key'],str) or not re.fullmatch(r'd1-[A-Za-z0-9-]{1,125}',sub['row']['op_key'])
                 or not isinstance(sub['row']['payload'],str) or len(sub['row']['payload'])>4096
                 or type(sub.get('time_ns')) is not int or sub['time_ns']<=0 or type(ack.get('time_ns')) is not int or ack['time_ns']<=0
-                or type(ack.get('id')) not in (str,int) or not re.fullmatch(r'[1-9][0-9]{0,18}',str(ack['id']))):
+                or type(ack.get('id')) not in (str,int)):
             raise ValueError('protected ledger operation is invalid')
-        key=api+'/'+sub['row']['op_key']; ident=str(ack['id'])
+        key=api+'/'+sub['row']['op_key']; ident=_canonical_id(ack['id'])
         if key in seen_keys or ident in seen_ids: raise ValueError('protected ledger operation is duplicated')
         seen_keys.add(key); seen_ids.add(ident); submitted.append(key); index += 2
     if index >= len(rows) or rows[index] != {'event':'smoke_pass'}: raise ValueError('protected ledger smoke marker is invalid')
@@ -454,16 +512,21 @@ def _protected_ledger(raw):
             payload=row['row']
             if (row['api'] not in ('main_ops','aux_ops') or not isinstance(payload,dict) or set(payload)!={'op_key','payload'}):
                 raise ValueError('protected ledger historical record is invalid')
-            key=row['api']+'/'+payload.get('op_key',''); ident=str(row['id'])
+            key=row['api']+'/'+payload.get('op_key','')
+            try: ident=_canonical_id(row.get('id'))
+            except ValueError as exc: raise ValueError('protected ledger historical record is invalid') from exc
             if (not isinstance(payload.get('op_key'),str) or not re.fullmatch(r'd1-[A-Za-z0-9-]{1,125}',payload['op_key'])
                     or not isinstance(payload.get('payload'),str) or len(payload['payload'])>4096
-                    or type(row.get('time_ns')) is not int or row['time_ns']<=0 or type(row.get('id')) not in (str,int)
-                    or not re.fullmatch(r'[1-9][0-9]{0,18}',ident) or key in seen_keys or ident in seen_ids):
+                    or type(row.get('time_ns')) is not int or row['time_ns']<=0
+                    or key in seen_keys or ident in seen_ids):
                 raise ValueError('protected ledger historical record is invalid')
             seen_keys.add(key); seen_ids.add(ident)
         elif set(row)=={'event','retained_refresh','revoked_refresh','retained_expected'} and row.get('event')=='historical_auth':
+            pair=(row.get('retained_refresh'),row.get('revoked_refresh'))
             if (not all(type(row[k]) is str and row[k] for k in ('retained_refresh','revoked_refresh'))
-                    or row['retained_expected'] not in ('accepted','denied')): raise ValueError('protected ledger historical auth is invalid')
+                    or row['retained_expected'] not in ('accepted','denied') or pair in auth_pairs):
+                raise ValueError('protected ledger historical auth is invalid')
+            auth_pairs.add(pair)
         else: raise ValueError('protected ledger historical frame is invalid')
         index += 1
     return rows
