@@ -337,16 +337,16 @@ class RestoreTask5Matrix(unittest.TestCase):
                         with self.assertRaises(RuntimeError): j.accept_comparison(op['id'], result)
                     elif label == 'accept-verification-done':
                         op = self._pending(j, 9)
-                        # This is intentionally a commit seam test; validation is isolated.
-                        with patch.object(recovery, 'validate_acceptance_result', return_value=None), \
-                             patch.object(control, 'phase_plan', return_value=control.PHASES):
-                            baseline_request = {'phase':'verification-baseline','source':'A','target':'B','profile':'baseline','epoch':op['new_epoch'],'positions': {'main':1,'session':1,'aux':1}}
-                            fresh_request = {'phase':'new-writes','source':'A','target':'B','profile':'fresh-writes','epoch':op['new_epoch'],'positions': {'main':2,'session':2,'aux':2}}
-                            result = {'writer': 'B', 'epoch': op['new_epoch'],
-                                      'positions': {'main': 2, 'session': 2, 'aux': 2},
-                                      'baseline_recheck': {'request': baseline_request, 'signature': {'main':'1' * 64,'session':'2' * 64,'aux':'3' * 64}},
-                                      'new_writes': {'request': fresh_request, 'signature': {'main':'1' * 64,'session':'2' * 64,'aux':'3' * 64}}}
-                            with self.assertRaises(RuntimeError): j.accept_verification(op['id'], result)
+                        baseline = acceptance_result(
+                            op, 'verification-baseline', {'main': 1, 'session': 1, 'aux': 1},
+                            signature={'main': '1' * 64, 'session': '2' * 64, 'aux': '3' * 64})
+                        fresh = acceptance_result(
+                            op, 'new-writes', {'main': 2, 'session': 2, 'aux': 2},
+                            signature={'main': '1' * 64, 'session': '2' * 64, 'aux': '3' * 64})
+                        result = {'writer': 'B', 'epoch': op['new_epoch'],
+                                  'positions': {'main': 2, 'session': 2, 'aux': 2},
+                                  'baseline_recheck': baseline, 'new_writes': fresh}
+                        with self.assertRaises(RuntimeError): j.accept_verification(op['id'], result)
                     else:
                         self._full_operation(j)
                         with self.assertRaises(RuntimeError): j.finish()

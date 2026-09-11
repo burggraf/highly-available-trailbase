@@ -101,11 +101,39 @@ def status():
         return json.load(response)
 
 
+_RESTORE_OUTPUT_LIMIT = 64 * 1024
+
+
 def run(args, work, timeout=90, env=None):
     prefix = work/str(time.time_ns())
-    with prefix.with_suffix('.stdout').open('xb') as out, prefix.with_suffix('.stderr').open('xb') as err:
+    stdout = prefix.with_suffix('.stdout')
+    stderr = prefix.with_suffix('.stderr')
+    with stdout.open('xb') as out, stderr.open('xb') as err:
         p = subprocess.run(args, stdout=out, stderr=err, timeout=timeout, env=env)
-    if p.returncode: raise RuntimeError('node command failed; protected output retained')
+    if p.returncode:
+        raise RuntimeError('node command failed; protected output retained')
+    try:
+        if stdout.stat().st_size > _RESTORE_OUTPUT_LIMIT or stderr.stat().st_size > _RESTORE_OUTPUT_LIMIT:
+            raise RuntimeError('restore cut evidence unavailable')
+        return stdout.read_bytes(), stderr.read_bytes()
+    except OSError as exc:
+        raise RuntimeError('restore cut evidence unavailable') from None
+
+
+def validate_restore_evidence(output, cut):
+    """Require bounded, explicitly labeled evidence for every requested position."""
+    try:
+        text = bytes(output).decode('ascii')
+        found = re.findall(
+            r'\btxid\s*[:=]\s*([0-9a-fA-F]+)\b[\s\S]*?\bto_txid\s*[:=]\s*([0-9a-fA-F]+)\b'
+            r'[\s\S]*?\bposition\s*[:=]\s*(0x[0-9a-fA-F]+|[0-9]+)\b', text, re.IGNORECASE)
+        expected = sorted(cut.values())
+        actual = sorted((int(txid, 16), int(to_txid, 16), int(position, 0))
+                        for txid, to_txid, position in found)
+        if len(actual) != len(expected) or sorted((txid, txid, position) for txid, position in zip(expected, expected)) != actual:
+            raise ValueError
+    except (TypeError, ValueError, UnicodeError):
+        raise RuntimeError('restore cut evidence unavailable') from None
 
 
 def empty_cgroup():
@@ -299,9 +327,10 @@ def _finite_restore(cut, fresh, work):
         raise RuntimeError('unsafe restore directory')
     for db, position in cut.items():
         output = fresh / (db + '.db')
-        run([str(node.BIN/'litestream'), 'restore', '-config', str(REPLICA), '-txid', f'{position:016x}',
+        stdout, stderr = run([str(node.BIN/'litestream'), 'restore', '-config', str(REPLICA), '-txid', f'{position:016x}',
              '-o', str(output), str(node.BASE/'depot/data'/(db+'.db'))], work, timeout=45,
             env=dict(os.environ, **values))
+        validate_restore_evidence(stdout + b'\\n' + stderr, {db: position})
         try:
             s = output.lstat()
             if (not output.is_file() or output.is_symlink() or s.st_nlink != 1
