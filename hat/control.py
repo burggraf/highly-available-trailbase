@@ -1783,7 +1783,7 @@ class ControlIO:
                                 mode=0o640, uid=ROOT_UID, gid=account.pw_gid)
             self._reopen_exact_bytes(replica_path, config_raw, mode=0o640, uid=ROOT_UID, gid=account.pw_gid)
             # Support and binaries are fixed installed inputs; copying them would widen the trust boundary.
-            self._copy_bound(ledger_path, area / 'ledger.jsonl', 0o600, ROOT_UID, account.pw_gid,
+            self._copy_bound(ledger_path, area / 'ledger.jsonl', 0o600, account.pw_uid, account.pw_gid,
                              authority['ledger']['sha256'], identity, label='oracle-ledger')
             oracle_fault = None
             fault_identity = None
@@ -1824,7 +1824,7 @@ class ControlIO:
                     '--ledger', str(area/'ledger.jsonl'), '--support', str(ORACLE_ROOT/'support'),
                     '--binaries', str(ORACLE_BIN_ROOT), '--result', str(result)]
             if oracle_fault is not None: argv += ['--fault-ledger', str(oracle_fault)]
-            expected = [(area/'ledger.jsonl', ROOT_UID, account.pw_gid, 0o600, 4 << 20),
+            expected = [(area/'ledger.jsonl', account.pw_uid, account.pw_gid, 0o600, 4 << 20),
                         (area/'replica.yml', ROOT_UID, account.pw_gid, 0o640, 1 << 20),
                         (area/'acceptance-request.json', ROOT_UID, account.pw_gid, 0o640, 1 << 20),
                         (operation_evidence, ROOT_UID, account.pw_gid, 0o640, 1 << 20)]
@@ -1853,7 +1853,7 @@ class ControlIO:
                 if events is not None:
                     recovery.validate_fault_outcomes(value['checks']['fault_outcomes'], events)
                 retained = self.work / (phase + '-acceptance-result.json')
-                self._copy_bound(result, retained, 0o600, account.pw_uid, os.getegid(),
+                self._copy_bound(result, retained, 0o600, account.pw_uid, account.pw_gid,
                                  result_authority.sha256, label='retained-result')
                 self._recheck_result(result_authority, result)
             for item in held + source_holds: item.recheck()

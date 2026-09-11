@@ -3,6 +3,7 @@ import json
 import os
 import sqlite3
 from pathlib import Path
+import stat
 import sys
 import tempfile
 import unittest
@@ -114,6 +115,21 @@ class RestoreTask3Tests(unittest.TestCase):
                 restore_baseline._raw(ledger, expected_uid=oracle_uid, expected_gid=oracle_gid)
         self.assertEqual(opened.call_args.kwargs['expected_uid'], oracle_uid)
         self.assertEqual(opened.call_args.kwargs['expected_gid'], oracle_gid)
+
+    def test_oracle_output_directory_requires_euid_egid_not_root(self):
+        import restore_baseline
+        oracle_uid, oracle_gid = 2001, 2002
+        good = type('Stat', (), {'st_mode': stat.S_IFDIR | 0o700,
+                                 'st_uid': oracle_uid, 'st_gid': oracle_gid,
+                                 'st_nlink': 1})()
+        root_owned = type('Stat', (), {'st_mode': stat.S_IFDIR | 0o700,
+                                       'st_uid': 0, 'st_gid': 0,
+                                       'st_nlink': 1})()
+        with unittest.mock.patch.object(restore_baseline.Path, 'lstat', return_value=good):
+            restore_baseline._validate_private_directory('/output', oracle_uid, oracle_gid)
+        with unittest.mock.patch.object(restore_baseline.Path, 'lstat', return_value=root_owned):
+            with self.assertRaisesRegex(ValueError, 'output directory'):
+                restore_baseline._validate_private_directory('/output', oracle_uid, oracle_gid)
 
     def test_internal_descriptor_identity_still_rejects_gid_mutation(self):
         import restore_baseline

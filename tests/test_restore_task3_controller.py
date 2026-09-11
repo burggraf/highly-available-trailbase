@@ -25,9 +25,9 @@ class ControllerBoundaryTests(unittest.TestCase):
                 control._copy_bound_input(link, root / 'bad', 0o600, os.geteuid(), os.getegid(),
                                           hashlib.sha256(source.read_bytes()).hexdigest())
 
-    def test_copy_bound_input_separates_sealed_source_owner_from_destination_owner(self):
-        source_uid, source_gid = os.geteuid(), os.getegid()
-        destination_uid, destination_gid = source_uid + 1000, source_gid + 1000
+    def test_copy_bound_input_separates_sealed_root_source_from_oracle_destination(self):
+        source_uid, source_gid = 0, 0
+        destination_uid, destination_gid = 2001, 2002
         identity = (11, 12, 0o100600, source_uid, source_gid, 1, 7)
         bound = MagicMock(identity=identity)
         parent = MagicMock()

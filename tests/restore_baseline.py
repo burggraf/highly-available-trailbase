@@ -42,19 +42,32 @@ def _open_descriptor(path, flags=os.O_RDONLY):
         os.close(fd)
 
 
-def _raw(path, limit=4 << 20, expected=None):
-    expected_mode = stat.S_IMODE(expected[2]) if expected is not None else None
+def _raw(path, limit=4 << 20, expected=None, expected_uid=None, expected_gid=None,
+         expected_mode=None):
+    expected_mode = stat.S_IMODE(expected[2]) if expected is not None else expected_mode
     with descriptor.DescriptorAuthority.open_file(
             path, trusted_root='/', trusted_uids={0, os.geteuid()},
-            expected_uid=(expected[3] if expected is not None else None),
-            expected_gid=(expected[4] if expected is not None else None),
+            expected_uid=(expected[3] if expected is not None else expected_uid),
+            expected_gid=(expected[4] if expected is not None else expected_gid),
             expected_mode=expected_mode, expected_nlink=1,
             expected_size=(expected[6] if expected is not None else None), limit=limit) as authority:
-        if expected is None and stat.S_IMODE(authority.identity[2]) & 0o022:
+        identity = authority.identity
+        if expected is None and stat.S_IMODE(identity[2]) & 0o022:
             raise ValueError('unsafe oracle input')
-        if expected is not None and authority.identity != expected:
+        if expected is not None and identity != expected:
             raise ValueError('oracle input identity changed')
-        return authority.read(), authority.identity
+        if (expected_uid is not None and identity[3] != expected_uid
+                or expected_gid is not None and identity[4] != expected_gid):
+            raise ValueError('oracle input identity differs from running oracle')
+        return authority.read(), identity
+
+
+def _validate_private_directory(path, uid, gid):
+    info = Path(path).lstat()
+    if (not stat.S_ISDIR(info.st_mode)
+            or info.st_uid != uid or info.st_gid != gid
+            or stat.S_IMODE(info.st_mode) != 0o700):
+        raise ValueError('oracle output directory is unsafe')
 
 
 def _read(path, limit=4 << 20, expected=None):
@@ -202,6 +215,7 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
     if operation_evidence is None:
         raise ValueError('operation evidence is required')
     os.umask(0o077)
+    oracle_uid, oracle_gid = os.geteuid(), os.getegid()
     request_raw = _read(acceptance_request, 1 << 20)
     operation = recovery._acceptance_operation(
         recovery.parse_canonical_json(_read(operation_evidence, 1 << 20)))
@@ -238,7 +252,8 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
     if hashlib.sha256(config_raw).hexdigest() != request_value['inputs']['replica_config_sha256']:
         raise ValueError('replica configuration changed')
     recovery._replica_config(config_raw, request_value['epoch'])
-    ledger_raw = _read(ledger)
+    ledger_raw, _ = _raw(ledger, expected_uid=oracle_uid, expected_gid=oracle_gid,
+                          expected_mode=0o600)
     inputs = request_value['inputs']
     if hashlib.sha256(ledger_raw).hexdigest() != inputs['ledger_sha256']:
         raise ValueError('ledger changed')
@@ -256,8 +271,9 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
     if request_value['profile'] != 'recovery-comparison':
         recovery._protected_ledger(ledger_raw)
     root = Path(root)
-    if not root.is_dir() or root.is_symlink(): raise ValueError('oracle root is unsafe')
+    _validate_private_directory(root, oracle_uid, oracle_gid)
     work = root / uuid.uuid4().hex; work.mkdir(mode=0o700)
+    _validate_private_directory(work, oracle_uid, oracle_gid)
     support_authorities = []
     binary_authorities = []
     database_authorities = []
@@ -270,6 +286,7 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
         binary_root = Path(binaries)
         binary_authorities = _validate_fixed_files(binary_root, expected_binaries, 0, 0, 0o755)
         depot = Path(support); data = work / 'data'; data.mkdir(mode=0o700)
+        _validate_private_directory(data, oracle_uid, oracle_gid)
         evidence = {'databases': {}}
         database_authorities = []
         for name in ('main', 'session', 'aux'):
@@ -285,8 +302,8 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
             for authority in support_authorities + binary_authorities: authority.recheck()
             try:
                 restored_authority = descriptor.DescriptorAuthority.open_file(
-                    target, trusted_root=work, trusted_uids={0, os.geteuid()},
-                    expected_uid=0, expected_gid=0, expected_mode=0o600,
+                    target, trusted_root=work, trusted_uids={0, oracle_uid},
+                    expected_uid=oracle_uid, expected_gid=oracle_gid, expected_mode=0o600,
                     expected_nlink=1, limit=64 << 20)
             except (OSError, ValueError):
                 raise ValueError('restore output is unsafe') from None
@@ -296,8 +313,8 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
             # mode, link count, size, and bytes to one held descriptor; never
             # reopen the pathname after the command.
             log_authority = descriptor.DescriptorAuthority.open_file(
-                log_path, trusted_root=work, trusted_uids={0, os.geteuid()},
-                expected_uid=0, expected_gid=0, expected_mode=0o600,
+                log_path, trusted_root=work, trusted_uids={0, oracle_uid},
+                expected_uid=oracle_uid, expected_gid=oracle_gid, expected_mode=0o600,
                 expected_nlink=1, expected_size=log_path.stat().st_size,
                 limit=4 << 20)
             try:
@@ -341,6 +358,8 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
             try: child.wait(timeout=15)
             except subprocess.TimeoutExpired: child.kill(); child.wait()
             log.close()
+        _raw(work / 'trail-oracle.log', 4 << 20,
+             expected_uid=oracle_uid, expected_gid=oracle_gid, expected_mode=0o600)
         evidence['checks'] = {'records':'PASS', 'authentication':'PASS'}
         if events is not None:
             outcomes = classify_fault(events, data)
@@ -355,7 +374,10 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
         fd = os.open(result_path, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, 'wb') as stream: stream.write(raw); stream.flush(); os.fsync(stream.fileno())
         dfd=os.open(work, os.O_RDONLY|os.O_DIRECTORY); os.fsync(dfd); os.close(dfd)
-        if _read(result_path, 1 << 20) != raw:
+        result_raw, _ = _raw(result_path, 1 << 20,
+                               expected_uid=oracle_uid, expected_gid=oracle_gid,
+                               expected_mode=0o600)
+        if result_raw != raw:
             raise ValueError('result changed after write')
         for authority in support_authorities + binary_authorities + database_authorities: authority.recheck()
         return result
@@ -397,8 +419,8 @@ def _main(argv):
             stream.write(raw); stream.flush(); os.fsync(stream.fileno())
         os.fsync(parent.directory_fd)
         result_authority = descriptor.DescriptorAuthority.open_file(
-            a.result, trusted_root='/', trusted_uids={0, os.geteuid()}, expected_uid=0,
-            expected_mode=0o600, expected_nlink=1, expected_size=len(raw),
+            a.result, trusted_root='/', trusted_uids={0, os.geteuid()}, expected_uid=os.geteuid(),
+            expected_gid=os.getegid(), expected_mode=0o600, expected_nlink=1, expected_size=len(raw),
             expected_sha256=hashlib.sha256(raw).hexdigest(), limit=1 << 20)
         published.append(result_authority)
         result_authority.recheck()
