@@ -117,9 +117,13 @@ class DescriptorAuthority:
                 raise ValueError('descriptor ancestry differs')
         except OSError as exc:
             if fd is not None: os.close(fd)
+            for _, opened, _, _ in reversed(self._directories): os.close(opened)
+            self._directories.clear()
             raise ValueError('descriptor ancestry is unsafe') from exc
         except BaseException:
             if fd is not None: os.close(fd)
+            for _, opened, _, _ in reversed(self._directories): os.close(opened)
+            self._directories.clear()
             raise
 
     def _record_directory(self, path, fd, trusted):
