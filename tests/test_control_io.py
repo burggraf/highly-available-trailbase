@@ -38,13 +38,19 @@ class ControlIOTests(unittest.TestCase):
 
     def test_command_records_private_result_and_timeout_uncertainty(self):
         io, root, journal = self.make_io()
-        with patch.object(control.subprocess, 'run', return_value=subprocess.CompletedProcess([], 3)):
+        failed = Mock(returncode=3)
+        failed.poll.return_value = 3
+        failed.communicate.return_value = (b'', b'')
+        with patch.object(control.subprocess, 'Popen', return_value=failed):
             with self.assertRaises(RuntimeError):
                 io.command(['fake', 'arg'], data=b'secret')
         outcomes = list(root.glob('*.outcome.json'))
         self.assertEqual(json.loads(outcomes[0].read_text())['returncode'], 3)
         self.assertNotIn('secret', outcomes[0].read_text())
-        with patch.object(control.subprocess, 'run', side_effect=subprocess.TimeoutExpired(['fake'], 1)):
+        timed_out = Mock(returncode=-9)
+        timed_out.poll.return_value = None
+        timed_out.communicate.side_effect = subprocess.TimeoutExpired(['fake'], 1)
+        with patch.object(control.subprocess, 'Popen', return_value=timed_out):
             with self.assertRaises(subprocess.TimeoutExpired):
                 io.command(['fake'])
         timeout = [json.loads(p.read_text()) for p in root.glob('*.outcome.json')
@@ -342,12 +348,12 @@ class ControlIOTests(unittest.TestCase):
                      patch.object(control.os, 'write', side_effect=lambda fd, raw: len(raw)), patch.object(control.os, 'fchmod'), patch.object(control.os, 'fchown'), \
                      patch.object(control.os, 'fsync', side_effect=synced), patch.object(control.os, 'close'), \
                      patch.object(control, '_copy_bound_input', side_effect=copied), \
-                     patch.object(control, '_open_held_inputs', return_value=[]):
+                     patch.object(io, '_reopen_exact_bytes'), patch.object(control, '_open_held_inputs', return_value=[]):
                     with self.assertRaisesRegex(RuntimeError, 'stop'):
                         io.oracle('compare', 'config', positions, '/tmp/ledger.jsonl',
                                   '/tmp/fault.jsonl' if fault else None)
                 expected = ['operation-request', 'request-fsync', 'work-fsync',
-                            'replica.yml', 'ledger.jsonl']
+                            'replica.yml', 'area-fsync', 'ledger.jsonl']
                 if fault: expected.append('fault-ledger.jsonl')
                 expected += ['acceptance-request.json', 'area-fsync']
                 self.assertEqual([event for event in events if event in expected], expected)

@@ -29,6 +29,9 @@ class _Process:
             raise OSError('communication failed')
         return b'', b''
 
+    def poll(self):
+        return -9 if self.killed else None
+
     def kill(self):
         self.killed = True
 
