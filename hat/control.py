@@ -1714,6 +1714,9 @@ class ControlIO:
         import node
         self.journal.check_authority()
         held = []; installed_holds = []; source_holds = []
+        retained = self.work / (phase + '-acceptance-result.json')
+        if retained.exists() or retained.is_symlink():
+            raise RuntimeError('acceptance result already exists')
         operation_path = self.work / (phase + '-operation-evidence.json')
         operation_raw = recovery.canonical_json(self.operation)
         self._durable_bytes(operation_path, operation_raw, label='operation-evidence')

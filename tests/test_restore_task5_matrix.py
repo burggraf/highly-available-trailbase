@@ -528,16 +528,22 @@ class RestoreTask5Matrix(unittest.TestCase):
         class Authority:
             identity = (ledger.stat().st_dev, ledger.stat().st_ino, ledger.stat().st_mode, os.geteuid(), os.getegid(), 1, ledger.stat().st_size)
             sha256 = request['inputs']['ledger_sha256']
+            path = ledger.absolute()
             def __enter__(self): return self
             def __exit__(self, *args): pass
+            def close(self): pass
             def read(self): return ledger.read_bytes()
             def recheck(self): return self
-        io._acceptance_request = Mock(return_value=(request, request_bytes, [], Authority.identity))
+        source_authority = Authority()
+        io._acceptance_request = Mock(return_value=(
+            request, request_bytes, [], Authority.identity, [source_authority]))
         io._installed_manifest = Mock(side_effect=[request['inputs']['support'], request['inputs']['binaries']])
         def fake_copy(source, destination, *args, **kwargs): Path(destination).write_bytes(Path(source).read_bytes()); return None
         def fake_command(argv, data=None, timeout=180):
             result_path = Path(argv[argv.index('--result') + 1]); result_path.write_bytes(result_bytes); result_path.chmod(0o600); return b''
         def open_file(path, **kwargs):
+            if Path(path).name.endswith('operation-evidence.json'):
+                auth = Authority(); auth.read = lambda: recovery.canonical_json(op); return auth
             if Path(path).name == 'result.json':
                 auth = Authority(); auth.read = lambda: result_bytes; auth.sha256 = hashlib.sha256(result_bytes).hexdigest(); return auth
             return Authority()

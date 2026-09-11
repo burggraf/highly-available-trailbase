@@ -311,9 +311,21 @@ class ControlIOTests(unittest.TestCase):
                   'ledger_authority': {'ledger': ledger}, 'support': {}, 'binaries': {}}
         if fault:
             inputs['fault_ledger_sha256'] = 'b' * 64
+            io.state['fault_seal'] = {'destination': '/tmp/fault.jsonl', 'sha256': 'b' * 64}
         request = {'phase': 'compare', 'positions': positions,
                    'profile': 'recovery-comparison' if fault else 'comparison', 'inputs': inputs}
-        io._acceptance_request = Mock(return_value=(request, b'{}', [], identity))
+        ledger_hold = MagicMock()
+        ledger_hold.path = Path('/tmp/ledger.jsonl').absolute()
+        ledger_hold.identity = identity
+        ledger_hold.read.return_value = b'ledger\n'
+        source_holds = [ledger_hold]
+        if fault:
+            fault_hold = MagicMock()
+            fault_hold.path = Path('/tmp/fault.jsonl').absolute()
+            fault_hold.identity = identity
+            fault_hold.read.return_value = b'fault\n'
+            source_holds.append(fault_hold)
+        io._acceptance_request = Mock(return_value=(request, b'{}', [], identity, source_holds))
         return io, positions
 
     def test_oracle_records_exact_exclusive_artifact_order_with_and_without_fault(self):
@@ -340,9 +352,13 @@ class ControlIOTests(unittest.TestCase):
                 def copied(source, destination, *args, **kwargs):
                     events.append(Path(destination).name)
                 authorized = MagicMock(); authorized.read.return_value = b'ledger\n'
+                operation_authority = MagicMock()
+                operation_authority.read.return_value = recovery.canonical_json(io.operation)
+                def authority(path, **kwargs):
+                    return operation_authority if Path(path).name.endswith('operation-evidence.json') else authorized
                 with patch.object(io, 'command', side_effect=RuntimeError('stop')) as command, \
                      patch.object(control.pwd, 'getpwnam', return_value=type('Account', (), {'pw_uid': os.geteuid(), 'pw_gid': os.getegid()})()), \
-                     patch.object(control.descriptor.DescriptorAuthority, 'open_file', return_value=authorized), \
+                     patch.object(control.descriptor.DescriptorAuthority, 'open_file', side_effect=authority), \
                      patch.object(recovery, '_protected_ledger'), \
                      patch.object(control, 'oracle_directory'), patch.object(Path, 'mkdir'), \
                      patch.object(control.os, 'chown'), patch.object(control.os, 'open', side_effect=opened), \
@@ -353,11 +369,11 @@ class ControlIOTests(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError, 'stop'):
                         io.oracle('compare', 'config', positions, '/tmp/ledger.jsonl',
                                   '/tmp/fault.jsonl' if fault else None)
-                expected = ['operation-request', 'request-fsync', 'work-fsync',
+                expected = ['work-fsync', 'operation-request', 'request-fsync', 'work-fsync',
                             'oracle-root-fsync', 'area-fsync', 'replica.yml',
                             'area-fsync', 'ledger.jsonl']
                 if fault: expected.append('fault-ledger.jsonl')
-                expected += ['acceptance-request.json']
+                expected += ['acceptance-request.json', 'area-fsync']
                 self.assertEqual([event for event in events if event in expected], expected)
                 command.assert_called_once()
 
@@ -370,9 +386,13 @@ class ControlIOTests(unittest.TestCase):
         def synced(fd):
             if fds.get(fd) == request_path: raise OSError('request fsync')
         authorized = MagicMock(); authorized.read.return_value = b'ledger\n'
+        operation_authority = MagicMock()
+        operation_authority.read.return_value = recovery.canonical_json(io.operation)
+        def authority(path, **kwargs):
+            return operation_authority if Path(path).name.endswith('operation-evidence.json') else authorized
         with patch.object(io, 'command') as command, \
              patch.object(control.pwd, 'getpwnam', return_value=type('Account', (), {'pw_uid': os.geteuid(), 'pw_gid': os.getegid()})()), \
-             patch.object(control.descriptor.DescriptorAuthority, 'open_file', return_value=authorized), \
+             patch.object(control.descriptor.DescriptorAuthority, 'open_file', side_effect=authority), \
              patch.object(recovery, '_protected_ledger'), \
              patch.object(control, 'oracle_directory') as make_area, \
              patch.object(control.os, 'open', side_effect=opened), \
@@ -382,14 +402,14 @@ class ControlIOTests(unittest.TestCase):
                 io.oracle('compare', 'config', positions, '/tmp/ledger.jsonl')
         make_area.assert_not_called(); copied.assert_not_called(); command.assert_not_called()
 
-    def test_oracle_preexisting_replica_refuses_without_command_or_replay(self):
+    def test_oracle_preexisting_operation_evidence_refuses_without_command_or_replay(self):
         io, positions = self._oracle_copy_fixture()
         authorized = MagicMock(); authorized.read.return_value = b'ledger\n'
         with patch.object(io, 'command') as command, \
              patch.object(control.pwd, 'getpwnam', return_value=type('Account', (), {'pw_uid': os.geteuid(), 'pw_gid': os.getegid()})()), \
              patch.object(control.descriptor.DescriptorAuthority, 'open_file', return_value=authorized), \
              patch.object(recovery, '_protected_ledger'), patch.object(control, 'oracle_directory'), \
-             patch.object(Path, 'mkdir'), patch.object(Path, 'exists', return_value=True), \
+             patch.object(Path, 'mkdir'), \
              patch.object(control.os, 'chown'), patch.object(control.os, 'open', side_effect=FileExistsError), \
              patch.object(control, '_copy_bound_input') as copied:
             with self.assertRaises(FileExistsError):

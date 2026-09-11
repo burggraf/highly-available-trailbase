@@ -152,8 +152,12 @@ class RestoreTask34FdCleanupTests(unittest.TestCase):
                 value = {'phase': request['phase'], 'positions': request['positions'],
                          'profile': request.get('profile', 'comparison'),
                          'inputs': request.get('inputs', {})}
-                io._acceptance_request = Mock(return_value=(value, b'{}', [held], (1, 2, 0o100600, 0, 0, 1, 1)))
-                with self.assertRaises(ValueError):
+                io._acceptance_request = Mock(return_value=(
+                    value, b'{}', [held], (1, 2, 0o100600, 0, 0, 1, 1), []))
+                operation_hold = Mock()
+                operation_hold.read.return_value = recovery.canonical_json(io.operation)
+                with patch.object(control.descriptor.DescriptorAuthority, 'open_file',
+                                  return_value=operation_hold), self.assertRaises(ValueError):
                     io.oracle('compare', 'config', positions, '/tmp/ledger.jsonl')
                 self.assertEqual(held.closed, 1)
 
