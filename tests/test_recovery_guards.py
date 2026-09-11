@@ -259,6 +259,38 @@ class RecoveryGuardTests(unittest.TestCase):
             maintenance.unlink(); maintenance.symlink_to(root/'missing-marker')
             self.assertFalse(self.m.ingress_allowed(root,maintenance,permit,ingress,'boot'))
 
+    def test_ingress_allowed_rejects_preexisting_permit_on_all_non_pending_success_paths(self):
+        def permit(root):
+            path=root/'permit'; path.write_text('{}'); path.chmod(0o600); return path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve(); ingress=root/'proxy.cfg'; ingress.write_text('route A\\n')
+            self.assertFalse(self.m.ingress_allowed(root,root/'maintenance',permit(root),ingress,'boot'))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve(); ingress=root/'proxy.cfg'; ingress.write_text('route A\\n')
+            (root/'journal.db').write_bytes(b'')
+            self.assertFalse(self.m.ingress_allowed(root,root/'maintenance',permit(root),ingress,'boot'))
+
+        for contract in ('legacy','hat-restore-acceptance-1'):
+            with self.subTest(state='completed-'+contract), tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp).resolve(); ingress=root/'proxy.cfg'; ingress.write_text('route B\\n')
+                digest=hashlib.sha256(ingress.read_bytes()).hexdigest()
+                with self.m.Journal(root) as journal:
+                    operation=journal.begin('A','B','d1-old')
+                    for phase in D2:
+                        evidence={'writer':'B','epoch':operation['new_epoch'],'config_sha':digest} if phase=='route' else {}
+                        journal.step(phase,lambda evidence=evidence:evidence)
+                    journal.finish()
+                    if contract=='legacy':
+                        journal.db.execute("UPDATE operations SET restore_contract='legacy' WHERE id=?",(operation['id'],)); journal.db.commit()
+                self.assertFalse(self.m.ingress_allowed(root,root/'maintenance',permit(root),ingress,'boot'))
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve(); journal,operation,ingress=self._d3(root)
+            maintenance=self._maintenance(root,operation); journal.__exit__(None,None,None)
+            self.assertFalse(self.m.ingress_allowed(root,maintenance,permit(root),ingress,'boot'))
+
     def test_completed_legacy_rows_remain_exact_authority_and_target_b_reconciliation_only(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp).resolve();ingress=root/'proxy.cfg';ingress.write_text('route B\n')
