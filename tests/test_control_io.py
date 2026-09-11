@@ -354,7 +354,8 @@ class ControlIOTests(unittest.TestCase):
                         io.oracle('compare', 'config', positions, '/tmp/ledger.jsonl',
                                   '/tmp/fault.jsonl' if fault else None)
                 expected = ['operation-request', 'request-fsync', 'work-fsync',
-                            'oracle-root-fsync', 'replica.yml', 'area-fsync', 'ledger.jsonl']
+                            'oracle-root-fsync', 'area-fsync', 'replica.yml',
+                            'area-fsync', 'ledger.jsonl']
                 if fault: expected.append('fault-ledger.jsonl')
                 expected += ['acceptance-request.json']
                 self.assertEqual([event for event in events if event in expected], expected)
