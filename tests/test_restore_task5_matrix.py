@@ -271,12 +271,13 @@ class RestoreTask5Matrix(unittest.TestCase):
 
     def _pending(self, journal, position, evidence=None):
         op = journal.begin('A', 'B', 'd1-source')
+        signatures = {'main': '1' * 64, 'session': '2' * 64, 'aux': '3' * 64}
         values = [{}, {}, {}, {},
                   {'cut': {'main': 1, 'session': 1, 'aux': 1},
-                   'signature': {'main': 'm', 'session': 's', 'aux': 'x'}},
+                   'signature': signatures},
                   {}, {'writer': 'B'},
                   {'request': {'positions': {'main': 1, 'session': 1, 'aux': 1}},
-                   'signature': {'main': 'm', 'session': 's', 'aux': 'x'}}, {}, {}]
+                   'signature': signatures}, {}, {}]
         for index in range(position):
             journal.step(control.PHASES[index], lambda value=values[index]: value)
         if evidence is None:
@@ -330,9 +331,9 @@ class RestoreTask5Matrix(unittest.TestCase):
                         with self.assertRaises(RuntimeError): j.step('preflight', lambda: actions.append(1) or {})
                     elif label == 'accept-comparison-done':
                         op = self._pending(j, 5)
-                        result = {'request': {'positions': {'main': 1, 'session': 1, 'aux': 1}},
-                                  'signature': {'main': 'm', 'session': 's', 'aux': 'x'},
-                                  'checks': {'records': 'PASS', 'authentication': 'PASS'}}
+                        result = acceptance_result(
+                            op, 'compare', {'main': 1, 'session': 1, 'aux': 1},
+                            signature={'main': '1' * 64, 'session': '2' * 64, 'aux': '3' * 64})
                         with self.assertRaises(RuntimeError): j.accept_comparison(op['id'], result)
                     elif label == 'accept-verification-done':
                         op = self._pending(j, 9)
@@ -343,8 +344,8 @@ class RestoreTask5Matrix(unittest.TestCase):
                             fresh_request = {'phase':'new-writes','source':'A','target':'B','profile':'fresh-writes','epoch':op['new_epoch'],'positions': {'main':2,'session':2,'aux':2}}
                             result = {'writer': 'B', 'epoch': op['new_epoch'],
                                       'positions': {'main': 2, 'session': 2, 'aux': 2},
-                                      'baseline_recheck': {'request': baseline_request, 'signature': {'main':'m','session':'s','aux':'x'}},
-                                      'new_writes': {'request': fresh_request, 'signature': {'main':'m','session':'s','aux':'x'}}}
+                                      'baseline_recheck': {'request': baseline_request, 'signature': {'main':'1' * 64,'session':'2' * 64,'aux':'3' * 64}},
+                                      'new_writes': {'request': fresh_request, 'signature': {'main':'1' * 64,'session':'2' * 64,'aux':'3' * 64}}}
                             with self.assertRaises(RuntimeError): j.accept_verification(op['id'], result)
                     else:
                         self._full_operation(j)
