@@ -1,14 +1,18 @@
 # HAT delivery status
 
-D0 checkpoint: 2026-09-08 UTC. Delivery direction approved by owner; work stays on `main`. The [delivery reset](plans/ha-delivery-reset.md) governs next work, not the old qualification sequence.
+V1 planning checkpoint: 2026-09-11. The owner selected a simpler single-controller delivery scope. The [V1 manual failover plan](plans/2026-09-11-v1-manual-failover.md) is the current proposed implementation sequence; earlier delivery/consensus plans remain historical references. No Rust implementation or deployment occurred in this planning update.
 
-| Delivered | Currently building | Blocker | Next demonstration |
+| Delivered | Currently planning | Blocker | Next demonstration |
 | --- | --- | --- | --- |
-| D0–D3 delivered with preserved explicit reconciliations; D4 offline refusal diagnostic merged locally; Rust architecture approved | `manual-async` state-machine and protocol contracts | Complete acknowledged-write preservation and safe settlement of uncertain external effects are not established | Qualify fixed-member OpenRaft, bundled SQLite, and mTLS failure boundaries |
+| Historical D0–D3 with preserved reconciliations; D4 offline refusal diagnostic; V1 contract draft written | One-controller Rust proxy/manual failover with public HTTPS dashboard and unattended same-primary restart | Review exact security/action schemas; deployment/native qualification inputs remain pending | Inert configuration and primary-only routing, then a local forwarding demonstration |
 
-## Next product direction: manual-async HA
+## Next product direction: single-controller V1
 
-The [manual-async product plan](plans/2026-09-10-manual-async-ha-product-plan.md) defines an installable one-writer/warm-standby system for supported existing TrailBase applications, with independently fenced operator-controlled failover and an explicit contract that recent acknowledged writes may be lost. The [approved high-level architecture](plans/2026-09-10-rust-ha-architecture-design.md) selects one Rust HAT executable with isolated roles, exactly three fixed OpenRaft controllers, direct mTLS RPC, bundled SQLite controller persistence, operator-supplied ingress and fencing integrations, and separately pinned TrailBase and Litestream executables. D4 remains an additive future durability profile. Python remains the executable specification and adversarial conformance harness; the next work is detailed state/protocol design and bounded consensus/storage qualification, not production implementation.
+The owner accepts all application traffic going to the primary, with TrailBase stopped on continuously restored standbys. One controller monitors nodes and coordinates manual fenced promotion; its downtime prevents administrative changes but must not interrupt otherwise healthy existing-primary traffic. Recent acknowledged writes may be lost. Scoped local replica reads are a future extension gated on qualified TrailBase read-only support; see the [maintainer request](trailbase-read-only-mode-request.md).
+
+The owner approved unattended same-primary restart that waits for a reachable controller and fresh authorization, while an already-running primary remains independent. The dashboard must be directly accessible over public HTTPS with individual local accounts sharing management permissions. The initial fixture may exclude custom jobs and uploaded-file mutation; Linux/fencing/front-door choices remain pending. The [V1 contract draft](v1-contract.md) records these decisions and proposes browser security, durable-command/fencing boundaries and Rust library families. Exact slice schemas, package pins and native qualification remain outstanding. No code implementation, account/certificate creation or public listener has started.
+
+Raft, three-controller availability and D4 acknowledged-write preservation are **not V1 prerequisites**. Retain fencing, durable operation state, restore validation, uncertainty handling and clean rejoin. The [earlier Rust architecture](plans/2026-09-10-rust-ha-architecture-design.md) and [manual-async product plan](plans/2026-09-10-manual-async-ha-product-plan.md) remain historical/deferred direction where they conflict with this scope. Existing Python behavior, private evidence and live deployment are unchanged; accepting async loss for the proposed Rust version does not authorize relaxing the installed Python loss guard.
 
 ## Task6 unified restore-acceptance-1 source/test closure — checkpoint `ce1b66651a5c442f44e6459fe17ada9f4ab441b6`
 

@@ -6,6 +6,7 @@ An early-stage project for a single-writer [TrailBase](https://github.com/trailb
 
 ## Start here
 
+- **[V1 single-controller manual failover plan](docs/plans/2026-09-11-v1-manual-failover.md):** current delivery scope—Rust proxies forward all application traffic to one primary, standbys keep TrailBase stopped, and one controller coordinates manual fenced failover. Raft is deferred; scoped replica reads await qualified TrailBase read-only support. Detailed implementation remains proposed.
 - [Offline observation/refusal](docs/observation-only.md): inventory captured evidence without live access or action authorization; existing manual behavior is unchanged.
 
 - [Master plan](docs/plans/2026-09-07-master-plan.md): goals, decisions, alternatives, milestones, and questions.
@@ -24,7 +25,7 @@ An early-stage project for a single-writer [TrailBase](https://github.com/trailb
 
 One primary; one or more continuously restored standbys; stable HA ingress; shared S3/R2 application object storage. Read offloading is optional and disabled until genuine read-only operation is demonstrated.
 
-**Safety policy chosen:** automatically promote only when fencing is proven and a defined data-loss budget is satisfied; otherwise require operator review. Neither manual approval nor a lease permits overlapping writers.
+**Current V1 safety policy:** operator-triggered promotion only, independently confirmed fencing, validated recoverable state, and explicit acceptance that recent acknowledged writes may be lost. No automatic promotion or overlapping writers. The earlier automatic-failover direction is deferred.
 
 Important qualifications:
 
