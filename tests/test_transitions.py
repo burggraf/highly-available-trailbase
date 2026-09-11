@@ -224,7 +224,7 @@ class TransitionTests(unittest.TestCase):
         self.assertEqual(found,{
             'Journal.__enter__','Journal.begin','Journal.step','Journal._boundary',
             'Journal.continue_rejoin','Journal.finish','_journal_schema','_check_constraints','_check_indexes','_d3_serving_state',
-            'current_writer','ingress_allowed','reconcile_existing',
+            'current_writer','_ingress_allowed_body','reconcile_existing',
         })
 
     def test_unfinished_legacy_contract_refuses_step_boundaries_accept_and_finish(self):
