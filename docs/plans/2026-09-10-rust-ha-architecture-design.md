@@ -139,7 +139,9 @@ The operation lifecycle distinguishes proposed/active work from `succeeded`, `fa
 
 There is no generic cancellation once effects begin. A safe-stop request may stop before effects, follow explicitly authorized cleanup phases, or remain blocked when safety cannot be established. Detailed transitions and safe-stop authorization remain to be specified.
 
-The serialization rule covers supported switchover, failover, rejoin, route repair, replacement, and upgrade operations. It does not introduce online controller membership changes or online certificate rotation into v0.1; offline recovery/replacement requires a separate procedure. The interaction between this slot and urgent operator-access revocation remains an explicit open decision.
+The serialization rule covers supported switchover, failover, rejoin, route repair, replacement, and upgrade operations. It does not introduce online controller membership changes or online certificate rotation into v0.1; offline recovery/replacement requires a separate procedure.
+
+**Approved narrow exception:** an authorized administrator may quorum-commit operator-access revocation without acquiring the mutation slot, including while an operation is blocked. This exception only removes access; it cannot add identities or grant permissions. Revocation blocks subsequent requests on new and existing connections. It does not cancel previously committed operations, clear uncertainty, or release the slot. Without quorum, revocation refuses; there is no local bypass. ACL authorization and ordering must still be checked against committed state.
 
 ## 6. Manual first, automatic later
 
@@ -293,7 +295,7 @@ Before an implementation plan is approved, decide and document:
 - SQLite schema, durability mode, storage actor, and snapshot format;
 - RPC encoding/framework, size limits, deadlines, and backpressure;
 - certificate issuance, rotation, revocation, and recovery;
-- operator ACL enforcement, forwarding, request deduplication, and revocation during blocked operations;
+- operator ACL enforcement, forwarding, request deduplication, and implementation of the approved revocation exception;
 - privileged executor authorization protocol;
 - node observation freshness and eligibility rules;
 - fence and ingress adapter schemas;
