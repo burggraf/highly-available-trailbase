@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'hat'))
 import descriptor
@@ -62,6 +63,23 @@ class DescriptorAuthorityTests(unittest.TestCase):
                 descriptor.close_all(authorities)
         self.assertEqual(order, ['second', 'first'])
         self.assertEqual([item.calls for item in authorities], [1, 1])
+
+    def test_copy_recheck_failure_closes_copy_without_masking(self):
+        root, _, source = self.make_tree()
+        destination = root / 'destination'; destination.mkdir(mode=0o700)
+        with descriptor.DescriptorAuthority.open_file(
+                source, trusted_root=root, trusted_uids={os.geteuid()}, expected_uid=os.geteuid(),
+                expected_gid=os.getegid(), expected_mode=0o600, expected_nlink=1, limit=1024) as source_authority, \
+             descriptor.DescriptorAuthority.open_directory(
+                destination, trusted_root=root, trusted_uids={os.geteuid()}) as destination_authority:
+            copied = Mock()
+            copied.recheck.side_effect = ValueError('primary recheck')
+            copied.close.side_effect = OSError('close failure')
+            with patch.object(descriptor.DescriptorAuthority, 'open_file', return_value=copied):
+                with self.assertRaisesRegex(ValueError, 'primary recheck'):
+                    source_authority.copy_to(destination_authority, 'copy', mode=0o640,
+                                             uid=os.geteuid(), gid=os.getegid())
+            copied.close.assert_called_once_with()
 
     def test_exclusive_copy_is_descriptor_bound_and_reopened(self):
         root, _, source = self.make_tree()
