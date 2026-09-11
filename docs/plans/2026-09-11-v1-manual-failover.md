@@ -511,6 +511,8 @@ Scope: reviewable local configuration, refusal-safe service templates, a read-on
 
 **Restart handoff after the bounded probe:** T9B-AC1 through T9B-AC4 are blocked/partial, not accepted. The checked-out Rust proxy did forward real TrailBase health traffic and a manually supplied route reached a standby after a test-owned primary stop, but current Rust has no installable node/controller operation path. The next safe implementation is the native runtime/operation boundary and an explicit application/fencing fixture; do not repeat the remote cycle or broaden effects until that contract is reviewed.
 
+**Temporary UI demonstration currently active:** test-owned Rust dashboard units `hat-ui-demo-fm1`, `hat-ui-demo-fm2`, and `hat-ui-demo-fm3` run on remote loopback ports 18081/18082/18083 under `/opt/hat-ui-demo`; local SSH forwards are managed as `proc_d5bb`, `proc_5c00`, and `proc_5d08`. This is a view-only demonstration boundary, not deployment or acceptance. After the user's viewing session, stop the three units, remove only `/opt/hat-ui-demo`, stop the three forwards, and remove the local temporary password file.
+
 Scope: one bounded, evidence-preserving E2E cycle on `fm1.zzzx.uk`, `fm2.zzzx.uk`, and `fm3.zzzx.uk`, using root only through the existing approved SSH profile. The owner confirmed the hosts are dedicated disposable fixtures, accepted possible loss of a few test transactions, authorized required test cleanup/mutation, and requested a full failover/rejoin drill. Do not discover or copy private credentials, reuse historical deployment state, or claim provider fencing unless independently verified.
 
 | ID | Observable requirement, including refusal cases | Exact check/evidence | Result |

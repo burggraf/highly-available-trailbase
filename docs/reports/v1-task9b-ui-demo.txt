@@ -1,0 +1,27 @@
+Task 9B temporary Rust dashboard demonstration
+
+Authorization: owner requested a viewable remote web UI and authorized removal of obsolete Python `hat-demo` processes. This is a temporary SSH-only demonstration, not deployment or native qualification.
+
+Remote setup (2026-09-11):
+- Stopped `hat-demo.service` and its Python process on fm1 and fm2. No hat-demo Python process was present on fm3. The historical files and inactive service units were preserved.
+- Copied the Linux x86_64 Rust `hat` release binary to `/opt/hat-ui-demo/hat` on all three hosts. SHA-256: `94d33172e248066dc25fc6061114dfce5bb0196508b24ff54bf0efeab65fe8e0` on each host.
+- Created fresh controller journals/accounts under `/opt/hat-ui-demo/state/` and started only test-owned transient units:
+  - fm1: `hat-ui-demo-fm1`, loopback `127.0.0.1:18081`
+  - fm2: `hat-ui-demo-fm2`, loopback `127.0.0.1:18082`
+  - fm3: `hat-ui-demo-fm3`, loopback `127.0.0.1:18083`
+- Created local SSH forwards with managed processes `proc_d5bb`, `proc_5c00`, and `proc_5d08` from local ports 18081/18082/18083 to the corresponding remote loopback ports.
+
+Verification:
+- Each UI root returned HTTP 200.
+- Unauthenticated status returned HTTP 401.
+- Temporary `demo` account login returned HTTP 200 and authenticated status returned HTTP 200 on all three ports. The generated password is intentionally not recorded here.
+
+User URLs:
+- `http://localhost:18081` → fm1
+- `http://localhost:18082` → fm2
+- `http://localhost:18083` → fm3
+
+Limits:
+- The UI is loopback-only and reachable only through these SSH forwards; no public listener or HTTPS was created.
+- These are three independent local controller dashboards. The current Rust UI has no cluster-wide view or action-dispatch/failover endpoint; it displays local controller status and accepts journal operation submissions only.
+- Cleanup is pending the user's viewing session: stop the three transient units, remove only `/opt/hat-ui-demo`, stop the three SSH forwards, and remove the temporary local password file. Do not remove preserved historical deployment files unless separately requested.
