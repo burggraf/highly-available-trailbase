@@ -1105,8 +1105,8 @@ class ControlIO:
                 '--property=NoNewPrivileges=yes', '--property=RuntimeMaxSec=240', '--property=KillMode=control-group',
                 'python3', '/opt/hat-oracle/restore_baseline.py', '--root', str(output),
                 '--acceptance-request', str(area/'acceptance-request.json'), '--config', str(area/'replica.yml'),
-                '--ledger', str(area/'ledger.jsonl'), '--support', '/var/lib/hat-oracle/support',
-                '--binaries', '/opt/hat-oracle/bin', '--result', str(result)]
+                '--ledger', str(area/'ledger.jsonl'), '--support', str(support_root),
+                '--binaries', str(binary_root), '--result', str(result)]
         if oracle_fault is not None: argv += ['--fault-ledger', str(oracle_fault)]
         self.command(argv, timeout=270)
         result_fd = os.open(result, os.O_RDONLY | os.O_NOFOLLOW)
