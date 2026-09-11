@@ -382,7 +382,10 @@ def _validate_acceptance_result(result, request, operation, events=None,
     if set(result['databases']) != set(_DBS) or set(result['signature']) != set(_DBS): raise ValueError('invalid restore result databases')
     for db in _DBS:
         item=result['databases'][db]
-        if set(item) != {'position','sha256','integrity','foreign_keys'} or item['position'] != request['positions'][db] or not _HEX64.fullmatch(item['sha256']) or item['integrity'] != 'PASS' or item['foreign_keys'] != 'PASS': raise ValueError('invalid restore database result')
+        if (set(item) != {'position','sha256','integrity','foreign_keys'} or type(item['position']) is not int
+                or item['position'] != request['positions'][db] or not _HEX64.fullmatch(item['sha256'])
+                or item['integrity'] != 'PASS' or item['foreign_keys'] != 'PASS'):
+            raise ValueError('invalid restore database result')
         if not _HEX64.fullmatch(result['signature'][db]): raise ValueError('invalid restore signature')
     if request['profile'] == 'recovery-comparison':
         if set(result['checks']) != {'records','authentication','fault_outcomes','acknowledged_loss'} or result['checks']['acknowledged_loss'] != 'NONE':

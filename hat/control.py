@@ -478,9 +478,11 @@ class Journal:
         self.operation=operation;self.next=10;self.pending=False
 
     def accept_comparison(self, ident, result):
+        import recovery
         operation,previous=self.comparison_boundary(ident)
+        recovery.validate_acceptance_result(result, result.get('request'), operation)
         frozen=previous['freeze']
-        if (result.get('request',{}).get('positions')!=frozen['cut'] or result.get('signature')!=frozen['signature']
+        if (result['request']['positions']!=frozen['cut'] or result.get('signature')!=frozen['signature']
                 or result.get('checks',{}).get('records')!='PASS' or result.get('checks',{}).get('authentication')!='PASS'):
             raise ValueError('reconciled comparison does not match frozen cut')
         try:
@@ -1705,10 +1707,18 @@ class ControlIO:
             self._copy_bound(ledger_path, area / 'ledger.jsonl', 0o600, ROOT_UID, account.pw_gid,
                              authority['ledger']['sha256'], identity, label='oracle-ledger')
             oracle_fault = None
+            fault_identity = None
             if fault_ledger is not None:
+                # Bind the sidecar to the descriptor identity as well as its bytes.
+                with descriptor.DescriptorAuthority.open_file(
+                        fault_ledger, trusted_root='/', trusted_uids={0, os.geteuid()},
+                        expected_sha256=request['inputs']['fault_ledger_sha256'],
+                        expected_nlink=1, limit=4 << 20) as fault:
+                    fault_identity = fault.identity
                 oracle_fault = area / 'fault-ledger.jsonl'
-                self._copy_bound(fault_ledger, oracle_fault, 0o600, os.geteuid(), account.pw_gid,
-                                 request['inputs']['fault_ledger_sha256'], label='oracle-fault-ledger')
+                self._copy_bound(fault_ledger, oracle_fault, 0o600, account.pw_uid, account.pw_gid,
+                                 request['inputs']['fault_ledger_sha256'], expected_identity=fault_identity,
+                                 label='oracle-fault-ledger')
             self._copy_bound(request_path, area / 'acceptance-request.json', 0o640, ROOT_UID, account.pw_gid,
                              hashlib.sha256(request_bytes).hexdigest(), label='oracle-request')
             for directory in (output, self.work):
@@ -1730,7 +1740,7 @@ class ControlIO:
             expected = [(area/'ledger.jsonl', ROOT_UID, account.pw_gid, 0o600, 4 << 20),
                         (area/'replica.yml', ROOT_UID, account.pw_gid, 0o640, 1 << 20),
                         (area/'acceptance-request.json', ROOT_UID, account.pw_gid, 0o640, 1 << 20)]
-            if oracle_fault is not None: expected.append((oracle_fault, os.geteuid(), account.pw_gid, 0o600, 4 << 20))
+            if oracle_fault is not None: expected.append((oracle_fault, account.pw_uid, account.pw_gid, 0o600, 4 << 20))
             held = _open_held_inputs(expected, {0, os.geteuid(), account.pw_uid})
             self.command(argv, timeout=270)
             self._recheck_installed_manifest(
@@ -1893,7 +1903,7 @@ def switchover(config, reconcile=None, verification_only=False):
             deadline=time.monotonic()+90
             while True:
                 value=remote('B','probe-new')
-                if all(value['status']['positions'][db] > pos for db,pos in state['baseline']['positions'].items()): break
+                if all(value['status']['positions'][db] > pos for db,pos in state['baseline']['request']['positions'].items()): break
                 if time.monotonic()>deadline: raise RuntimeError('new writes not confirmed published')
                 time.sleep(1)
             evidence=oracle('new-writes',value['replica_config'],value['status']['positions'],fresh)
@@ -1921,7 +1931,7 @@ def switchover(config, reconcile=None, verification_only=False):
                 node.validate_support(Path('/var/lib/hat-oracle/support'),current['config']['support'])
                 for binary,expected in current['config']['binaries'].items():
                     if hashlib.sha256((Path('/opt/hat-oracle/bin')/binary).read_bytes()).hexdigest()!=expected:raise RuntimeError('oracle release changed')
-                baseline_recheck=oracle('verification-baseline',current['replica_config'],previous['baseline']['positions'],ledger)
+                baseline_recheck=oracle('verification-baseline',current['replica_config'],previous['baseline']['request']['positions'],ledger)
                 if (baseline_recheck['request']['phase'] != 'verification-baseline'
                         or baseline_recheck['request']['profile'] != 'baseline'
                         or baseline_recheck['request']['epoch'] != operation['new_epoch']

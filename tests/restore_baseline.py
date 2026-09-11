@@ -102,7 +102,9 @@ def _verify_restore_position(raw, expected):
     for token in ('txid', 'to_txid', 'position'):
         import re
         values.extend(re.findall(rf'\b{token}\b["=:\s]+([0-9a-fA-F]+)', text))
-    if any(int(value, 16) != expected for value in values):
+    if not values or any(int(value, 16) != expected for value in values):
+        # A successful restore must independently report the requested cut; an
+        # empty or unrelated tool output is not proof of the selected position.
         raise ValueError('restore position differs')
 
 
