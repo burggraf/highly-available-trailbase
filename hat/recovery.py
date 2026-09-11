@@ -219,9 +219,9 @@ def _authority(value, operation, profile):
     if origin not in allowed or not valid_origin:
         raise ValueError('restore input authority origin differs')
     ledger=value['ledger']
-    if (not isinstance(ledger,dict) or set(ledger) != {'path','device','inode','mode','uid','gid','links','bytes','sha256'}
+    if (not isinstance(ledger,dict) or set(ledger) != {'path','device','inode','mode','uid','links','bytes','sha256'}
             or not isinstance(ledger['path'],str) or not Path(ledger['path']).is_absolute() or os.path.normpath(ledger['path']) != ledger['path']
-            or any(type(ledger[k]) is not int or ledger[k] < 0 for k in ('device','uid','gid'))
+            or any(type(ledger[k]) is not int or ledger[k] < 0 for k in ('device','uid'))
             or type(ledger['inode']) is not int or ledger['inode'] <= 0
             or type(ledger['mode']) is not int or ledger['mode'] != 0o600
             or type(ledger['links']) is not int or ledger['links'] != 1

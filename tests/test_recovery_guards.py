@@ -9,6 +9,8 @@ import tempfile
 import unittest
 from unittest import mock
 
+from tests.acceptance_fixtures import acceptance_result
+
 ENTRY = Path(os.environ.get('HAT_CONTROL_ENTRY', str(Path(__file__).resolve().parents[1]/'hat/control.py')))
 D2 = ('preflight','close_ingress','quiesce','fence','freeze','compare','activate','baseline','route','verify')
 D3 = ('preflight','close_ingress','fence','select_cut','restore','compare','activate','baseline','route','verify','rejoin_boot','rejoin','verify_redundancy')
@@ -48,6 +50,28 @@ class RecoveryGuardTests(unittest.TestCase):
         }
         for phase in D3[:count]: journal.step(phase, lambda phase=phase: evidence[phase])
         return journal, operation, ingress
+
+    def test_d3_proof_validates_canonical_slot_bound_results(self):
+        operation = {'id': 'a' * 32, 'source': 'B', 'target': 'A',
+                     'source_epoch': 'd1-source', 'new_epoch': 'd1-' + 'a' * 32}
+        selected = {'main': 10, 'session': 20, 'aux': 30}
+        baseline = {db: 1 for db in selected}
+        fresh = {db: 2 for db in selected}
+        signature = {db: hashlib.sha256(('cut-' + db).encode()).hexdigest() for db in selected}
+        evidence = {
+            'select_cut': {'positions': selected},
+            'restore': {'cut': selected, 'signature': signature},
+            'compare': acceptance_result(operation, 'compare', selected, signature),
+            'baseline': acceptance_result(operation, 'baseline', baseline),
+            'route': {'writer': 'A', 'epoch': operation['new_epoch'], 'config_sha': 'f' * 64},
+            'verify': {'writer': 'A', 'epoch': operation['new_epoch'], 'positions': fresh,
+                       'new_writes': acceptance_result(operation, 'new-writes', fresh)},
+        }
+        self.assertIsNone(self.m._validate_d3_proof(operation, evidence))
+        changed = json.loads(json.dumps(evidence))
+        changed['baseline']['request']['epoch'] = operation['source_epoch']
+        with self.assertRaises(RuntimeError):
+            self.m._validate_d3_proof(operation, changed)
 
     def _maintenance(self, root, operation):
         path = root/'maintenance'; path.write_text(json.dumps({'operation':operation['id']})); path.chmod(0o600)

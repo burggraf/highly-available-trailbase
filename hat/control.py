@@ -434,55 +434,50 @@ def process_identity(pid):
 
 
 def _validate_d3_proof(operation, evidence, verified=True):
-    """Validate the D3 producer contract using existing oracle report shapes.
-
-    select_cut.positions is the old-epoch cut. restore retains the node's cut/signature
-    result; it does NOT assert an HTTP/auth check. compare, baseline, and verify.new_writes
-    carry independent oracle auth/record proof. Baseline binds the reserved new epoch;
-    its TXIDs are never compared numerically with the old-epoch cut.
-    """
+    """Validate canonical D3 oracle results and the distinct node restore proof."""
+    import recovery
     from transition import validate_cut
     try:
         if not isinstance(evidence,dict) or operation['source']!='B' or operation['target']!='A':
             raise ValueError('invalid D3 operation proof')
         selected=evidence['select_cut']['positions'];validate_cut(selected)
+        restored=evidence['restore'];validate_cut(restored['cut'])
+        if not isinstance(restored['signature'],dict) or set(restored['signature']) != set(selected):
+            raise ValueError('invalid D3 node restore proof')
 
-        def report(value, auth_required=True, position_key='positions'):
-            if position_key == 'cut':
-                if not isinstance(value,dict): raise ValueError('invalid D3 restore report')
-                positions=value['cut']; signature=value['signature']; validate_cut(positions)
-                return value
+        def report(value, phase, profile, epoch, positions=None):
             if not isinstance(value,dict) or set(value) != {'schema','request','request_sha256','databases','signature','checks'}:
                 raise ValueError('invalid D3 restore report')
-            positions=value['request']['positions']; signature=value['signature']; validate_cut(positions)
-            if (not isinstance(signature,dict) or set(signature)!=set(positions)
-                    or (auth_required and value['checks'] != {'records':'PASS','authentication':'PASS'})):
-                raise ValueError('invalid D3 restore report')
-            return {'positions': positions, 'signature': signature, 'request': value['request'], 'checks': value['checks']}
+            recovery.validate_acceptance_result(value, value['request'], operation)
+            request=value['request']
+            if ((request['phase'],request['profile'],request['epoch']) != (phase,profile,epoch)
+                    or positions is not None and request['positions'] != positions):
+                raise ValueError('D3 restore report binding differs')
+            return value
 
-        restored=report(evidence['restore'],auth_required=False,position_key='cut');compared=report(evidence['compare']);baseline=report(evidence['baseline'])
-        if (restored['cut']!=selected or compared['positions']!=selected
-                or restored['signature']!=compared['signature']
-                or baseline.get('epoch')!=operation['new_epoch']):
-            raise ValueError('D3 selected cut, restore, comparison, or baseline differs')
+        compared=report(evidence['compare'],'compare','recovery-comparison',operation['source_epoch'],selected)
+        baseline=report(evidence['baseline'],'baseline','baseline',operation['new_epoch'])
+        if restored['cut']!=selected or restored['signature']!=compared['signature']:
+            raise ValueError('D3 selected cut, restore, or comparison differs')
         if not verified: return
-        route=evidence['route'];verification=evidence['verify'];new_writes=verification['new_writes']
+        route=evidence['route'];verification=evidence['verify']
         if (not isinstance(route,dict) or route.get('writer')!='A' or route.get('epoch')!=operation['new_epoch']
                 or not re.fullmatch('[0-9a-f]{64}',route.get('config_sha',''))
                 or not isinstance(verification,dict) or verification.get('writer')!='A'
-                or verification.get('epoch')!=operation['new_epoch'] or not isinstance(new_writes,dict)):
+                or verification.get('epoch')!=operation['new_epoch']):
             raise ValueError('D3 route or fresh-epoch verification differs')
-        new_writes=report(new_writes);positions=new_writes['positions']
-        if (verification.get('positions')!=positions
-                or any(positions[db]<=position for db,position in baseline['positions'].items())):
+        positions=verification['positions'];validate_cut(positions)
+        new_writes=report(verification['new_writes'],'new-writes','fresh-writes',operation['new_epoch'],positions)
+        baseline_positions=baseline['request']['positions']
+        if any(positions[db]<=baseline_positions[db] for db in positions):
             raise ValueError('D3 new-write restore proof is not beyond baseline')
     except (KeyError,TypeError,AttributeError,ValueError) as exc:
         raise RuntimeError('D3 recovery proof differs or is malformed') from exc
 
 
 def _d3_serving_state(db, ident, digest, failure, failure_snapshot=None, failure_bytes=None):
-    row=db.execute('SELECT source,target,new_epoch,complete,restore_contract FROM operations WHERE id=?',(ident,)).fetchone()
-    if not row or row[:2]!=('B','A') or row[3] or row[4]!=RESTORE_CONTRACT: return False
+    row=db.execute('SELECT source,target,source_epoch,new_epoch,complete,restore_contract FROM operations WHERE id=?',(ident,)).fetchone()
+    if not row or row[:2]!=('B','A') or row[4] or row[5]!=RESTORE_CONTRACT: return False
     steps=db.execute('SELECT position,phase,status,evidence FROM steps WHERE operation=? ORDER BY rowid',(ident,)).fetchall()
     base=[(i,p,s) for i,p in enumerate(D3_PHASES[:10]) for s in ('intent','done')]
     tail=[(i,p,s) for i,p in enumerate(D3_PHASES[10:],10) for s in ('intent','done')]
@@ -491,7 +486,8 @@ def _d3_serving_state(db, ident, digest, failure, failure_snapshot=None, failure
     if any(e!='{}' for _,_,status,e in steps if status=='intent'): return False
     try:
         evidence={phase:json.loads(value) for _,phase,status,value in steps if status=='done'}
-        _validate_d3_proof({'id':ident,'source':row[0],'target':row[1],'new_epoch':row[2]},evidence)
+        _validate_d3_proof({'id':ident,'source':row[0],'target':row[1],
+                            'source_epoch':row[2],'new_epoch':row[3]},evidence)
     except (TypeError,ValueError,RuntimeError): return False
     route=evidence['route']
     if set(route)!={'writer','epoch','config_sha'} or route['config_sha']!=digest: return False
@@ -598,7 +594,9 @@ def _ingress_allowed_body(root, maintenance, permit, ingress, boot, tracked=None
                         or tracked[failure_key] is not None):
                     return False
                 evidence={phase:json.loads(value) for _,phase,status,value in steps if status=='done'}
-                _validate_d3_proof({'id':ident,'source':source,'target':target,'new_epoch':epoch},evidence,False)
+                source_epoch=db.execute('SELECT source_epoch FROM operations WHERE id=?',(ident,)).fetchone()[0]
+                _validate_d3_proof({'id':ident,'source':source,'target':target,
+                                    'source_epoch':source_epoch,'new_epoch':epoch},evidence,False)
                 if [step[:3] for step in steps]==verify_pending:
                     route=evidence.get('route',{})
                     if (set(route)!={'writer','epoch','config_sha'} or route.get('writer')!='A'
@@ -1169,7 +1167,7 @@ class ControlIO:
                     ledger, trusted_root='/', trusted_uids={0, os.geteuid()}, expected_uid=os.geteuid(),
                     expected_mode=0o600, expected_nlink=1, limit=4 << 20) as selected:
                 identity = selected.identity
-                authority = {'schema': recovery._AUTHORITY_SCHEMA, 'operation': self.operation['id'], 'origin': ('current-verify-exclusive' if profile == 'fresh-writes' else ('d3-recovery-input' if self.operation['source'] == 'B' else 'd2-preflight')), 'ledger': {'path': str(ledger), 'device': identity[0], 'inode': identity[1], 'mode': stat.S_IMODE(identity[2]), 'uid': identity[3], 'gid': identity[4], 'links': identity[5], 'bytes': identity[6], 'sha256': selected.sha256}, 'support': support, 'binaries': binaries}
+                authority = {'schema': recovery._AUTHORITY_SCHEMA, 'operation': self.operation['id'], 'origin': ('current-verify-exclusive' if profile == 'fresh-writes' else ('d3-recovery-input' if self.operation['source'] == 'B' else 'd2-preflight')), 'ledger': {'path': str(ledger), 'device': identity[0], 'inode': identity[1], 'mode': stat.S_IMODE(identity[2]), 'uid': identity[3], 'links': identity[5], 'bytes': identity[6], 'sha256': selected.sha256}, 'support': support, 'binaries': binaries}
             inputs = {'replica_config_sha256': hashlib.sha256(replica_config.encode() if isinstance(replica_config,str) else bytes(replica_config)).hexdigest(), 'ledger_sha256': authority['ledger']['sha256'], 'ledger_authority': authority, 'restore_points': {db: {'source':'/var/lib/hat-demo/depot/data/'+db+'.db','position': positions[db]} for db in positions}, 'support': support, 'binaries': binaries}
             if profile == 'recovery-comparison':
                 from client import read_closed_ledger
@@ -1185,7 +1183,7 @@ class ControlIO:
             request = {'schema': recovery._ACCEPTANCE_SCHEMA, 'operation': self.operation['id'], 'phase': phase, 'source': self.operation['source'], 'target': self.operation['target'], 'epoch': epoch, 'positions': positions, 'profile': profile, 'inputs': inputs}
             validated = recovery.validate_acceptance_request(request, self.operation)
             result = validated, recovery.canonical_json(request)
-            return (*result, installed_holds) if hold_installed else result
+            return (*result, installed_holds, identity) if hold_installed else result
         except BaseException:
             if hold_installed:
                 for item in reversed(installed_holds):
@@ -1197,7 +1195,7 @@ class ControlIO:
         import recovery
         import node
         self.journal.check_authority()
-        request, request_bytes, installed_holds = self._acceptance_request(
+        request, request_bytes, installed_holds, ledger_identity = self._acceptance_request(
             phase, replica_config, positions, selected_ledger, fault_ledger, hold_installed=True)
         held = []
         try:
@@ -1214,12 +1212,13 @@ class ControlIO:
             ledger_path = Path(authority['ledger']['path'])
             if ledger_path.absolute() != Path(selected_ledger).absolute():
                 raise ValueError('selected ledger differs from authority')
-            identity = tuple(authority['ledger'][key] for key in ('device','inode','mode','uid','gid','links','bytes'))
+            identity = (ledger_identity[0], ledger_identity[1], stat.S_IMODE(ledger_identity[2]),
+                        *ledger_identity[3:])
             if not ledger_path.is_absolute():
                 raise ValueError('authorized ledger is unavailable')
             with descriptor.DescriptorAuthority.open_file(
                     ledger_path, trusted_root='/', trusted_uids={0, os.geteuid()},
-                    expected_uid=authority['ledger']['uid'], expected_gid=authority['ledger']['gid'],
+                    expected_uid=authority['ledger']['uid'], expected_gid=identity[4],
                     expected_mode=authority['ledger']['mode'], expected_nlink=authority['ledger']['links'],
                     expected_size=authority['ledger']['bytes'], expected_sha256=authority['ledger']['sha256'],
                     limit=4 << 20) as authorized_ledger:
@@ -1261,7 +1260,7 @@ class ControlIO:
                     '--ledger', str(area/'ledger.jsonl'), '--support', '/var/lib/hat-oracle/support',
                     '--binaries', '/opt/hat-oracle/bin', '--result', str(result)]
             if oracle_fault is not None: argv += ['--fault-ledger', str(oracle_fault)]
-            expected = [(ledger_path, 0, account.pw_gid, 0o600, 4 << 20),
+            expected = [(ledger_path, authority['ledger']['uid'], identity[4], 0o600, 4 << 20),
                         (area/'replica.yml', 0, account.pw_gid, 0o640, 1 << 20),
                         (area/'acceptance-request.json', 0, account.pw_gid, 0o640, 1 << 20)]
             if oracle_fault is not None: expected.append((oracle_fault, os.geteuid(), account.pw_gid, 0o600, 4 << 20))
