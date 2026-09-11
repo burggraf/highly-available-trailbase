@@ -1020,44 +1020,91 @@ class ControlIO:
             self._durable_json(self.work / ('restore-plan-' + db + '.json'), plan)
         return {'positions': positions, 'plans': plans}
 
-    def _installed_manifest(self, root, names, uid, gid, modes):
-        """Hash an exact fixed tree only through stable descriptors."""
-        root = Path(root)
+    def _installed_manifest(self, root, names, uid, gid, modes, hold=False):
+        """Hash an exact fixed tree and optionally return its live authorities."""
+        root = Path(root).absolute()
+        trusted = {0, os.geteuid()}
         expected_files = set(names)
         expected_dirs = {str(Path(name).parent) for name in names} - {'.'}
         expected_dirs |= {str(parent) for name in names for parent in Path(name).parents
                           if str(parent) not in ('.', '')}
-        with descriptor.DescriptorAuthority.open_directory(
-                root, trusted_root='/', trusted_uids={0, os.geteuid()}) as directory:
+        held = []
+        try:
+            directory = descriptor.DescriptorAuthority.open_directory(
+                root, trusted_root='/', trusted_uids=trusted)
+            held.append(directory)
             found_files = set(); found_dirs = set(); stack = [('', directory)]
-            opened = []
-            try:
-                while stack:
-                    prefix, current = stack.pop()
-                    for entry in os.listdir(current.directory_fd):
-                        rel = str(Path(prefix) / entry) if prefix else entry
-                        try:
-                            child = descriptor.DescriptorAuthority.open_directory(
-                                root / rel, trusted_root='/', trusted_uids={0, os.geteuid()})
-                        except (NotADirectoryError, ValueError, OSError):
-                            if rel not in expected_files: raise ValueError('installed tree has unexpected entry')
-                            found_files.add(rel); continue
-                        opened.append(child); found_dirs.add(rel); stack.append((rel, child))
-                if found_files != expected_files or found_dirs != expected_dirs:
-                    raise ValueError('installed tree is not exact')
-            finally:
-                for child in reversed(opened): child.close()
-        result = {}
-        for name in names:
-            mode = modes[name] if isinstance(modes, dict) else modes
-            with descriptor.DescriptorAuthority.open_file(
-                    root/name, trusted_root='/', trusted_uids={0, os.geteuid()}, expected_uid=uid,
+            while stack:
+                prefix, current = stack.pop()
+                for entry in os.listdir(current.directory_fd):
+                    rel = str(Path(prefix) / entry) if prefix else entry
+                    try:
+                        child = descriptor.DescriptorAuthority.open_directory(
+                            root / rel, trusted_root='/', trusted_uids=trusted)
+                    except (NotADirectoryError, ValueError, OSError):
+                        if rel not in expected_files:
+                            raise ValueError('installed tree has unexpected entry')
+                        found_files.add(rel)
+                        continue
+                    held.append(child)
+                    found_dirs.add(rel)
+                    stack.append((rel, child))
+            if found_files != expected_files or found_dirs != expected_dirs:
+                raise ValueError('installed tree is not exact')
+            result = {}
+            for name in names:
+                mode = modes[name] if isinstance(modes, dict) else modes
+                item = descriptor.DescriptorAuthority.open_file(
+                    root/name, trusted_root='/', trusted_uids=trusted, expected_uid=uid,
                     expected_gid=gid, expected_mode=mode, expected_nlink=1,
-                    limit=128 << 20) as item:
+                    limit=128 << 20)
+                held.append(item)
                 result[name] = item.sha256
-        return result
+            if hold:
+                return result, held
+            return result
+        except BaseException:
+            for item in reversed(held):
+                item.close()
+            raise
+        finally:
+            if not hold:
+                for item in reversed(held):
+                    item.close()
 
-    def _acceptance_request(self, phase, replica_config, positions, ledger, fault_ledger):
+    def _recheck_installed_manifest(self, root, names, held):
+        """Recheck held fixed inputs, including the exact child namespace."""
+        root = Path(root).absolute()
+        expected_files = set(names)
+        expected_dirs = {str(Path(name).parent) for name in names} - {'.'}
+        expected_dirs |= {str(parent) for name in names for parent in Path(name).parents
+                          if str(parent) not in ('.', '')}
+        directories = {}
+        for authority in held:
+            authority.recheck()
+            try:
+                relative = str(authority.path.relative_to(root))
+            except ValueError:
+                continue
+            if authority._file_fd is None:
+                relative = '' if relative == '.' else relative
+                directories[relative] = authority
+        if set(directories) != expected_dirs | {''}:
+            raise ValueError('installed tree authorities are incomplete')
+        expected_children = {relative: set() for relative in directories}
+        for relative in expected_files:
+            parent, name = str(Path(relative).parent), Path(relative).name
+            expected_children[parent].add(name)
+        for relative in expected_dirs:
+            if relative != '.':
+                parent, name = str(Path(relative).parent), Path(relative).name
+                expected_children[parent].add(name)
+        for relative, authority in directories.items():
+            if set(os.listdir(authority.directory_fd)) != expected_children[relative]:
+                raise ValueError('installed tree namespace changed')
+
+    def _acceptance_request(self, phase, replica_config, positions, ledger, fault_ledger,
+                            hold_installed=False):
         """Derive the canonical request from journal-authorized state, never callers."""
         import recovery
         has_fault = fault_ledger is not None
@@ -1080,11 +1127,28 @@ class ControlIO:
         if not manifests or any(item != manifests[0] for item in manifests[1:]):
             raise ValueError('authorized writer release identity is unavailable')
         support, binaries = manifests[0]
-        if self._installed_manifest(Path('/var/lib/hat-oracle/support'), support_names, 0,
-                                    account.pw_gid, {name: 0o640 for name in support_names}) != support:
+        installed_holds = []
+        support_result = self._installed_manifest(
+            Path('/var/lib/hat-oracle/support'), support_names, 0, account.pw_gid,
+            {name: 0o640 for name in support_names}, hold=hold_installed)
+        if hold_installed:
+            support_manifest, support_holds = support_result
+            installed_holds.extend(support_holds)
+        else:
+            support_manifest = support_result
+        if support_manifest != support:
+            for item in reversed(installed_holds): item.close()
             raise ValueError('installed oracle support differs')
-        if self._installed_manifest(Path('/opt/hat-oracle/bin'), ('trail','litestream'),
-                                    0, 0, 0o755) != binaries:
+        binary_result = self._installed_manifest(
+            Path('/opt/hat-oracle/bin'), ('trail','litestream'), 0, 0, 0o755,
+            hold=hold_installed)
+        if hold_installed:
+            binary_manifest, binary_holds = binary_result
+            installed_holds.extend(binary_holds)
+        else:
+            binary_manifest = binary_result
+        if binary_manifest != binaries:
+            for item in reversed(installed_holds): item.close()
             raise ValueError('installed oracle binaries differ')
         with descriptor.DescriptorAuthority.open_file(
                 ledger, trusted_root='/', trusted_uids={0, os.geteuid()}, expected_uid=os.geteuid(),
@@ -1104,14 +1168,17 @@ class ControlIO:
                               fault_operation_count=len(operations),
                               fault_operations_sha256=hashlib.sha256(recovery.canonical_json(operations)).hexdigest())
         request = {'schema': recovery._ACCEPTANCE_SCHEMA, 'operation': self.operation['id'], 'phase': phase, 'source': self.operation['source'], 'target': self.operation['target'], 'epoch': epoch, 'positions': positions, 'profile': profile, 'inputs': inputs}
-        return recovery.validate_acceptance_request(request, self.operation), recovery.canonical_json(request)
+        validated = recovery.validate_acceptance_request(request, self.operation)
+        result = validated, recovery.canonical_json(request)
+        return (*result, installed_holds) if hold_installed else result
 
     def oracle(self, phase, replica_config, positions, selected_ledger, fault_ledger=None):
         """Run the independent oracle from a request derived after journal intent."""
         import recovery
         import node
         self.journal.check_authority()
-        request, request_bytes = self._acceptance_request(phase, replica_config, positions, selected_ledger, fault_ledger)
+        request, request_bytes, installed_holds = self._acceptance_request(
+            phase, replica_config, positions, selected_ledger, fault_ledger, hold_installed=True)
         if request['phase'] != phase or request['positions'] != positions:
             raise ValueError('restore request does not match locked phase')
         if (request['profile'] == 'recovery-comparison') != (fault_ledger is not None):
@@ -1120,6 +1187,8 @@ class ControlIO:
         if hashlib.sha256(config_raw).hexdigest() != request['inputs']['replica_config_sha256']:
             raise ValueError('replica configuration changed')
         authority = request['inputs']['ledger_authority']
+        support_names = tuple(request['inputs']['support'])
+        binary_names = tuple(request['inputs']['binaries'])
         ledger_path = Path(authority['ledger']['path'])
         if ledger_path.absolute() != Path(selected_ledger).absolute():
             raise ValueError('selected ledger differs from authority')
@@ -1181,6 +1250,10 @@ class ControlIO:
                 for path, uid, gid, mode, limit in expected]
         try:
             self.command(argv, timeout=270)
+            self._recheck_installed_manifest(
+                Path('/var/lib/hat-oracle/support'), support_names, installed_holds)
+            self._recheck_installed_manifest(
+                Path('/opt/hat-oracle/bin'), binary_names, installed_holds)
             for item in held: item.recheck()
             with descriptor.DescriptorAuthority.open_file(
                     result, trusted_root='/', trusted_uids={0, account.pw_uid},
@@ -1192,9 +1265,14 @@ class ControlIO:
                 _copy_bound_input(result, retained, 0o600, account.pw_uid, os.getegid(), result_authority.sha256)
                 result_authority.recheck()
             for item in held: item.recheck()
+            self._recheck_installed_manifest(
+                Path('/var/lib/hat-oracle/support'), support_names, installed_holds)
+            self._recheck_installed_manifest(
+                Path('/opt/hat-oracle/bin'), binary_names, installed_holds)
             return value
         finally:
             for item in reversed(held): item.close()
+            for item in reversed(installed_holds): item.close()
 
     def verify_url(self, ledger):
         from demo_smoke import verify_restore

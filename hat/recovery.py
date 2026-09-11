@@ -33,6 +33,7 @@ import stat
 import time
 
 import client
+import descriptor
 import node
 
 
@@ -679,11 +680,26 @@ def _oracle_identity(source, support, binaries):
 
     trusted_files(support, source['support'])
     trusted_files(binaries, source['binaries'])
-    node.validate_support(support, source['support'])
-    for name, digest in source['binaries'].items():
-        path = binaries / name
-        if hashlib.sha256(path.read_bytes()).hexdigest() != digest:
-            raise RuntimeError('oracle binary identity differs from captured writer')
+    authorities = []
+    try:
+        trusted = {0, os.geteuid()}
+        for root, names, error in ((support, source['support'], 'oracle support identity differs'),
+                                   (binaries, source['binaries'], 'oracle binary identity differs from captured writer')):
+            authorities.append(descriptor.DescriptorAuthority.open_directory(
+                root, trusted_root='/', trusted_uids=trusted))
+            for name, digest in names.items():
+                authority = descriptor.DescriptorAuthority.open_file(
+                    root / name, trusted_root='/', trusted_uids=trusted,
+                    expected_uid=os.geteuid(), expected_nlink=1,
+                    expected_sha256=digest, limit=128 << 20)
+                authorities.append(authority)
+                if authority.sha256 != digest:
+                    raise RuntimeError(error)
+        for authority in authorities:
+            authority.recheck()
+    finally:
+        for authority in reversed(authorities):
+            authority.close()
 
 
 def _cold(value, operation, epoch, boot, role, source, replica):
