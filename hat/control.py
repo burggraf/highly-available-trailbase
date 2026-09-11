@@ -529,13 +529,14 @@ def _ingress_allowed_body(root, maintenance, permit, ingress, boot):
     """Boot/restart gate for exact completed, live D2 route, or verified D3 route."""
     try:
         marker_present=maintenance.exists() or maintenance.is_symlink()
+        permit_present=permit.exists() or permit.is_symlink()
         if marker_present: private_file(maintenance)
         path=root/'journal.db'
         if not path.exists():
             root_before=root.lstat(); ingress_before=_stable_private_bytes(ingress,strict=False)[1]
             root_after=root.lstat(); ingress_after=_stable_private_bytes(ingress,strict=False)[1]
             stable=(root_before.st_dev,root_before.st_ino,root_before.st_mtime_ns)==(root_after.st_dev,root_after.st_ino,root_after.st_mtime_ns)
-            return stable and ingress_before==ingress_after and not marker_present
+            return stable and ingress_before==ingress_after and not marker_present and not permit_present
         journal_raw,journal_identity=_stable_private_bytes(path)
         ingress_raw,ingress_identity=_stable_private_bytes(ingress,strict=False)
         ingress_digest=hashlib.sha256(ingress_raw).hexdigest()
@@ -549,14 +550,16 @@ def _ingress_allowed_body(root, maintenance, permit, ingress, boot):
             else:
                 operation=db.execute('SELECT id,source,target,complete,new_epoch,restore_contract FROM operations ORDER BY rowid DESC LIMIT 1').fetchone()
             if not operation:
-                return journal_identity==_stable_private_bytes(path)[1] and ingress_identity==_stable_private_bytes(ingress,strict=False)[1] and not marker_present
+                return (journal_identity==_stable_private_bytes(path)[1]
+                        and ingress_identity==_stable_private_bytes(ingress,strict=False)[1]
+                        and not marker_present and not permit_present)
             ident,source,target,complete,epoch,contract=operation
             digest=ingress_digest
             if complete:
                 row=db.execute("SELECT evidence FROM steps WHERE operation=? AND phase='route' AND status='done'",(ident,)).fetchone()
                 stable=(journal_identity==_stable_private_bytes(path)[1]
                         and ingress_identity==_stable_private_bytes(ingress,strict=False)[1])
-                return (stable and not marker_present and row is not None
+                return (stable and not marker_present and not permit_present and row is not None
                         and _exact_route(json.loads(row[0]),target,epoch,digest))
             if contract!=RESTORE_CONTRACT: return False
             if (source,target)==('B','A'):
@@ -564,7 +567,9 @@ def _ingress_allowed_body(root, maintenance, permit, ingress, boot):
                 if json.loads(maintenance.read_text())!={'operation':ident}: return False
                 failure=root/ident/'failure.json'
                 if _d3_serving_state(db,ident,digest,failure):
-                    return journal_identity==_stable_private_bytes(path)[1] and ingress_identity==_stable_private_bytes(ingress,strict=False)[1]
+                    return (journal_identity==_stable_private_bytes(path)[1]
+                            and ingress_identity==_stable_private_bytes(ingress,strict=False)[1]
+                            and not permit_present)
                 steps=db.execute('SELECT position,phase,status,evidence FROM steps WHERE operation=? ORDER BY rowid',(ident,)).fetchall()
                 route_pending=[(i,p,s) for i,p in enumerate(D3_PHASES[:8]) for s in ('intent','done')]+[(8,'route','intent')]
                 verify_pending=[(i,p,s) for i,p in enumerate(D3_PHASES[:9]) for s in ('intent','done')]+[(9,'verify','intent')]
