@@ -975,53 +975,62 @@ class ControlIO:
         return {'positions': positions, 'plans': plans}
 
     def oracle(self, phase, replica_config, positions, selected_ledger,
-               fault_ledger=None, source_epoch=None):
-        from transition import validate_cut
+               fault_ledger=None, source_epoch=None, acceptance_request=None):
+        """Run the independent oracle only from one canonical, durable request.
+
+        The optional argument preserves the Task-4 caller boundary; new callers must
+        provide the already journal-authorized request. No positions sidecar exists.
+        """
+        import recovery
         import node
-        validate_cut(positions)
-        if (fault_ledger is None) != (source_epoch is None):
-            raise ValueError('fault ledger and source epoch must be supplied together')
+        if acceptance_request is None:
+            raise ValueError('canonical acceptance request is required')
+        request_bytes = acceptance_request if isinstance(acceptance_request, bytes) else recovery.canonical_json(acceptance_request)
+        request = recovery.parse_acceptance_request(request_bytes, self.operation)
+        if request['phase'] != phase or request['positions'] != positions:
+            raise ValueError('restore request does not match locked phase')
         account = pwd.getpwnam('hat-oracle')
         prefix = 'd2' if (self.operation['source'], self.operation['target']) == ('A', 'B') else 'd3'
         area = Path('/var/lib/hat-oracle') / (prefix + '-' + self.operation['id'] + '-' + phase)
-        oracle_directory(area)
-        os.chown(area, 0, account.pw_gid)
-        output = area / 'work'
-        output.mkdir(mode=0o700)
-        os.chown(output, account.pw_uid, account.pw_gid)
-        files = [('replica.yml', replica_config), ('positions.json', json.dumps(positions)),
-                 ('ledger.jsonl', selected_ledger.read_text())]
-        for name, content in files:
-            path = area / name
-            with path.open('x') as stream:
-                os.fchmod(stream.fileno(), 0o640)
-                os.fchown(stream.fileno(), 0, account.pw_gid)
-                stream.write(content)
-                stream.flush()
-                os.fsync(stream.fileno())
+        oracle_directory(area); os.chown(area, 0, account.pw_gid)
+        output = area / 'work'; output.mkdir(mode=0o700); os.chown(output, account.pw_uid, account.pw_gid)
+
+        def copy_raw(destination, raw, mode=0o640, owner=(0, account.pw_gid)):
+            fd = os.open(destination, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, mode)
+            try:
+                view = memoryview(raw)
+                while view:
+                    n = os.write(fd, view); view = view[n:]
+                os.fsync(fd); os.fchmod(fd, mode); os.fchown(fd, *owner)
+            finally: os.close(fd)
+        copy_raw(area / 'replica.yml', replica_config.encode() if isinstance(replica_config, str) else bytes(replica_config))
+        copy_raw(area / 'ledger.jsonl', selected_ledger.read_bytes())
+        request_path = self.work / 'acceptance-request.json'
+        copy_raw(request_path, request_bytes, 0o600, (os.geteuid(), os.getegid()))
+        copy_raw(area / 'acceptance-request.json', request_bytes)
         oracle_fault = None
         if fault_ledger is not None:
             oracle_fault = output / 'fault-ledger.jsonl'
-            with oracle_fault.open('x') as stream:
-                os.fchmod(stream.fileno(), 0o600)
-                os.fchown(stream.fileno(), account.pw_uid, account.pw_gid)
-                stream.write(Path(fault_ledger).read_text())
-                stream.flush(); os.fsync(stream.fileno())
-        result = output / 'report.json'
+            copy_raw(oracle_fault, fault_ledger.read_bytes(), 0o600, (account.pw_uid, account.pw_gid))
+        for directory in (area, output, self.work):
+            fd=os.open(directory, os.O_RDONLY|os.O_DIRECTORY)
+            try: os.fsync(fd)
+            finally: os.close(fd)
+        result = output / 'result.json'
         unit = 'hat-' + prefix + '-' + self.operation['id'] + '-' + phase
-        argv = ['systemd-run', '--unit=' + unit, '--wait', '--collect', '--pipe',
+        argv = ['systemd-run', '--unit='+unit, '--wait', '--collect', '--pipe',
                 '--property=User=hat-oracle', '--property=EnvironmentFile=/etc/hat-oracle/backup.env',
                 '--property=NoNewPrivileges=yes', '--property=RuntimeMaxSec=240', '--property=KillMode=control-group',
                 'python3', '/opt/hat-oracle/restore_baseline.py', '--root', str(output),
-                '--config', str(area / 'replica.yml'), '--positions', str(area / 'positions.json'),
-                '--ledger', str(area / 'ledger.jsonl'), '--support', '/var/lib/hat-oracle/support',
+                '--acceptance-request', str(area/'acceptance-request.json'), '--config', str(area/'replica.yml'),
+                '--ledger', str(area/'ledger.jsonl'), '--support', '/var/lib/hat-oracle/support',
                 '--binaries', '/opt/hat-oracle/bin', '--result', str(result)]
-        if fault_ledger is not None:
-            argv += ['--fault-ledger', str(oracle_fault), '--source-epoch', source_epoch]
+        if oracle_fault is not None: argv += ['--fault-ledger', str(oracle_fault)]
         self.command(argv, timeout=270)
-        value = json.loads(result.read_text())
-        if value['positions'] != positions or value['auth_and_records'] != 'PASS' or set(value['signature']) != set(node.DBS):
-            raise RuntimeError('independent oracle refused')
+        result_raw = result.read_bytes()
+        value = recovery.parse_acceptance_result(result_raw, request, self.operation)
+        retained = self.work / (phase + '-acceptance-result.json')
+        copy_raw(retained, result_raw, 0o600, (os.geteuid(), os.getegid()))
         return value
 
     def verify_url(self, ledger):
