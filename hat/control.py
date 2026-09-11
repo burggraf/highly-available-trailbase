@@ -874,17 +874,62 @@ class ControlIO:
         try: os.fsync(directory)
         finally: os.close(directory)
 
+    def _committed_preflight_authority(self, required=True):
+        import recovery
+        try:
+            row = self.journal.db.execute(
+                "SELECT evidence FROM steps WHERE operation=? AND phase='preflight' AND status='done'",
+                (self.operation['id'],)).fetchone()
+        except AttributeError as exc:
+            if not required: return None
+            raise ValueError('committed preflight authority is unavailable') from exc
+        if row is None:
+            if not required: return None
+            raise ValueError('committed preflight authority is unavailable')
+        try:
+            evidence = json.loads(row[0])
+            authority = evidence['ledger_authority']
+            recovery._authority(authority, self.operation,
+                                'recovery-comparison' if self.operation['source'] == 'B' else 'comparison')
+            return authority
+        except (TypeError, KeyError, ValueError, IndexError, json.JSONDecodeError) as exc:
+            raise ValueError('committed preflight authority is unavailable') from exc
+
     def _authorized_manifests(self):
         support_names = ('config.textproto','migrations/main/U100__hat_ops.sql','migrations/aux/U100__hat_ops.sql','secrets/keys/private_key.pem','secrets/keys/public_key.pem')
         manifests = []
         for value in self.state.values():
             config = value.get('config') if isinstance(value, dict) else None
-            if isinstance(config, dict) and set(config.get('support', {})) == set(support_names) \
-                    and set(config.get('binaries', {})) == {'trail', 'litestream'}:
+            if isinstance(config, dict) and ('support' in config or 'binaries' in config):
+                if set(config.get('support', {})) != set(support_names) or set(config.get('binaries', {})) != {'trail', 'litestream'}:
+                    raise ValueError('authorized writer release identity is unavailable')
                 manifests.append((config['support'], config['binaries']))
+        committed = self._committed_preflight_authority(required=False)
+        if committed is not None:
+            manifests.append((committed['support'], committed['binaries']))
         if not manifests or any(item != manifests[0] for item in manifests[1:]):
             raise ValueError('authorized writer release identity is unavailable')
         return support_names, *manifests[0]
+
+    def capture_protected_authority(self, ledger, origin, support=None, binaries=None):
+        import recovery
+        ledger = Path(ledger).absolute()
+        if support is None or binaries is None:
+            _, support, binaries = self._authorized_manifests()
+        with descriptor.DescriptorAuthority.open_file(
+                ledger, trusted_root='/', trusted_uids={0, os.geteuid()},
+                expected_uid=os.geteuid(), expected_mode=0o600, expected_nlink=1,
+                limit=4 << 20) as selected:
+            identity = selected.identity
+            authority = {'schema': recovery._AUTHORITY_SCHEMA, 'operation': self.operation['id'],
+                         'origin': origin,
+                         'ledger': {'path': str(ledger), 'device': identity[0], 'inode': identity[1],
+                                    'mode': stat.S_IMODE(identity[2]), 'uid': identity[3],
+                                    'links': identity[5], 'bytes': identity[6], 'sha256': selected.sha256},
+                         'support': support, 'binaries': binaries}
+            recovery._authority(authority, self.operation,
+                                'recovery-comparison' if origin == 'd3-recovery-input' else 'comparison')
+            return authority
 
     def authorize_fresh_writes(self, ledger):
         """Bind the just-exclusive-created fresh ledger before any oracle request."""
@@ -1247,16 +1292,19 @@ class ControlIO:
                         or authority['support'] != support or authority['binaries'] != binaries):
                     raise ValueError('fresh ledger authority differs')
             else:
+                authority = self._committed_preflight_authority()
+                wire = authority['ledger']
+                if wire['path'] != str(ledger) or authority['support'] != support or authority['binaries'] != binaries:
+                    raise ValueError('protected ledger authority differs from committed preflight')
                 with descriptor.DescriptorAuthority.open_file(
-                        ledger, trusted_root='/', trusted_uids={0, os.geteuid()}, expected_uid=os.geteuid(),
-                        expected_mode=0o600, expected_nlink=1, limit=4 << 20) as selected:
+                        ledger, trusted_root='/', trusted_uids={0, os.geteuid()},
+                        expected_uid=wire['uid'], expected_mode=wire['mode'],
+                        expected_nlink=wire['links'], expected_size=wire['bytes'],
+                        expected_sha256=wire['sha256'], limit=4 << 20) as selected:
                     identity = selected.identity
-                    authority = {'schema': recovery._AUTHORITY_SCHEMA, 'operation': self.operation['id'],
-                                 'origin': ('d3-recovery-input' if self.operation['source'] == 'B' else 'd2-preflight'),
-                                 'ledger': {'path': str(ledger), 'device': identity[0], 'inode': identity[1],
-                                            'mode': stat.S_IMODE(identity[2]), 'uid': identity[3],
-                                            'links': identity[5], 'bytes': identity[6], 'sha256': selected.sha256},
-                                 'support': support, 'binaries': binaries}
+                    if ((identity[0], identity[1], stat.S_IMODE(identity[2]), identity[3], identity[5], identity[6])
+                            != (wire['device'], wire['inode'], wire['mode'], wire['uid'], wire['links'], wire['bytes'])):
+                        raise ValueError('protected ledger authority differs from committed preflight')
             inputs = {'replica_config_sha256': hashlib.sha256(replica_config.encode() if isinstance(replica_config,str) else bytes(replica_config)).hexdigest(), 'ledger_sha256': authority['ledger']['sha256'], 'ledger_authority': authority, 'restore_points': {db: {'source':'/var/lib/hat-demo/depot/data/'+db+'.db','position': positions[db]} for db in positions}, 'support': support, 'binaries': binaries}
             if profile == 'recovery-comparison':
                 from client import read_closed_ledger
@@ -1465,7 +1513,8 @@ def switchover(config, reconcile=None, verification_only=False):
                     elif value.get('event') != 'acknowledged': raise ValueError('invalid historical ledger entry')
                     f.write(json.dumps(value)+'\n')
                 f.flush(); os.fsync(f.fileno())
-            return {'source_boot':state['A']['boot_id'],'candidate_boot':state['B']['boot_id'],'identity':'matched'}
+            return {'source_boot':state['A']['boot_id'],'candidate_boot':state['B']['boot_id'],'identity':'matched',
+                    'ledger_authority':io.capture_protected_authority(ledger, 'd2-preflight')}
         def quiesce():
             value=remote('A','quiesce'); validate_cut(value['cut']); state['cut']=value['cut']; return value
         def power_off():

@@ -13,8 +13,10 @@ ENTRY=Path(os.environ.get('HAT_RECOVERY_ENTRY',str(Path(__file__).resolve().pare
 class RecoveryTests(unittest.TestCase):
     def _authority(self, operation, origin):
         support={name:'b'*64 for name in ('config.textproto','migrations/main/U100__hat_ops.sql','migrations/aux/U100__hat_ops.sql','secrets/keys/private_key.pem','secrets/keys/public_key.pem')}
+        ledger_operation = (('0' if operation['id'] != '0'*32 else '1')*32
+                            if origin == 'd3-recovery-input' else operation['id'])
         return {'schema':'hat-restore-input-authority-1','operation':operation['id'],'origin':origin,
-                'ledger':{'path':'/var/lib/hat-control/'+operation['id']+'/'+('new-writes.jsonl' if origin=='current-verify-exclusive' else 'ledger.jsonl'),'device':1,'inode':2,'mode':384,'uid':0,'links':1,'bytes':10,'sha256':'a'*64},'support':support,'binaries':{'trail':'c'*64,'litestream':'d'*64}}
+                'ledger':{'path':'/var/lib/hat-control/'+ledger_operation+'/'+('new-writes.jsonl' if origin=='current-verify-exclusive' else 'ledger.jsonl'),'device':1,'inode':2,'mode':384,'uid':0,'links':1,'bytes':10,'sha256':'a'*64},'support':support,'binaries':{'trail':'c'*64,'litestream':'d'*64}}
     def _request(self, operation, phase, authority):
         profile,epoch,_,_=self.module().derive_restore_profile(operation,phase,phase=='compare' and operation['source']=='B')
         inputs={'replica_config_sha256':'e'*64,'ledger_sha256':'a'*64,'ledger_authority':authority,'restore_points':{db:{'source':'/var/lib/hat-demo/depot/data/'+db+'.db','position':1} for db in ('main','session','aux')},'support':authority['support'],'binaries':authority['binaries']}
@@ -209,7 +211,7 @@ class RecoveryTests(unittest.TestCase):
                 profile,epoch,_,_=m.derive_restore_profile(operation,phase,fault)
                 support={name:'b'*64 for name in ('config.textproto','migrations/main/U100__hat_ops.sql','migrations/aux/U100__hat_ops.sql','secrets/keys/private_key.pem','secrets/keys/public_key.pem')}
                 authority={'schema':'hat-restore-input-authority-1','operation':ident,'origin':'current-verify-exclusive' if phase=='new-writes' else ('d2-preflight' if source=='A' else 'd3-recovery-input'),
-                           'ledger':{'path':'/var/lib/hat-control/'+operation['id']+'/'+('new-writes.jsonl' if phase=='new-writes' else 'ledger.jsonl'),'device':1,'inode':2,'mode':384,'uid':0,'links':1,'bytes':10,'sha256':'a'*64},
+                           'ledger':{'path':'/var/lib/hat-control/'+(('0'*32) if source=='B' else operation['id'])+'/'+('new-writes.jsonl' if phase=='new-writes' else 'ledger.jsonl'),'device':1,'inode':2,'mode':384,'uid':0,'links':1,'bytes':10,'sha256':'a'*64},
                            'support':support,'binaries':{'trail':'c'*64,'litestream':'d'*64}}
                 inputs={'replica_config_sha256':'e'*64,'ledger_sha256':'a'*64,'ledger_authority':authority,
                         'restore_points':{db:{'source':'/var/lib/hat-demo/depot/data/'+db+'.db','position':1} for db in ('main','session','aux')},

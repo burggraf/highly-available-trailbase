@@ -140,6 +140,9 @@ class FakeIO:
         self.record('smoke-url', str(ledger))
         Path(ledger).write_text('{}\n'); Path(ledger).chmod(0o600)
 
+    def capture_protected_authority(self, ledger, origin, support=None, binaries=None):
+        return acceptance_result(self.operation, 'compare', dict(main=1, session=1, aux=1))['request']['inputs']['ledger_authority']
+
     def authorize_fresh_writes(self, ledger):
         self.record('authorize-fresh-writes', str(ledger))
 

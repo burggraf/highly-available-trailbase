@@ -228,9 +228,14 @@ def _authority(value, operation, profile):
             or type(ledger['bytes']) is not int or not 0 < ledger['bytes'] <= MAX_ARTIFACT
             or not _HEX64.fullmatch(ledger['sha256'])):
         raise ValueError('invalid restore ledger authority')
-    expected_name='new-writes.jsonl' if origin=='current-verify-exclusive' else 'ledger.jsonl'
-    if ledger['path'] != '/var/lib/hat-control/'+operation['id']+'/'+expected_name:
-        raise ValueError('restore ledger authority path differs')
+    if origin == 'd3-recovery-input':
+        match = re.fullmatch(r'/var/lib/hat-control/([0-9a-f]{32})/ledger\.jsonl', ledger['path'])
+        if not match or match.group(1) == operation['id']:
+            raise ValueError('restore ledger authority path differs')
+    else:
+        expected_name='new-writes.jsonl' if origin=='current-verify-exclusive' else 'ledger.jsonl'
+        if ledger['path'] != '/var/lib/hat-control/'+operation['id']+'/'+expected_name:
+            raise ValueError('restore ledger authority path differs')
     if set(value['binaries']) != {'trail','litestream'} or any(not isinstance(v,str) or not _HEX64.fullmatch(v) for v in value['binaries'].values()):
         raise ValueError('invalid restore binary authority')
     required={'config.textproto','migrations/main/U100__hat_ops.sql','migrations/aux/U100__hat_ops.sql','secrets/keys/private_key.pem','secrets/keys/public_key.pem'}
@@ -834,6 +839,9 @@ def recover(config, *, control_module=None, io_factory=None,
             _cold(candidate, operation['id'], input_value['candidate_epoch'], input_value['candidate_boot'],
                   'writer', input_value['source_config'], candidate['replica_config'])
             _oracle_identity(input_value['source_config'], oracle_support, oracle_binaries)
+            ledger_authority = io.capture_protected_authority(
+                input_value['protected_ledger'], 'd3-recovery-input',
+                input_value['source_config']['support'], input_value['source_config']['binaries'])
             control_module.route_to(ingress.read_text(), 'B', 'A', control_module.ROUTE_ENDPOINTS)
             _write_private(work / 'ingress-before.cfg', ingress.read_bytes())
             state['candidate'] = candidate
@@ -841,7 +849,7 @@ def recover(config, *, control_module=None, io_factory=None,
                     'source_boot': input_value['source_boot'], 'candidate_boot': input_value['candidate_boot'],
                     'candidate_epoch': input_value['candidate_epoch'], 'producer': death,
                     'fault_ledger_sha256': seal['sha256'], 'protected_baseline': protected,
-                    'source_health': input_value['source_health']}
+                    'source_health': input_value['source_health'], 'ledger_authority': ledger_authority}
 
         def close_ingress():
             return io.close_ingress()

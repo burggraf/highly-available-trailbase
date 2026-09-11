@@ -23,11 +23,13 @@ def acceptance_result(operation, phase, positions, signature=None, checks=None):
     origin = ('current-verify-exclusive' if phase == 'new-writes' else
               'd3-recovery-input' if operation['source'] == 'B' else 'd2-preflight')
     support = {name: 'b' * 64 for name in SUPPORT}
+    ledger_operation = (('0' if operation['id'] != '0' * 32 else '1') * 32
+                        if origin == 'd3-recovery-input' else operation['id'])
     authority = {
         'schema': 'hat-restore-input-authority-1', 'operation': operation['id'],
         'origin': origin,
         'ledger': {
-            'path': f"/var/lib/hat-control/{operation['id']}/" +
+            'path': f"/var/lib/hat-control/{ledger_operation}/" +
                     ('new-writes.jsonl' if phase == 'new-writes' else 'ledger.jsonl'),
             'device': 1, 'inode': 2, 'mode': 0o600, 'uid': 0,
             'links': 1, 'bytes': 10, 'sha256': 'a' * 64,

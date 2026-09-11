@@ -113,11 +113,15 @@ class RestoreTask34FdCleanupTests(unittest.TestCase):
                 installed = [(support, [first]), (binaries, [second])]
                 selected = SimpleNamespace(identity=(1, 2, 0o100600, os.geteuid(), os.getegid(), 1, 1),
                                            sha256='a' * 64)
+                authority = {'ledger': {'path':'/tmp/ledger.jsonl','device':1,'inode':2,
+                             'mode':0o600,'uid':os.geteuid(),'links':1,'bytes':1,'sha256':'a'*64},
+                             'support':support,'binaries':binaries}
                 context = Mock()
                 context.__enter__ = Mock(return_value=selected)
                 context.__exit__ = Mock(return_value=False)
                 with patch.object(control.pwd, 'getpwnam', return_value=account), \
                      patch.object(io, '_installed_manifest', side_effect=installed), \
+                     patch.object(io, '_committed_preflight_authority', return_value=authority), \
                      patch.object(control.descriptor.DescriptorAuthority, 'open_file',
                                   side_effect=(RuntimeError('ledger') if failure == 'ledger' else None)), \
                      patch.object(recovery, 'validate_acceptance_request',
@@ -151,6 +155,7 @@ class RestoreTask34FdCleanupTests(unittest.TestCase):
                 self.assertEqual(held.closed, 1)
 
     def test_restore_closes_support_when_binary_authority_acquisition_fails(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
         import restore_baseline
         root = Path(tempfile.mkdtemp(dir=Path.cwd())).resolve()
         config = root / 'config'; config.write_bytes(b'config')

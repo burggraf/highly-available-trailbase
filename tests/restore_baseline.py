@@ -170,91 +170,97 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
     root = Path(root)
     if not root.is_dir() or root.is_symlink(): raise ValueError('oracle root is unsafe')
     work = root / uuid.uuid4().hex; work.mkdir(mode=0o700)
-    expected_support = request_value['inputs']['support']
-    support_authorities = _validate_fixed_files(support, expected_support, 0, 0, 0o640)
-    expected_binaries = request_value['inputs']['binaries']
-    if set(expected_binaries) != {'trail', 'litestream'}:
-        raise ValueError('binary set is invalid')
-    binary_root = Path(binaries)
-    binary_authorities = _validate_fixed_files(binary_root, expected_binaries, 0, 0, 0o755)
-    depot = Path(support); data = work / 'data'; data.mkdir(mode=0o700)
-    evidence = {'databases': {}}
+    support_authorities = []
+    binary_authorities = []
     database_authorities = []
-    for name in ('main', 'session', 'aux'):
-        position = request_value['positions'][name]
-        target = data / (name + '.db')
-        with (work / (name + '-restore.log')).open('xb') as log:
-            binary = next(item for item in binary_authorities
-                           if item.path.name == 'litestream')
-            subprocess.run([f'/proc/self/fd/{binary.file_fd}', 'restore', '-config', str(config), '-txid', f'{position:016x}',
-                            '-o', str(target), '/var/lib/hat-demo/depot/data/' + name + '.db'],
-                           stdout=log, stderr=subprocess.STDOUT, check=True, timeout=180,
-                           pass_fds=(binary.file_fd,))
-        for authority in support_authorities + binary_authorities: authority.recheck()
-        try:
-            restored_authority = descriptor.DescriptorAuthority.open_file(
-                target, trusted_root=work, trusted_uids={0, os.geteuid()},
-                expected_uid=0, expected_gid=0, expected_mode=0o600,
-                expected_nlink=1, limit=64 << 20)
-        except (OSError, ValueError):
-            raise ValueError('restore output is unsafe') from None
-        database_authorities.append(restored_authority)
-        log_raw = (work / (name + '-restore.log')).read_bytes()
-        _verify_restore_position(log_raw, position)
-        db = sqlite3.connect(':memory:', check_same_thread=False)
-        try:
-            db.deserialize(restored_authority.read())
-            db.execute('PRAGMA ignore_check_constraints=ON')
-            if db.execute('PRAGMA integrity_check').fetchone() != ('ok',) or db.execute('PRAGMA foreign_key_check').fetchall():
-                raise ValueError('database checks failed')
-        finally:
-            db.close()
-        restored = restored_authority.read()
-        evidence['databases'][name] = {'position': position, 'sha256': restored_authority.sha256, 'integrity':'PASS', 'foreign_keys':'PASS'}
-    for authority in support_authorities + binary_authorities + database_authorities: authority.recheck()
-    evidence['signature'] = _logical_signature_from_authorities(database_authorities)
-    with socket.socket() as sock:
-        sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
-    base = f'http://127.0.0.1:{port}'
-    env = {k:v for k,v in os.environ.items() if not k.startswith('IDRIVE_')}
-    log = (work / 'trail-oracle.log').open('xb')
-    trail = next(item for item in binary_authorities if item.path.name == 'trail')
-    child = subprocess.Popen([f'/proc/self/fd/{trail.file_fd}', '--depot', str(depot), 'run', '--address', f'127.0.0.1:{port}', '--stderr-logging'], stdout=log, stderr=subprocess.STDOUT, env=env, pass_fds=(trail.file_fd,))
     try:
-        deadline = time.monotonic() + 60
-        while True:
-            if child.poll() is not None: raise ValueError('oracle TrailBase exited')
+        expected_support = request_value['inputs']['support']
+        support_authorities = _validate_fixed_files(support, expected_support, 0, 0, 0o640)
+        expected_binaries = request_value['inputs']['binaries']
+        if set(expected_binaries) != {'trail', 'litestream'}:
+            raise ValueError('binary set is invalid')
+        binary_root = Path(binaries)
+        binary_authorities = _validate_fixed_files(binary_root, expected_binaries, 0, 0, 0o755)
+        depot = Path(support); data = work / 'data'; data.mkdir(mode=0o700)
+        evidence = {'databases': {}}
+        database_authorities = []
+        for name in ('main', 'session', 'aux'):
+            position = request_value['positions'][name]
+            target = data / (name + '.db')
+            with (work / (name + '-restore.log')).open('xb') as log:
+                binary = next(item for item in binary_authorities
+                               if item.path.name == 'litestream')
+                subprocess.run([f'/proc/self/fd/{binary.file_fd}', 'restore', '-config', str(config), '-txid', f'{position:016x}',
+                                '-o', str(target), '/var/lib/hat-demo/depot/data/' + name + '.db'],
+                               stdout=log, stderr=subprocess.STDOUT, check=True, timeout=180,
+                               pass_fds=(binary.file_fd,))
+            for authority in support_authorities + binary_authorities: authority.recheck()
             try:
-                code, _ = request(base, '/api/healthcheck')
-                if code == 200: break
-            except OSError: pass
-            if time.monotonic() >= deadline: raise ValueError('oracle readiness timeout')
-            time.sleep(.2)
-        verify_restore(base, ledger)
+                restored_authority = descriptor.DescriptorAuthority.open_file(
+                    target, trusted_root=work, trusted_uids={0, os.geteuid()},
+                    expected_uid=0, expected_gid=0, expected_mode=0o600,
+                    expected_nlink=1, limit=64 << 20)
+            except (OSError, ValueError):
+                raise ValueError('restore output is unsafe') from None
+            database_authorities.append(restored_authority)
+            log_raw = (work / (name + '-restore.log')).read_bytes()
+            _verify_restore_position(log_raw, position)
+            db = sqlite3.connect(':memory:', check_same_thread=False)
+            try:
+                db.deserialize(restored_authority.read())
+                db.execute('PRAGMA ignore_check_constraints=ON')
+                if db.execute('PRAGMA integrity_check').fetchone() != ('ok',) or db.execute('PRAGMA foreign_key_check').fetchall():
+                    raise ValueError('database checks failed')
+            finally:
+                db.close()
+            restored = restored_authority.read()
+            evidence['databases'][name] = {'position': position, 'sha256': restored_authority.sha256, 'integrity':'PASS', 'foreign_keys':'PASS'}
+        for authority in support_authorities + binary_authorities + database_authorities: authority.recheck()
+        evidence['signature'] = _logical_signature_from_authorities(database_authorities)
+        with socket.socket() as sock:
+            sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
+        base = f'http://127.0.0.1:{port}'
+        env = {k:v for k,v in os.environ.items() if not k.startswith('IDRIVE_')}
+        log = (work / 'trail-oracle.log').open('xb')
+        trail = next(item for item in binary_authorities if item.path.name == 'trail')
+        child = subprocess.Popen([f'/proc/self/fd/{trail.file_fd}', '--depot', str(depot), 'run', '--address', f'127.0.0.1:{port}', '--stderr-logging'], stdout=log, stderr=subprocess.STDOUT, env=env, pass_fds=(trail.file_fd,))
+        try:
+            deadline = time.monotonic() + 60
+            while True:
+                if child.poll() is not None: raise ValueError('oracle TrailBase exited')
+                try:
+                    code, _ = request(base, '/api/healthcheck')
+                    if code == 200: break
+                except OSError: pass
+                if time.monotonic() >= deadline: raise ValueError('oracle readiness timeout')
+                time.sleep(.2)
+            verify_restore(base, ledger)
+        finally:
+            child.terminate()
+            try: child.wait(timeout=15)
+            except subprocess.TimeoutExpired: child.kill(); child.wait()
+            log.close()
+        evidence['checks'] = {'records':'PASS', 'authentication':'PASS'}
+        if events is not None:
+            outcomes = classify_fault(events, data)
+            recovery.validate_fault_outcomes(outcomes, events)
+            evidence['checks'].update(fault_outcomes=outcomes, acknowledged_loss='NONE')
+        result = {'schema':'hat-restore-acceptance-1', 'request':request_value,
+                  'request_sha256':hashlib.sha256(recovery.canonical_json(request_value)).hexdigest(),
+                  'databases':evidence['databases'], 'signature':evidence['signature'], 'checks':evidence['checks']}
+        recovery.validate_acceptance_result(result, request_value, operation)
+        raw = recovery.canonical_json(result)
+        result_path = work / 'result.json'
+        fd = os.open(result_path, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'wb') as stream: stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+        dfd=os.open(work, os.O_RDONLY|os.O_DIRECTORY); os.fsync(dfd); os.close(dfd)
+        if _read(result_path, 1 << 20) != raw:
+            raise ValueError('result changed after write')
+        for authority in support_authorities + binary_authorities + database_authorities: authority.recheck()
+        return result
     finally:
-        child.terminate()
-        try: child.wait(timeout=15)
-        except subprocess.TimeoutExpired: child.kill(); child.wait()
-        log.close()
-    evidence['checks'] = {'records':'PASS', 'authentication':'PASS'}
-    if events is not None:
-        outcomes = classify_fault(events, data)
-        recovery.validate_fault_outcomes(outcomes, events)
-        evidence['checks'].update(fault_outcomes=outcomes, acknowledged_loss='NONE')
-    result = {'schema':'hat-restore-acceptance-1', 'request':request_value,
-              'request_sha256':hashlib.sha256(recovery.canonical_json(request_value)).hexdigest(),
-              'databases':evidence['databases'], 'signature':evidence['signature'], 'checks':evidence['checks']}
-    recovery.validate_acceptance_result(result, request_value, operation)
-    raw = recovery.canonical_json(result)
-    result_path = work / 'result.json'
-    fd = os.open(result_path, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, 'wb') as stream: stream.write(raw); stream.flush(); os.fsync(stream.fileno())
-    dfd=os.open(work, os.O_RDONLY|os.O_DIRECTORY); os.fsync(dfd); os.close(dfd)
-    if _read(result_path, 1 << 20) != raw:
-        raise ValueError('result changed after write')
-    for authority in support_authorities + binary_authorities + database_authorities: authority.recheck()
-    for authority in reversed(support_authorities + binary_authorities + database_authorities): authority.close()
-    return result
+        for authority in reversed(support_authorities + binary_authorities + database_authorities):
+            authority.close()
 
 
 if __name__ == '__main__':
