@@ -948,6 +948,7 @@ def recover(config, *, control_module=None, io_factory=None,
             _owned_bytes(credentials, MAX_INPUT)
             fresh = work / 'new-writes.jsonl'
             io.smoke_url(Path(credentials), fresh)
+            io.authorize_fresh_writes(fresh)
             _owned_bytes(fresh, MAX_ARTIFACT, root)
             deadline = time.monotonic() + 90
             while True:

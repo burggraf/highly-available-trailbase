@@ -837,6 +837,64 @@ class ControlIO:
         finally:
             os.close(fd)
 
+    def _durable_bytes(self, path, raw):
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        try:
+            view = memoryview(raw)
+            while view:
+                written = os.write(fd, view)
+                if written <= 0: raise OSError('short durable write')
+                view = view[written:]
+            os.fsync(fd)
+        finally: os.close(fd)
+        directory = os.open(Path(path).parent, os.O_RDONLY | os.O_DIRECTORY)
+        try: os.fsync(directory)
+        finally: os.close(directory)
+
+    def _authorized_manifests(self):
+        support_names = ('config.textproto','migrations/main/U100__hat_ops.sql','migrations/aux/U100__hat_ops.sql','secrets/keys/private_key.pem','secrets/keys/public_key.pem')
+        manifests = []
+        for value in self.state.values():
+            config = value.get('config') if isinstance(value, dict) else None
+            if isinstance(config, dict) and set(config.get('support', {})) == set(support_names) \
+                    and set(config.get('binaries', {})) == {'trail', 'litestream'}:
+                manifests.append((config['support'], config['binaries']))
+        if not manifests or any(item != manifests[0] for item in manifests[1:]):
+            raise ValueError('authorized writer release identity is unavailable')
+        return support_names, *manifests[0]
+
+    def authorize_fresh_writes(self, ledger):
+        """Bind the just-exclusive-created fresh ledger before any oracle request."""
+        import recovery
+        ledger = Path(ledger).absolute()
+        if ledger != self.work.absolute() / 'new-writes.jsonl' or hasattr(self, '_fresh_writes'):
+            raise ValueError('unexpected fresh ledger authority')
+        _, support, binaries = self._authorized_manifests()
+        selected = descriptor.DescriptorAuthority.open_file(
+            ledger, trusted_root=self.work.absolute(), trusted_uids={0, os.geteuid()},
+            expected_uid=os.geteuid(), expected_mode=0o600, expected_nlink=1, limit=4 << 20)
+        try:
+            identity = selected.identity
+            authority = {'schema': recovery._AUTHORITY_SCHEMA, 'operation': self.operation['id'],
+                         'origin': 'current-verify-exclusive',
+                         'ledger': {'path': str(ledger), 'device': identity[0], 'inode': identity[1],
+                                    'mode': stat.S_IMODE(identity[2]), 'uid': identity[3],
+                                    'links': identity[5], 'bytes': identity[6], 'sha256': selected.sha256},
+                         'support': support, 'binaries': binaries}
+            self._durable_bytes(self.work / 'new-writes-input-authority.json',
+                                recovery.canonical_json(authority))
+            self._fresh_writes = selected, authority
+            return authority
+        except BaseException:
+            selected.close()
+            raise
+
+    def _close_fresh_writes(self):
+        value = getattr(self, '_fresh_writes', None)
+        if value is not None:
+            del self._fresh_writes
+            value[0].close()
+
     def command(self, args, data=None, timeout=180):
         self.journal.check_authority()
         argv = list(args)
@@ -1073,16 +1131,12 @@ class ControlIO:
                 held.append(item)
                 result[name] = item.sha256
             if hold:
-                return result, held
+                transferred, held = held, []
+                return result, transferred
             return result
-        except BaseException:
-            for item in reversed(held):
-                item.close()
-            raise
         finally:
-            if not hold:
-                for item in reversed(held):
-                    item.close()
+            while held:
+                held.pop().close()
 
     def _recheck_installed_manifest(self, root, names, held):
         """Recheck held fixed inputs, including the exact child namespace."""
@@ -1129,16 +1183,7 @@ class ControlIO:
         if ledger.name != ('new-writes.jsonl' if profile == 'fresh-writes' else 'ledger.jsonl'):
             raise ValueError('unexpected ledger name')
         account = pwd.getpwnam('hat-oracle')
-        support_names = ('config.textproto','migrations/main/U100__hat_ops.sql','migrations/aux/U100__hat_ops.sql','secrets/keys/private_key.pem','secrets/keys/public_key.pem')
-        manifests = []
-        for value in self.state.values():
-            config = value.get('config') if isinstance(value, dict) else None
-            if isinstance(config, dict) and set(config.get('support', {})) == set(support_names) \
-                    and set(config.get('binaries', {})) == {'trail', 'litestream'}:
-                manifests.append((config['support'], config['binaries']))
-        if not manifests or any(item != manifests[0] for item in manifests[1:]):
-            raise ValueError('authorized writer release identity is unavailable')
-        support, binaries = manifests[0]
+        support_names, support, binaries = self._authorized_manifests()
         installed_holds = []
         try:
             support_result = self._installed_manifest(
@@ -1161,11 +1206,34 @@ class ControlIO:
                 binary_manifest = binary_result
             if binary_manifest != binaries:
                 raise ValueError('installed oracle binaries differ')
-            with descriptor.DescriptorAuthority.open_file(
-                    ledger, trusted_root='/', trusted_uids={0, os.geteuid()}, expected_uid=os.geteuid(),
-                    expected_mode=0o600, expected_nlink=1, limit=4 << 20) as selected:
-                identity = selected.identity
-                authority = {'schema': recovery._AUTHORITY_SCHEMA, 'operation': self.operation['id'], 'origin': ('current-verify-exclusive' if profile == 'fresh-writes' else ('d3-recovery-input' if self.operation['source'] == 'B' else 'd2-preflight')), 'ledger': {'path': str(ledger), 'device': identity[0], 'inode': identity[1], 'mode': stat.S_IMODE(identity[2]), 'uid': identity[3], 'links': identity[5], 'bytes': identity[6], 'sha256': selected.sha256}, 'support': support, 'binaries': binaries}
+            if profile == 'fresh-writes':
+                try: selected, captured = self._fresh_writes
+                except AttributeError:
+                    raise ValueError('fresh ledger authority is unavailable') from None
+                with descriptor.DescriptorAuthority.open_file(
+                        self.work / 'new-writes-input-authority.json', trusted_root=self.work,
+                        trusted_uids={0, os.geteuid()}, expected_uid=os.geteuid(), expected_mode=0o600,
+                        expected_nlink=1, limit=1 << 20) as sidecar:
+                    authority = recovery.parse_canonical_json(sidecar.read())
+                recovery._authority(authority, self.operation, profile)
+                selected.recheck(); identity = selected.identity
+                wire = authority['ledger']
+                if (authority != captured or wire['path'] != str(ledger) or wire['sha256'] != selected.sha256
+                        or (wire['device'], wire['inode'], wire['mode'], wire['uid'], wire['links'], wire['bytes'])
+                           != (identity[0], identity[1], stat.S_IMODE(identity[2]), identity[3], identity[5], identity[6])
+                        or authority['support'] != support or authority['binaries'] != binaries):
+                    raise ValueError('fresh ledger authority differs')
+            else:
+                with descriptor.DescriptorAuthority.open_file(
+                        ledger, trusted_root='/', trusted_uids={0, os.geteuid()}, expected_uid=os.geteuid(),
+                        expected_mode=0o600, expected_nlink=1, limit=4 << 20) as selected:
+                    identity = selected.identity
+                    authority = {'schema': recovery._AUTHORITY_SCHEMA, 'operation': self.operation['id'],
+                                 'origin': ('d3-recovery-input' if self.operation['source'] == 'B' else 'd2-preflight'),
+                                 'ledger': {'path': str(ledger), 'device': identity[0], 'inode': identity[1],
+                                            'mode': stat.S_IMODE(identity[2]), 'uid': identity[3],
+                                            'links': identity[5], 'bytes': identity[6], 'sha256': selected.sha256},
+                                 'support': support, 'binaries': binaries}
             inputs = {'replica_config_sha256': hashlib.sha256(replica_config.encode() if isinstance(replica_config,str) else bytes(replica_config)).hexdigest(), 'ledger_sha256': authority['ledger']['sha256'], 'ledger_authority': authority, 'restore_points': {db: {'source':'/var/lib/hat-demo/depot/data/'+db+'.db','position': positions[db]} for db in positions}, 'support': support, 'binaries': binaries}
             if profile == 'recovery-comparison':
                 from client import read_closed_ledger
@@ -1186,6 +1254,7 @@ class ControlIO:
             if hold_installed:
                 for item in reversed(installed_holds):
                     item.close()
+            if profile == 'fresh-writes': self._close_fresh_writes()
             raise
 
     def oracle(self, phase, replica_config, positions, selected_ledger, fault_ledger=None):
@@ -1193,10 +1262,12 @@ class ControlIO:
         import recovery
         import node
         self.journal.check_authority()
-        request, request_bytes, installed_holds, ledger_identity = self._acceptance_request(
-            phase, replica_config, positions, selected_ledger, fault_ledger, hold_installed=True)
-        held = []
+        held = []; installed_holds = []
         try:
+            request, request_bytes, installed_holds, ledger_identity = self._acceptance_request(
+                phase, replica_config, positions, selected_ledger, fault_ledger, hold_installed=True)
+            request_path = self.work / (phase + '-acceptance-request.json')
+            self._durable_bytes(request_path, request_bytes)
             if request['phase'] != phase or request['positions'] != positions:
                 raise ValueError('restore request does not match locked phase')
             if (request['profile'] == 'recovery-comparison') != (fault_ledger is not None):
@@ -1238,10 +1309,6 @@ class ControlIO:
             if fault_ledger is not None:
                 oracle_fault = area / 'fault-ledger.jsonl'
                 _copy_bound_input(fault_ledger, oracle_fault, 0o600, os.geteuid(), account.pw_gid, request['inputs']['fault_ledger_sha256'])
-            request_path = self.work / (phase + '-acceptance-request.json')
-            fd = os.open(request_path, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600)
-            try: os.write(fd, request_bytes); os.fsync(fd)
-            finally: os.close(fd)
             _copy_bound_input(request_path, area / 'acceptance-request.json', 0o640, 0, account.pw_gid, hashlib.sha256(request_bytes).hexdigest())
             for directory in (area, output, self.work):
                 fd=os.open(directory, os.O_RDONLY|os.O_DIRECTORY)
@@ -1289,6 +1356,7 @@ class ControlIO:
                 item.close()
             for item in reversed(installed_holds):
                 item.close()
+            self._close_fresh_writes()
 
     def verify_url(self, ledger):
         from demo_smoke import verify_restore
@@ -1407,6 +1475,7 @@ def switchover(config, reconcile=None, verification_only=False):
             verify_restore('http://127.0.0.1:18080',ledger)
             fresh=work/'new-writes.jsonl'
             smoke('http://127.0.0.1:18080',json.loads(Path('/etc/hat-control/demo-login.json').read_text()),fresh)
+            io.authorize_fresh_writes(fresh)
             deadline=time.monotonic()+90
             while True:
                 value=remote('B','probe-new')
