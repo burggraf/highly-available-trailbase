@@ -14,15 +14,18 @@ import recovery
 
 
 class Held:
-    def __init__(self, strict=False):
+    def __init__(self, strict=False, close_error=False):
         self.closed = 0
         self.strict = strict
+        self.close_error = close_error
         self.directory_fd = 99
 
     def close(self):
         self.closed += 1
         if self.strict and self.closed > 1:
             raise OSError(errno.EBADF, 'already closed')
+        if self.close_error:
+            raise OSError('close failure')
 
 
 class Journal:
@@ -161,7 +164,7 @@ class RestoreTask34FdCleanupTests(unittest.TestCase):
         config = root / 'config'; config.write_bytes(b'config')
         ledger = root / 'ledger.jsonl'; ledger.write_bytes(b'ledger'); ledger.chmod(0o600)
         request_path = root / 'request.json'; request_path.write_bytes(b'{}')
-        info = ledger.stat(); support_hold = Held(strict=True)
+        info = ledger.stat(); support_hold = Held(strict=True, close_error=True); second_hold = Held(strict=True)
         support = {'config.textproto': 'b' * 64}
         binaries = {'trail': 'c' * 64, 'litestream': 'd' * 64}
         request = {'operation':'a'*32,'source':'A','target':'B','epoch':'d1-source','phase':'compare',
@@ -177,10 +180,11 @@ class RestoreTask34FdCleanupTests(unittest.TestCase):
              patch.object(restore_baseline.recovery, '_replica_config'), \
              patch.object(restore_baseline.recovery, '_protected_ledger'), \
              patch.object(restore_baseline, '_validate_fixed_files',
-                          side_effect=[[support_hold], RuntimeError('binary acquisition')]):
+                          side_effect=[[support_hold, second_hold], RuntimeError('binary acquisition')]):
             with self.assertRaisesRegex(RuntimeError, 'binary acquisition'):
                 restore_baseline.restore(root, request_path, config, ledger, root, root)
         self.assertEqual(support_hold.closed, 1)
+        self.assertEqual(second_hold.closed, 1)
 
     def test_held_input_acquisition_closes_prior_authorities_on_nth_failure(self):
         first, second = Held(), Held()

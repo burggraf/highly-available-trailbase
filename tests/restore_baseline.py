@@ -259,8 +259,15 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
         for authority in support_authorities + binary_authorities + database_authorities: authority.recheck()
         return result
     finally:
+        failed = sys.exc_info()[0] is not None
+        close_error = None
         for authority in reversed(support_authorities + binary_authorities + database_authorities):
-            authority.close()
+            try:
+                authority.close()
+            except BaseException as exc:
+                if close_error is None: close_error = exc
+        if close_error is not None and not failed:
+            raise close_error
 
 
 if __name__ == '__main__':
