@@ -177,9 +177,11 @@ hat doctor
 hat cluster activate
 ```
 
-`cluster init` generates a cluster CA, three fixed controller identities, node-specific bootstrap bundles, a public manifest, firewall instructions, and an offline recovery package. An SSH-assisted bootstrap may use the administrator's existing SSH client; fully manual copying remains supported.
+**Approved bootstrap direction:** initialization runs on the administrator's machine and generates the cluster CA, fixed controller identities, role-specific bootstrap bundles, a public manifest, and firewall instructions. The CA private key stays off controller hosts, with a protected offline backup. Each host receives only its own role-specific private keys/certificates and public trust configuration. The separate offline recovery package and recovery identity still require detailed design.
 
-HAT does not silently change firewalls. It prints exact rules, tests reachability, and requires an explicit option before applying any generated rule.
+Optional SSH-assisted installation uses existing administrator SSH credentials and verified host keys; fully manual installation remains supported. The command spelling above is illustrative, not a finalized CLI contract.
+
+`hat doctor` runs before explicit cluster activation. Bootstrap does not automatically take over application processes or change firewalls. HAT prints exact firewall rules and tests reachability; any rule application requires separate explicit authorization.
 
 ## 8. Identity and TLS direction
 
@@ -192,7 +194,9 @@ The first release requires mTLS with pre-provisioned fixed controller identities
 - private keys stored in owner-only files or an approved OS key facility;
 - certificate mismatch, replacement, expiry, or unapproved identity refuses participation.
 
-Certificate issuance, expiry defaults, revocation, rotation, and offline recovery still require a dedicated design. Static controller membership does not mean certificates may be permanent or unrotatable.
+**Approved certificate custody/lifecycle direction:** use offline CA custody rather than an online certificate service. Warn well before expiry; expired identities refuse authenticated participation, without disabling TLS as a fallback. V0.1 renewal uses a documented maintenance procedure; automated online rotation is deferred. Static controller membership does not mean certificates may be permanent or unrotatable.
+
+Exact issuance, validity periods, revocation, renewal ordering, and recovery after certificate expiry still require a dedicated design.
 
 ### 8.1 Approved operator authorization model
 
