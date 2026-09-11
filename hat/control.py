@@ -860,7 +860,8 @@ def _copy_bound_input(source, destination, mode, uid, gid, expected_sha, expecte
     trusted = {0, os.geteuid()}
     expected_mode = stat.S_IMODE(expected_identity[2]) if expected_identity is not None else (0o600 if private else None)
     with descriptor.DescriptorAuthority.open_file(
-            source, trusted_root='/', trusted_uids=trusted, expected_uid=uid,
+            source, trusted_root='/', trusted_uids=trusted,
+            expected_uid=(expected_identity[3] if expected_identity is not None else uid),
             expected_gid=(expected_identity[4] if expected_identity is not None else None),
             expected_mode=expected_mode, expected_nlink=1,
             expected_size=(expected_identity[6] if expected_identity is not None else None),
@@ -1794,6 +1795,15 @@ class ControlIO:
         self.command(['systemctl', 'start', 'hat-ingress.service'])
 
 
+def _validate_verification_baseline_recheck(previous, actual, operation):
+    if (actual['request']['phase'] != 'verification-baseline'
+            or actual['request']['profile'] != 'baseline'
+            or actual['request']['epoch'] != operation['new_epoch']
+            or actual['request']['positions'] != previous['request']['positions']
+            or actual['signature'] != previous['signature']):
+        raise RuntimeError('verification baseline recheck differs')
+
+
 def switchover(config, reconcile=None, verification_only=False):
     from transition import atomic_json, validate_cut
     from demo_smoke import smoke, verify_restore, request
@@ -1932,12 +1942,8 @@ def switchover(config, reconcile=None, verification_only=False):
                 for binary,expected in current['config']['binaries'].items():
                     if hashlib.sha256((Path('/opt/hat-oracle/bin')/binary).read_bytes()).hexdigest()!=expected:raise RuntimeError('oracle release changed')
                 baseline_recheck=oracle('verification-baseline',current['replica_config'],previous['baseline']['request']['positions'],ledger)
-                if (baseline_recheck['request']['phase'] != 'verification-baseline'
-                        or baseline_recheck['request']['profile'] != 'baseline'
-                        or baseline_recheck['request']['epoch'] != operation['new_epoch']
-                        or baseline_recheck['request']['positions'] != previous['baseline']['positions']
-                        or baseline_recheck['signature'] != previous['baseline']['signature']):
-                    raise RuntimeError('verification baseline recheck differs')
+                _validate_verification_baseline_recheck(
+                    previous['baseline'], baseline_recheck, operation)
                 archived=work/'failure.before-verification.json'
                 if archived.exists():raise RuntimeError('verification failure archive exists')
                 failure.rename(archived)
