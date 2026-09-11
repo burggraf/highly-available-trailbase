@@ -12,12 +12,13 @@ import subprocess
 import sys
 import time
 import uuid
+import urllib.error
+import urllib.request
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'hat'))
 import descriptor
 import recovery
 from client import read_closed_ledger
-from demo_smoke import request, verify_restore
 from recovery import classify_fault
 from transition import logical_signature
 
@@ -58,6 +59,40 @@ def _raw(path, limit=4 << 20, expected=None):
 
 def _read(path, limit=4 << 20, expected=None):
     return _raw(path, limit, expected)[0]
+
+
+_HTTP_JSON_LIMIT = 4 << 20
+
+
+def _http_request(base, path, method='GET', body=None, token=None):
+    headers = {'Content-Type': 'application/json'}
+    if token:
+        headers['Authorization'] = 'Bearer ' + token
+    data = json.dumps(body, separators=(',', ':')).encode() if body is not None else None
+    request = urllib.request.Request(base + path, method=method, headers=headers, data=data)
+    try:
+        response = urllib.request.urlopen(request, timeout=10)
+    except urllib.error.HTTPError as exc:
+        response = exc
+    try:
+        raw = response.read(_HTTP_JSON_LIMIT + 1)
+        if len(raw) > _HTTP_JSON_LIMIT:
+            raise ValueError('HTTP response is oversized')
+        return response.status, raw
+    except (OSError, ValueError):
+        raise
+
+
+def _successful_object(raw):
+    if not isinstance(raw, (bytes, bytearray)) or not 0 < len(raw) <= _HTTP_JSON_LIMIT:
+        raise ValueError('successful HTTP response is invalid')
+    try:
+        value = json.loads(bytes(raw).decode('utf-8'), object_pairs_hook=recovery._unique_pairs)
+    except (UnicodeDecodeError, json.JSONDecodeError, TypeError, ValueError, RecursionError, OverflowError):
+        raise ValueError('successful HTTP response is invalid') from None
+    if not isinstance(value, dict):
+        raise ValueError('successful HTTP response is not an object')
+    return value
 
 
 def _verify_restore_position(raw, expected):
@@ -129,6 +164,53 @@ def _validate_fixed_files(root, names, uid, gid, modes):
     except BaseException:
         descriptor.close_all(authorities)
         raise
+
+
+def _verify_records_and_auth(base, ledger):
+    try:
+        rows = [recovery.parse_canonical_json(line) for line in _read(ledger).splitlines()]
+        auth = rows[0]
+        cases = [auth] + [row for row in rows if row.get('event') == 'historical_auth']
+        token = None
+        for index, case in enumerate(cases):
+            revoked_status, _ = _http_request(
+                base, '/api/auth/v1/refresh', 'POST',
+                {'refresh_token': case['revoked_refresh']})
+            if revoked_status not in (400, 401, 403):
+                raise ValueError('revoked refresh was accepted')
+            retained_status, retained_raw = _http_request(
+                base, '/api/auth/v1/refresh', 'POST',
+                {'refresh_token': case['retained_refresh']})
+            expected = case.get('retained_expected', 'accepted')
+            if expected not in ('accepted', 'denied'):
+                raise ValueError('invalid retained refresh expectation')
+            if expected == 'accepted':
+                if retained_status != 200:
+                    raise ValueError('retained refresh was denied')
+                retained = _successful_object(retained_raw)
+                if index == 0:
+                    token = retained.get('auth_token')
+                    if not isinstance(token, str) or not token:
+                        raise ValueError('initial refresh returned no access token')
+            elif retained_status not in (400, 401, 403):
+                raise ValueError('retained refresh was accepted')
+        if not token:
+            raise ValueError('no access token available')
+        for row in rows:
+            if row.get('event') != 'acknowledged':
+                continue
+            expected_id = recovery._canonical_id(row['id'])
+            status, raw = _http_request(
+                base, '/api/records/v1/' + row['api'] + '/' + expected_id, token=token)
+            if status != 200:
+                raise ValueError('acknowledged record was not returned')
+            got = _successful_object(raw)
+            if recovery._canonical_id(got.get('id')) != expected_id:
+                raise ValueError('acknowledged record identity differs')
+            if got.get('op_key') != row['row']['op_key'] or got.get('payload') != row['row']['payload']:
+                raise ValueError('acknowledged record data differs')
+    except (KeyError, TypeError, AttributeError, IndexError, ValueError, OSError, UnicodeError):
+        raise ValueError('restore authentication or record checks failed') from None
 
 
 def restore(root, acceptance_request, config, ledger, support, binaries, fault_ledger=None):
@@ -229,12 +311,12 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
             while True:
                 if child.poll() is not None: raise ValueError('oracle TrailBase exited')
                 try:
-                    code, _ = request(base, '/api/healthcheck')
+                    code, _ = _http_request(base, '/api/healthcheck')
                     if code == 200: break
                 except OSError: pass
                 if time.monotonic() >= deadline: raise ValueError('oracle readiness timeout')
                 time.sleep(.2)
-            verify_restore(base, ledger)
+            _verify_records_and_auth(base, ledger)
         finally:
             child.terminate()
             try: child.wait(timeout=15)
