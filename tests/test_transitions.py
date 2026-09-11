@@ -326,7 +326,7 @@ class TransitionTests(unittest.TestCase):
                 self.generic_visit(node);self.functions.pop()
         Scan().visit(tree)
         self.assertEqual(found,{
-            'Journal.__enter__','Journal.begin','Journal.step','Journal._boundary',
+            'Journal._migration_alter','Journal.begin','Journal.step','Journal._boundary',
             'Journal.continue_rejoin','Journal.finish','_journal_schema','_check_constraints','_check_indexes','_d3_serving_state',
             'current_writer','_ingress_allowed_body','_validate_legacy_rows','reconcile_existing',
         })
