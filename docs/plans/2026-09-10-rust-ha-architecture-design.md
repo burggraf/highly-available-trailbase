@@ -257,6 +257,22 @@ Create disposable, non-production Rust spikes for:
 - leader loss before/during/after an external effect intent;
 - one-binary multi-role packaging and systemd sandboxing.
 
+#### Approved first-spike safety scope
+
+The first spike must qualify external-effect authority alongside Raft/SQLite durability, rather than merely demonstrate working consensus networking. A committed intent or valid controller certificate alone does not establish that a delayed command remains authorized.
+
+Required properties:
+
+- exact operation, phase, target incarnation, and parameter binding;
+- durable executor acceptance before effects;
+- duplicate requests return recorded status without repeating effects;
+- conflicting work stays blocked while an accepted effect could still execute;
+- obsolete operation/leadership state cannot grant fresh authority to delayed requests.
+
+Use harmless simulated effects only. Exercise an old leader paused before dispatch and resumed after replacement, executor crashes before/after acceptance and effects, lost responses, and restart of every participant. Include delays between authorization and durable acceptance, not only failures after dispatch. Retain failure traces and unresolved outcomes; unknown execution status must block conflicting progress rather than become permission to retry.
+
+The exact protocol and runnable pass/fail assertions must be specified before implementation. This approval establishes qualification scope, not an approved authorization algorithm or permission to modify live services, fence machines, change routes, or migrate the Python deployment.
+
 A spike may reject OpenRaft or the proposed SQLite design. No spike result is production authority.
 
 ### Phase 1 — Stable schemas and crate skeleton
