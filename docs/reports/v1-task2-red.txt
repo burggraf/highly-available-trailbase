@@ -1,0 +1,10 @@
+# Task 2 failing-first evidence
+
+- Scope: real Rust binary configuration checker entrypoint (`rust/tests/cli.rs`)
+- Command: `cargo test --manifest-path rust/Cargo.toml --test cli -- --nocapture`
+- Source state: before implementing the checker, `rust/src/main.rs` contained an empty `main()`.
+- Result: exit 101; 0 passed, 3 failed.
+- Expected failures: valid `config check` produced no success output and exited 0; invalid input and unknown command also exited 0. This was behavioral entrypoint RED, not a compile-only failure.
+- Supplied fixture content was non-secret except the deliberately asserted `SECRET-DO-NOT-ECHO` marker.
+
+The test was then rerun after the minimum checker implementation and passed all three cases. The initial failure is retained as evidence; it is not replaced by the later green run.

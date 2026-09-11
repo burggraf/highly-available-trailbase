@@ -1,0 +1,128 @@
+
+$ cargo fmt --manifest-path rust/Cargo.toml --check
+exit 0
+
+$ cargo test --manifest-path rust/Cargo.toml --locked
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.04s
+     Running unittests src/main.rs (rust/target/debug/deps/hat-511b8f1c21500c7a)
+
+running 13 tests
+test config::tests::rejects_duplicate_node_ids ... ok
+test config::tests::rejects_unknown_primary ... ok
+test config::tests::rejects_requested_replica_reads ... ok
+test config::tests::rejects_missing_or_local_database_inventory ... ok
+test config::tests::accepts_the_v1_configuration_shape ... ok
+test config::tests::rejects_relative_traversal_and_unsupported_paths ... ok
+test config::tests::rejects_incompatible_schema_version ... ok
+test config::tests::rejects_invalid_endpoints_and_duplicate_json_keys ... ok
+test routing::tests::every_application_request_selects_the_active_primary ... ok
+test routing::tests::missing_route_refuses_selection ... ok
+test routing::tests::rollback_and_conflicting_equal_generation_leave_active_route_unchanged ... ok
+test routing::tests::route_binds_to_inventory_endpoint_and_wire_generation_is_decimal ... ok
+test routing::tests::route_wire_refuses_unknown_fields_nodes_bad_numbers_and_wrong_cluster ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/cli.rs (rust/target/debug/deps/cli-1ff9ea4a3d57b99c)
+
+running 3 tests
+test config_check_refuses_invalid_input_without_echoing_supplied_content ... ok
+test config_check_accepts_valid_stdin_without_opening_referenced_paths ... ok
+test unknown_command_and_oversized_input_are_refused_without_echoing_content ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.40s
+
+exit 0
+
+$ cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+    Checking memchr v2.8.3
+    Checking itoa v1.0.18
+    Checking serde_core v1.0.229
+    Checking zmij v1.0.23
+    Checking serde v1.0.229
+    Checking serde_json v1.0.151
+    Checking hat v0.1.0 (/Users/markb/dev/hat/.worktrees/v1-task2/rust)
+error: for loop over a single element
+   --> src/routing.rs:366:9
+    |
+366 | /         for mut conflict in [active.clone()] {
+367 | |             conflict.writer_epoch = 2;
+368 | |             conflicts.push(conflict);
+369 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.91.0/index.html#single_element_loop
+    = note: `-D clippy::single-element-loop` implied by `-D warnings`
+    = help: to override `-D warnings` add `#[allow(clippy::single_element_loop)]`
+help: try
+    |
+366 ~         {
+367 +             let mut conflict = active.clone();
+368 +             conflict.writer_epoch = 2;
+369 +             conflicts.push(conflict);
+370 +         }
+    |
+
+error: for loop over a single element
+   --> src/routing.rs:370:9
+    |
+370 | /         for mut conflict in [active.clone()] {
+371 | |             conflict.primary_incarnation = "00000000-0000-4000-8000-000000000003".into();
+372 | |             conflicts.push(conflict);
+373 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.91.0/index.html#single_element_loop
+help: try
+    |
+370 ~         {
+371 +             let mut conflict = active.clone();
+372 +             conflict.primary_incarnation = "00000000-0000-4000-8000-000000000003".into();
+373 +             conflicts.push(conflict);
+374 +         }
+    |
+
+error: for loop over a single element
+   --> src/routing.rs:374:9
+    |
+374 | /         for mut conflict in [active.clone()] {
+375 | |             conflict.release_digest =
+376 | |                 "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".into();
+377 | |             conflicts.push(conflict);
+378 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.91.0/index.html#single_element_loop
+help: try
+    |
+374 ~         {
+375 +             let mut conflict = active.clone();
+376 +             conflict.release_digest =
+377 +                 "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".into();
+378 +             conflicts.push(conflict);
+379 +         }
+    |
+
+error: for loop over a single element
+   --> src/routing.rs:379:9
+    |
+379 | /         for mut conflict in [active.clone()] {
+380 | |             conflict.config_digest =
+381 | |                 "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd".into();
+382 | |             conflicts.push(conflict);
+383 | |         }
+    | |_________^
+    |
+    = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.91.0/index.html#single_element_loop
+help: try
+    |
+379 ~         {
+380 +             let mut conflict = active.clone();
+381 +             conflict.config_digest =
+382 +                 "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd".into();
+383 +             conflicts.push(conflict);
+384 +         }
+    |
+
+error: could not compile `hat` (bin "hat" test) due to 4 previous errors
+exit 101
