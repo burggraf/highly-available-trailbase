@@ -2,6 +2,12 @@
 
 **Current state: A serves the unchanged private URL as the healthy writer; B is a healthy same-epoch standby with three native followers and no TrailBase. D3 powered-off-writer recovery and cold rejoin completed with explicit boot-evidence reconciliation. Fresh post-rejoin writes and historical auth were independently restored. See [status](status.md) for retained failures, uncertainty accounting and limits. No D4 or automatic-control work is authorized by this runbook.**
 
+### Task6 unified restore-acceptance-1 source/test closure
+
+At source checkpoint `86063728e4d58d7e5f7c1b048c45894d9782dd05`, the controller-built `hat-restore-acceptance-1` request/result contract is closed in source and focused tests. The journal migration is exact and fail-closed: new rows use the contract; completed legacy rows retain only their named authority/reconciliation compatibility; unfinished legacy rows cannot continue, activate, route, reconcile, or finish. The controller constructs the canonical request and validates the canonical oracle result, including descriptor-bound retention and durable ordering. Focused tests cover journal migration, request/result boundaries, descriptor identity/durability, crash/reopen and replay refusal. No manifest is route authority.
+
+This is an implementation checkpoint and focused historical test evidence pending final Task6 verification. It is not deployment, live qualification, fresh historical validation, zero-loss HA, or production readiness. Preserve the limitations below: D4 is infeasible on stock TrailBase v0.33.11; ACK/recoverability/provider/distributed-authority, controller SPOF, capacity/fault-domain, partition, certificate, and load constraints remain incomplete.
+
 This is a persistent disposable **manual recovery demo, not automatic HA**. D1, reconciled D2 and reconciled D3 have real HTTP/auth and independent restore proof. A clean one-shot handover/recovery has not been demonstrated. Unchanged legacy tests have historical intermittent failures, retained below. Provider shutdown may flush gracefully; abrupt physical power loss and production readiness are not qualified.
 
 ## Current operating envelope and safety checklist

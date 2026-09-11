@@ -54,6 +54,8 @@ Files: focused tests and only necessary production helpers
 
 Files: `docs/runbook.md`, `docs/status.md`, audit findings, relevant plans
 
+Checkpoint `86063728e4d58d7e5f7c1b048c45894d9782dd05` records source/test closure for `hat-restore-acceptance-1`: exact journal migration and legacy restrictions, controller-built request/oracle result, descriptor/durability/crash coverage, and no manifest route authority. This is implementation-checkpoint evidence pending final Task6 verification; it does not qualify deployment/live behavior or fresh historical validation. D4 stock v0.33.11 infeasibility and all ACK, recoverability, provider, distributed-authority, controller-SPOF, capacity/fault-domain, partition, certificate, and load limitations remain unchanged. Do not claim zero-loss HA or production readiness.
+
 1. Record source/test closure only; preserve no-deployment/live qualification and every remaining D4/operational limitation.
 2. Run focused suites, full runtime, D4 discovery, `py_compile`, and `git diff --check` once. Preserve failures without blind retry.
 3. Obtain sequential whole-branch specification then safety review at the exact SHA.
