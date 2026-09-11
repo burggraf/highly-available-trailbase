@@ -108,6 +108,8 @@ def _copy_fixed_support(source, destination, names):
         target = destination / rel
         target.parent.mkdir(parents=True, exist_ok=True)
         raw = _read(source / rel)
+        if hashlib.sha256(raw).hexdigest() != names[rel]:
+            raise ValueError('support identity differs')
         fd = os.open(target, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, 'wb') as stream:
             stream.write(raw); stream.flush(); os.fsync(stream.fileno())
@@ -132,6 +134,20 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
         raise ValueError('replica configuration changed')
     recovery._replica_config(config_raw, request_value['epoch'])
     ledger_raw = _read(ledger)
+    inputs = request_value['inputs']
+    if hashlib.sha256(ledger_raw).hexdigest() != inputs['ledger_sha256']:
+        raise ValueError('ledger changed')
+    authority = inputs['ledger_authority']
+    if Path(ledger).resolve() != Path(authority['ledger']['path']).resolve():
+        raise ValueError('ledger authority path differs')
+    ledger_stat = Path(ledger).lstat()
+    expected_stat = authority['ledger']
+    actual_identity = {'device': ledger_stat.st_dev, 'inode': ledger_stat.st_ino,
+                       'mode': ledger_stat.st_mode & 0o777, 'uid': ledger_stat.st_uid,
+                       'links': ledger_stat.st_nlink, 'bytes': ledger_stat.st_size,
+                       'sha256': hashlib.sha256(ledger_raw).hexdigest()}
+    if any(actual_identity[key] != expected_stat[key] for key in actual_identity):
+        raise ValueError('ledger authority differs')
     if request_value['profile'] != 'recovery-comparison':
         recovery._protected_ledger(ledger_raw)
     if fault_ledger is not None:
