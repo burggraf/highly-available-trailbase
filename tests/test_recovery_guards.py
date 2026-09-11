@@ -311,6 +311,7 @@ class RecoveryGuardTests(unittest.TestCase):
     def test_ingress_finalizer_rejects_d3_marker_permit_failure_and_ingress_interleavings(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp).resolve(); journal,operation,ingress=self._d3(root,count=8)
+            with self.assertRaises(RuntimeError): journal.step('route',lambda:(_ for _ in ()).throw(RuntimeError('pending')))
             maintenance=self._maintenance(root,operation); permit=root/'permit'
             value={'operation':operation['id'],'boot_id':'boot','pid':os.getpid(),
                    'birth':'live-birth','config_sha':hashlib.sha256(ingress.read_bytes()).hexdigest()}
