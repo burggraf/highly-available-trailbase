@@ -72,7 +72,7 @@ class RestoreTask3Tests(unittest.TestCase):
     def test_request_bytes_are_canonical_and_no_positions_file_contract(self):
         op = {'id':'a'*32,'source':'A','target':'B','source_epoch':'d1-source','new_epoch':'d1-'+'a'*32}
         auth={'schema':'hat-restore-input-authority-1','operation':op['id'],'origin':'d2-preflight',
-              'ledger':{'path':'/var/lib/hat-control/'+op['id']+'/ledger.jsonl','device':1,'inode':1,'mode':384,'uid':0,'gid':0,'links':1,'bytes':1,'sha256':'a'*64},
+              'ledger':{'path':'/var/lib/hat-control/'+op['id']+'/ledger.jsonl','device':1,'inode':1,'mode':384,'uid':0,'links':1,'bytes':1,'sha256':'a'*64},
               'support':{k:'b'*64 for k in ('config.textproto','migrations/main/U100__hat_ops.sql','migrations/aux/U100__hat_ops.sql','secrets/keys/private_key.pem','secrets/keys/public_key.pem')},
               'binaries':{'trail':'c'*64,'litestream':'d'*64}}
         req={'schema':'hat-restore-acceptance-1','operation':op['id'],'phase':'compare','source':'A','target':'B','epoch':op['source_epoch'],'positions':{'main':1,'session':1,'aux':1},'profile':'comparison',

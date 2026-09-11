@@ -471,8 +471,14 @@ def _cut_report(value, epoch=None):
     if not isinstance(value, dict) or set(value) != {'schema','request','request_sha256','databases','signature','checks'}:
         raise ValueError('restore report is not canonical')
     request = value['request']; positions = request['positions']; validate_cut(positions)
+    checks=value['checks']
+    recovery_checks=(request.get('profile')=='recovery-comparison'
+                     and isinstance(checks,dict)
+                     and set(checks)=={'records','authentication','fault_outcomes','acknowledged_loss'}
+                     and checks['records']=='PASS' and checks['authentication']=='PASS'
+                     and checks['acknowledged_loss']=='NONE')
     if (not isinstance(value['signature'], dict) or set(value['signature']) != set(node.DBS)
-            or value['checks'] != {'records':'PASS','authentication':'PASS'}
+            or checks != {'records':'PASS','authentication':'PASS'} and not recovery_checks
             or (epoch is not None and request.get('epoch') != epoch)):
         raise ValueError('restore report signature, checks, or epoch differs')
     return value
@@ -843,10 +849,10 @@ def recover(config, *, control_module=None, io_factory=None,
             return state['fence']
 
         def select_cut():
-            selected = io.select_cut(input_value['source_replica'], protected['positions'])
+            selected = io.select_cut(input_value['source_replica'], protected['request']['positions'])
             if not isinstance(selected, dict): raise RuntimeError('restore plan result is malformed')
             validate_cut(selected.get('positions'))
-            if any(selected['positions'][db] < protected['positions'][db] for db in node.DBS):
+            if any(selected['positions'][db] < protected['request']['positions'][db] for db in node.DBS):
                 raise RuntimeError('selected cut is older than protected baseline')
             state['cut'] = selected['positions']
             return selected
