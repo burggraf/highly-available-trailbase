@@ -133,17 +133,32 @@ def _validate_legacy_rows(db):
     """Validate populated raw legacy rows before ALTER; this is the sole legacy reader."""
     rows=db.execute('SELECT id,source,target,complete,new_epoch FROM operations').fetchall()
     ids={row[0] for row in rows}
-    for ident,source,target,complete,_ in rows:
-        if complete not in (0,1): raise ValueError('unrecognized legacy operation')
+    if len(ids) != len(rows): raise ValueError('unrecognized legacy operation')
+    for ident,source,target,complete,new_epoch in rows:
+        if (not isinstance(ident,str) or not re.fullmatch(r'[0-9a-f]{32}',ident)
+                or (source,target) not in (('A','B'),('B','A'))
+                or not isinstance(source_epoch := db.execute('SELECT source_epoch FROM operations WHERE id=?',(ident,)).fetchone()[0],str)
+                or not re.fullmatch(r'd1-[a-z0-9-]{1,125}',source_epoch)
+                or not isinstance(new_epoch,str) or not re.fullmatch(r'd1-[a-z0-9-]{1,125}',new_epoch)
+                or new_epoch != 'd1-'+ident or new_epoch == source_epoch
+                or type(complete) is not int or complete not in (0,1)):
+            raise ValueError('unrecognized legacy operation')
         plan=phase_plan(source,target)
         steps=db.execute('SELECT position,phase,status,evidence FROM steps WHERE operation=? ORDER BY rowid',(ident,)).fetchall()
         expected=[(i,p,s) for i,p in enumerate(plan) for s in ('intent','done')]
-        if [step[:3] for step in steps] != expected[:len(steps)] or any(value!='{}' for _,_,status,value in steps if status=='intent'):
+        if not steps or [step[:3] for step in steps] != expected[:len(steps)]:
             raise ValueError('unrecognized legacy operation steps')
+        for _,phase,status,value in steps:
+            if status=='intent' and value!='{}': raise ValueError('unrecognized legacy operation steps')
+            if status=='done':
+                try:
+                    parsed=json.loads(value, object_pairs_hook=lambda pairs: (_ for _ in ()).throw(ValueError()) if len({k for k,v in pairs}) != len(pairs) else dict(pairs))
+                except (TypeError,ValueError,json.JSONDecodeError): raise ValueError('unrecognized legacy operation steps')
+                if not isinstance(parsed,dict): raise ValueError('unrecognized legacy operation steps')
         if complete and [step[:3] for step in steps] != expected:
             raise ValueError('unrecognized legacy completed operation')
-    if db.execute('SELECT operation FROM steps').fetchall() and any(row[0] not in ids for row in db.execute('SELECT operation FROM steps')):
-        raise ValueError('unrecognized legacy operation reference')
+    outside=db.execute('SELECT operation FROM steps WHERE operation NOT IN (SELECT id FROM operations)').fetchall()
+    if outside: raise ValueError('unrecognized legacy operation reference')
 
 
 def _journal_schema(db):
@@ -528,6 +543,7 @@ def _ingress_allowed_body(root, maintenance, permit, ingress, boot):
             if db.execute('PRAGMA journal_mode').fetchone() != ('delete',): return False
             kind=_journal_schema(db)
             if kind==LEGACY_RESTORE_CONTRACT:
+                _validate_legacy_rows(db)
                 row=db.execute('SELECT id,source,target,complete,new_epoch FROM operations ORDER BY rowid DESC LIMIT 1').fetchone()
                 operation=(*row,LEGACY_RESTORE_CONTRACT) if row else None
             else:
