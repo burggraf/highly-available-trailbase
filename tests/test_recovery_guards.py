@@ -41,12 +41,12 @@ class RecoveryGuardTests(unittest.TestCase):
             'preflight':{},'close_ingress':{},'fence':{},
             'select_cut':{'positions':cut},
             'restore':{'cut':cut,'signature':signature},
-            'compare':{'positions':cut,'signature':signature,'auth_and_records':'PASS'},
+            'compare':acceptance_result(operation,'compare',cut,signature),
             'activate':{},
-            'baseline':{'epoch':operation['new_epoch'],'positions':baseline,'signature':baseline_signature,'auth_and_records':'PASS'},
+            'baseline':acceptance_result(operation,'baseline',baseline,baseline_signature),
             'route':{'writer':'A','epoch':operation['new_epoch'],'config_sha':digest},
             'verify':{'writer':verify_writer,'epoch':operation['new_epoch'],'positions':fresh,
-                      'new_writes':{'positions':fresh,'signature':fresh_signature,'auth_and_records':'PASS'}},
+                      'new_writes':acceptance_result(operation,'new-writes',fresh,fresh_signature)},
         }
         for phase in D3[:count]: journal.step(phase, lambda phase=phase: evidence[phase])
         return journal, operation, ingress

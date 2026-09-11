@@ -11,6 +11,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'hat'))
 import control
 import recovery
+from tests.acceptance_fixtures import acceptance_result
 
 
 DBS = ('main', 'session', 'aux')
@@ -117,14 +118,12 @@ class FakeIO:
                      if phase == 'compare' else
                      {db: hashlib.sha256((phase + '-' + db).encode()).hexdigest() for db in DBS})
         if phase == 'compare' and self.scenario == 'signature-mismatch': signature['main'] = 'f' * 64
-        value = {'positions': dict(positions), 'signature': signature,
-                 'auth_and_records': 'FAIL' if phase == 'compare' and self.scenario == 'auth-fail' else 'PASS'}
-        if phase == 'compare':
-            value['fault_outcomes'] = {'recovered': ['main_ops/d3-fault'], 'lost': [],
-                                       'ambiguous': [], 'unacknowledged_recovered': [], 'rejected': []}
-            if self.scenario == 'lost-ack':
-                value['fault_outcomes']['lost'] = value['fault_outcomes'].pop('recovered')
-                value['fault_outcomes']['recovered'] = []
+        value = acceptance_result(self.operation, phase, positions, signature)
+        if phase == 'compare' and self.scenario == 'auth-fail':
+            value['checks']['authentication'] = 'FAIL'
+        if phase == 'compare' and self.scenario == 'lost-ack':
+            value['checks']['fault_outcomes']['lost'] = value['checks']['fault_outcomes'].pop('recovered')
+            value['checks']['fault_outcomes']['recovered'] = []
         return value
 
     def command(self, argv, data=None, timeout=180):
@@ -188,9 +187,9 @@ class RecoverDriverTests(unittest.TestCase):
         protected.write_text(''.join(json.dumps(row) + '\n' for row in protected_rows))
         protected.chmod(0o600)
         baseline = root / 'protected-baseline.json'
-        private_json(baseline, {'epoch': source_epoch, 'positions': dict(main=5, session=6, aux=7),
-                                'signature': {db: hashlib.sha256(('protected-' + db).encode()).hexdigest() for db in DBS},
-                                'auth_and_records': 'PASS'})
+        private_json(baseline, acceptance_result(
+            authority, 'baseline', dict(main=5, session=6, aux=7),
+            {db: hashlib.sha256(('protected-' + db).encode()).hexdigest() for db in DBS}))
         fault = root / 'fault.jsonl'
         rows = [
             {'event': 'start', 'run_id': 'd3-' + '1' * 32, 'source_epoch': source_epoch,
@@ -275,7 +274,7 @@ class RecoverDriverTests(unittest.TestCase):
                              [(p, s) for p in control.D3_PHASES[:10] for s in ('intent', 'done')])
             baseline = json.loads(next(e for p, s, e in steps if p == 'baseline' and s == 'done'))
             restored = json.loads(next(e for p, s, e in steps if p == 'restore' and s == 'done'))
-            self.assertEqual(baseline['epoch'], row[1])
+            self.assertEqual(baseline['request']['epoch'], row[1])
             self.assertEqual(restored['cut'], {'main': 10, 'session': 11, 'aux': 12})
         with self.assertRaises(RuntimeError): recovery.recover({'hostname': socket.gethostname()}, **args)
 

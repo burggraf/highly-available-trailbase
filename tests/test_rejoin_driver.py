@@ -11,6 +11,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'hat'))
 import control
 import recovery
+from tests.acceptance_fixtures import acceptance_result
 
 DBS = ('main', 'session', 'aux')
 SOURCE_BOOT = '11111111-1111-4111-8111-111111111111'
@@ -116,17 +117,14 @@ class RejoinDriverTests(unittest.TestCase):
                 'preflight': {'source_boot': SOURCE_BOOT, 'candidate_boot': A_BOOT},
                 'select_cut': {'positions': cut(10)},
                 'restore': {'cut': cut(10), 'signature': signature('old')},
-                'compare': {'positions': cut(10), 'signature': signature('old'),
-                            'auth_and_records': 'PASS'},
+                'compare': acceptance_result(operation, 'compare', cut(10), signature('old')),
                 'activate': {'probe': {'boot_id': A_BOOT, 'config': {'role': 'writer',
                     'epoch': operation['new_epoch'], 'binaries': {'trail': 'a' * 64, 'litestream': 'b' * 64},
                     'support': {'fixed': 'c' * 64}}}},
-                'baseline': {'epoch': operation['new_epoch'], 'positions': cut(15),
-                             'signature': signature('baseline'), 'auth_and_records': 'PASS'},
+                'baseline': acceptance_result(operation, 'baseline', cut(15), signature('baseline')),
                 'route': {'writer': 'A', 'epoch': operation['new_epoch'], 'config_sha': route_sha},
                 'verify': {'writer': 'A', 'epoch': operation['new_epoch'], 'positions': cut(20),
-                           'new_writes': {'positions': cut(20), 'signature': signature('new'),
-                                          'auth_and_records': 'PASS'}},
+                           'new_writes': acceptance_result(operation, 'new-writes', cut(20), signature('new'))},
             }
             for phase in control.D3_PHASES[:10]:
                 journal.step(phase, lambda value=values.get(phase, {}): value)

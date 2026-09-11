@@ -14,6 +14,8 @@ import sys
 import tempfile
 import unittest
 
+from tests.acceptance_fixtures import acceptance_result
+
 ENTRY = Path(os.environ.get('HAT_CONTROL_ENTRY', str(Path(__file__).resolve().parents[1]/'hat/control.py')))
 
 def load():
@@ -96,8 +98,9 @@ class TransitionTests(unittest.TestCase):
                 before=j.db.execute('SELECT * FROM steps ORDER BY rowid').fetchall()
             with m.Journal(root) as j:
                 with self.assertRaises(RuntimeError):j.comparison_boundary('b'*32)
-                value=dict(positions=cut,signature=signature,auth_and_records='PASS')
-                with self.assertRaises(ValueError):j.accept_comparison(op['id'],value|{'positions':dict(main=2,session=2,aux=3)})
+                value=acceptance_result(op,'compare',cut,signature)
+                changed=json.loads(json.dumps(value));changed['request']['positions']['main']=2
+                with self.assertRaises(ValueError):j.accept_comparison(op['id'],changed)
                 j.accept_comparison(op['id'],value)
                 self.assertEqual(j.operation,op);self.assertEqual(j.next,6)
                 self.assertEqual(j.db.execute('SELECT * FROM steps ORDER BY rowid').fetchall()[:-1],before)
@@ -120,7 +123,8 @@ class TransitionTests(unittest.TestCase):
                 before=j.db.execute('SELECT * FROM steps ORDER BY rowid').fetchall()
             with m.Journal(root) as j:
                 with self.assertRaises(RuntimeError):j.comparison_boundary(op['id'])
-                result=dict(writer='B',epoch=op['new_epoch'],positions=newcut,new_writes=dict(positions=newcut,auth_and_records='PASS'))
+                result=dict(writer='B',epoch=op['new_epoch'],positions=newcut,
+                            new_writes=acceptance_result(op,'new-writes',newcut))
                 for patch in ({'epoch':'d1-wrong'},{'positions':cut},{'new_writes':{'auth_and_records':'FAIL'}}):
                     with self.assertRaises(ValueError):j.accept_verification(op['id'],result|patch)
                 j.accept_verification(op['id'],result)
