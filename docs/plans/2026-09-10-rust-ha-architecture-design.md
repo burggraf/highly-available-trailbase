@@ -78,7 +78,15 @@ A controller leader is a coordinator, not sole authority. It may propose state c
 
 If one controller fails, the other two retain quorum. If two fail, the existing writer may continue serving according to policy, but no promotion, route change, membership change, or new administrative operation is allowed.
 
-### 3.1 Approved controller trust model
+### 3.1 Approved quorum-loss behavior during operations
+
+Quorum loss pauses an operation at the next effect boundary. No new effect may be authorized without quorum. An already-authorized effect that an executor has durably accepted may finish locally; quorum loss does not cancel it. The executor retains its result, but committed completion cannot be claimed until quorum returns. No subsequent phase starts while quorum is unavailable.
+
+After quorum recovery, the leader inspects and reconciles before proceeding, never blindly replaying. Status distinguishes local observations from quorum-confirmed state. The existing writer may continue serving only if the operation has not already stopped or fenced it; HAT does not automatically undo partial work to restore availability.
+
+The exact authorization/acceptance protocol, including delayed delivery and paused executors, remains a required design and qualification boundary. A previously committed intent alone must not be treated as indefinitely reusable execution authority.
+
+### 3.2 Approved controller trust model
 
 V0.1 targets crash/partition fault tolerance, not Byzantine fault tolerance. Controllers may crash, restart, become unreachable, or encounter delayed/reordered messages. Safety assumes controller software follows the protocol and durable storage meets the qualified persistence contract.
 
