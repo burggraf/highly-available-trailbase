@@ -234,6 +234,29 @@ class Journal:
         self.next = 0
         self.pending = False
 
+    # Private seams let crash tests place failure immediately around SQLite's
+    # durable commit without exposing fault controls to callers.
+    def _before_commit(self, label):
+        return None
+
+    def _after_commit(self, label):
+        return None
+
+    def _commit(self, label):
+        self._before_commit(label)
+        self.db.commit()
+        self._after_commit(label)
+
+    def _migration_alter(self):
+        self.db.execute("ALTER TABLE operations ADD COLUMN restore_contract TEXT NOT NULL DEFAULT 'legacy' CHECK(restore_contract IN ('legacy','hat-restore-acceptance-1'))")
+
+    def _reopen(self, path):
+        self.db.close()
+        self.db = sqlite3.connect(path, timeout=0)
+        self.db.execute('PRAGMA journal_mode=DELETE')
+        self.db.execute('PRAGMA synchronous=EXTRA')
+        self.db.execute('PRAGMA foreign_keys=ON')
+
     def __enter__(self):
         try:
             s = self.root.lstat()
@@ -266,9 +289,9 @@ class Journal:
                     _validate_legacy_rows(self.db)
                     self.db.execute('BEGIN IMMEDIATE')
                     try:
-                        self.db.execute("ALTER TABLE operations ADD COLUMN restore_contract TEXT NOT NULL DEFAULT 'legacy' CHECK(restore_contract IN ('legacy','hat-restore-acceptance-1'))")
+                        self._migration_alter()
                         if _journal_schema(self.db)!=RESTORE_CONTRACT: raise ValueError('journal migration differs')
-                        self.db.commit();changed=True
+                        self._commit('migration');changed=True
                     except BaseException:
                         self.db.rollback();raise
             else:
@@ -278,9 +301,7 @@ class Journal:
                 fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
                 try: os.fsync(fd)
                 finally: os.close(fd)
-                self.db.close();self.db=sqlite3.connect(path,timeout=0)
-                self.db.execute('PRAGMA journal_mode=DELETE');self.db.execute('PRAGMA synchronous=EXTRA')
-                self.db.execute('PRAGMA foreign_keys=ON')
+                self._reopen(path)
                 if _journal_schema(self.db)!=RESTORE_CONTRACT: raise ValueError('journal reopen differs')
             self.database_identity = private_file(path)
             fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
@@ -312,9 +333,12 @@ class Journal:
             raise RuntimeError('unfinished operation requires reconciliation; no retry or force')
         ident = uuid.uuid4().hex
         operation = dict(id=ident, source=source, target=target, source_epoch=source_epoch, new_epoch='d1-'+ident)
-        with self.db:
+        try:
             self.db.execute('INSERT INTO operations(id,source,target,source_epoch,new_epoch,restore_contract) VALUES(?,?,?,?,?,?)',
                             (*operation.values(),RESTORE_CONTRACT))
+            self._commit('begin')
+        except BaseException:
+            self.db.rollback(); raise
         self.operation = operation; self.next = 0; self.pending = False
         return dict(operation)
 
@@ -327,13 +351,19 @@ class Journal:
                 or row[3]!=RESTORE_CONTRACT or self.pending or self.next >= len(plan) or plan[self.next] != phase):
             raise RuntimeError('out-of-order or uncertain step; no retry')
         self.pending = True
-        with self.db:
+        try:
             self.db.execute('INSERT INTO steps VALUES(?,?,?,?,?)', (self.operation['id'], self.next, phase, 'intent', '{}'))
+            self._commit('step-intent:'+phase)
+        except BaseException:
+            self.db.rollback(); raise
         result = action()
         self.check_authority()
         evidence = json.dumps(result, allow_nan=False)
-        with self.db:
+        try:
             self.db.execute('INSERT INTO steps VALUES(?,?,?,?,?)', (self.operation['id'], self.next, phase, 'done', evidence))
+            self._commit('step-done:'+phase)
+        except BaseException:
+            self.db.rollback(); raise
         self.next += 1; self.pending = False
         return result
 
@@ -417,8 +447,11 @@ class Journal:
                 or fresh['request'].get('positions')!=result['positions']
                 or any(result['positions'][db]<=pos for db,pos in expected_positions.items())):
             raise ValueError('verification evidence does not reconcile baseline and fresh writes')
-        with self.db:
+        try:
             self.db.execute('INSERT INTO steps VALUES(?,?,?,?,?)',(ident,9,'verify','done',json.dumps(result,allow_nan=False)))
+            self._commit('accept-verification-done')
+        except BaseException:
+            self.db.rollback(); raise
         self.operation=operation;self.next=10;self.pending=False
 
     def accept_comparison(self, ident, result):
@@ -427,8 +460,11 @@ class Journal:
         if (result.get('request',{}).get('positions')!=frozen['cut'] or result.get('signature')!=frozen['signature']
                 or result.get('checks',{}).get('records')!='PASS' or result.get('checks',{}).get('authentication')!='PASS'):
             raise ValueError('reconciled comparison does not match frozen cut')
-        with self.db:
+        try:
             self.db.execute('INSERT INTO steps VALUES(?,?,?,?,?)',(ident,5,'compare','done',json.dumps(result,allow_nan=False)))
+            self._commit('accept-comparison-done')
+        except BaseException:
+            self.db.rollback(); raise
         self.operation=operation;self.next=6;self.pending=False
 
     def finish(self):
@@ -442,9 +478,12 @@ class Journal:
         if (not self.operation or not row or row[:2]!=(self.operation['source'],self.operation['target'])
                 or row[3]!=RESTORE_CONTRACT or self.pending or self.next != len(plan) or steps!=expected):
             raise RuntimeError('cannot complete an unfinished transition')
-        with self.db:
+        try:
             changed=self.db.execute('UPDATE operations SET complete=1 WHERE id=? AND restore_contract=?', (self.operation['id'],RESTORE_CONTRACT)).rowcount
             if changed != 1: raise RuntimeError('operation restore contract differs')
+            self._commit('finish')
+        except BaseException:
+            self.db.rollback(); raise
         self.operation = None
 
 
