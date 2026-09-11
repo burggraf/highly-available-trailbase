@@ -150,6 +150,33 @@ class RestoreTask34FdCleanupTests(unittest.TestCase):
                     io.oracle('compare', 'config', positions, '/tmp/ledger.jsonl')
                 self.assertEqual(held.closed, 1)
 
+    def test_restore_closes_support_when_binary_authority_acquisition_fails(self):
+        import restore_baseline
+        root = Path(tempfile.mkdtemp(dir=Path.cwd())).resolve()
+        config = root / 'config'; config.write_bytes(b'config')
+        ledger = root / 'ledger.jsonl'; ledger.write_bytes(b'ledger'); ledger.chmod(0o600)
+        request_path = root / 'request.json'; request_path.write_bytes(b'{}')
+        info = ledger.stat(); support_hold = Held(strict=True)
+        support = {'config.textproto': 'b' * 64}
+        binaries = {'trail': 'c' * 64, 'litestream': 'd' * 64}
+        request = {'operation':'a'*32,'source':'A','target':'B','epoch':'d1-source','phase':'compare',
+                   'profile':'comparison','positions':{'main':1,'session':1,'aux':1},
+                   'inputs':{'replica_config_sha256':hashlib.sha256(b'config').hexdigest(),
+                             'ledger_sha256':hashlib.sha256(b'ledger').hexdigest(),
+                             'ledger_authority':{'ledger':{'path':str(ledger),'device':info.st_dev,
+                                 'inode':info.st_ino,'mode':0o600,'uid':info.st_uid,
+                                 'links':1,'bytes':6,'sha256':hashlib.sha256(b'ledger').hexdigest()}},
+                             'support':support,'binaries':binaries}}
+        with patch.object(restore_baseline.recovery, 'parse_canonical_json', return_value=request), \
+             patch.object(restore_baseline.recovery, 'parse_acceptance_request', return_value=request), \
+             patch.object(restore_baseline.recovery, '_replica_config'), \
+             patch.object(restore_baseline.recovery, '_protected_ledger'), \
+             patch.object(restore_baseline, '_validate_fixed_files',
+                          side_effect=[[support_hold], RuntimeError('binary acquisition')]):
+            with self.assertRaisesRegex(RuntimeError, 'binary acquisition'):
+                restore_baseline.restore(root, request_path, config, ledger, root, root)
+        self.assertEqual(support_hold.closed, 1)
+
     def test_held_input_acquisition_closes_prior_authorities_on_nth_failure(self):
         first, second = Held(), Held()
         opener = Mock(side_effect=[first, second, RuntimeError('nth input')])

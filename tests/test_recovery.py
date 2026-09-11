@@ -114,6 +114,19 @@ class RecoveryTests(unittest.TestCase):
             bad=self._request(operation,phase,self._authority(operation,origin))
             with self.assertRaises(ValueError):m.validate_acceptance_request(bad,operation)
 
+    def test_d3_authority_accepts_only_canonical_prior_operation_ledger(self):
+        m=self.module(); current='b'*32; prior='a'*32
+        operation={'id':current,'source':'B','target':'A','source_epoch':'d1-source','new_epoch':'d1-'+current}
+        authority=self._authority(operation,'d3-recovery-input')
+        authority['ledger']['path']='/var/lib/hat-control/'+prior+'/ledger.jsonl'
+        self.assertEqual(m.validate_acceptance_request(self._request(operation,'compare',authority),operation)['inputs']['ledger_authority'],authority)
+        for path in ('/var/lib/hat-control/'+current+'/ledger.jsonl',
+                     '/var/lib/hat-control/'+prior+'/other.jsonl',
+                     '/var/lib/hat-control/../outside/ledger.jsonl',
+                     '/tmp/'+prior+'/ledger.jsonl'):
+            bad=json.loads(json.dumps(authority)); bad['ledger']['path']=path
+            with self.assertRaises(ValueError):m.validate_acceptance_request(self._request(operation,'compare',bad),operation)
+
 
     def test_acceptance_phase_matrix_and_result_are_exact(self):
         m=self.module(); operation={'id':'a'*32,'source':'A','target':'B','source_epoch':'d1-source','new_epoch':'d1-'+'a'*32}

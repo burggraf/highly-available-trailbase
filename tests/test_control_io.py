@@ -126,6 +126,25 @@ class ControlIOTests(unittest.TestCase):
                 io._fence_target('B')
 
 
+    def test_committed_preflight_authority_supplies_reconciliation_manifests(self):
+        names = ('config.textproto', 'migrations/main/U100__hat_ops.sql',
+                 'migrations/aux/U100__hat_ops.sql', 'secrets/keys/private_key.pem',
+                 'secrets/keys/public_key.pem')
+        support = {name: 'b' * 64 for name in names}
+        binaries = {'trail': 'c' * 64, 'litestream': 'd' * 64}
+        io, _, _ = self.make_io(state={'B': {'boot_id': 'retained-only'}})
+        authority = {'schema':'hat-restore-input-authority-1','operation':io.operation['id'],
+                     'origin':'d2-preflight','ledger':{'path':'/var/lib/hat-control/'+io.operation['id']+'/ledger.jsonl',
+                     'device':1,'inode':2,'mode':384,'uid':0,'links':1,'bytes':1,'sha256':'a'*64},
+                     'support':support,'binaries':binaries}
+        io.journal.db = MagicMock()
+        io.journal.db.execute.return_value.fetchone.return_value = (json.dumps({'ledger_authority': authority}),)
+        self.assertEqual(io._authorized_manifests(), (names, support, binaries))
+        io.journal.db.execute.return_value.fetchone.return_value = (json.dumps({'ledger_authority': authority | {'support': {}}}),)
+        with self.assertRaises(ValueError): io._authorized_manifests()
+        io.journal.db.execute.return_value.fetchone.return_value = None
+        with self.assertRaises(ValueError): io._authorized_manifests()
+
     def test_fresh_writes_authority_is_canonical_and_required(self):
         names = ('config.textproto', 'migrations/main/U100__hat_ops.sql',
                  'migrations/aux/U100__hat_ops.sql', 'secrets/keys/private_key.pem',
