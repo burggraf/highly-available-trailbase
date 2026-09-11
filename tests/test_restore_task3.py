@@ -9,8 +9,27 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'hat'))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import recovery
+import control
 
 class RestoreTask3Tests(unittest.TestCase):
+    def test_installed_manifest_can_hold_fixed_tree_authority(self):
+        root = Path(tempfile.mkdtemp(dir=Path.cwd()))
+        support = root / 'support'; support.mkdir(mode=0o700)
+        item = support / 'fixed'; item.write_bytes(b'fixed'); item.chmod(0o600)
+        io = control.ControlIO.__new__(control.ControlIO)
+        manifest, held = io._installed_manifest(
+            root, ('support/fixed',), os.geteuid(), os.getegid(), 0o600, hold=True)
+        try:
+            self.assertEqual(manifest, {'support/fixed': hashlib.sha256(b'fixed').hexdigest()})
+            item.rename(support / 'old')
+            item.write_bytes(b'fixed'); item.chmod(0o600)
+            with self.assertRaises(ValueError):
+                for authority in held:
+                    authority.recheck()
+        finally:
+            for authority in reversed(held):
+                authority.close()
+
     def test_oracle_raw_rejects_symlinked_ancestor(self):
         import restore_baseline
         root = Path(tempfile.mkdtemp(dir=Path.cwd()))
