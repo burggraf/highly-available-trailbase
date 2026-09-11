@@ -1,9 +1,14 @@
 import ast
+import contextlib
 import importlib.util
+from io import StringIO
 from pathlib import Path
+import sqlite3
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
+import urllib.error
 
 
 PATH = Path(__file__).with_name('restore_baseline.py')
@@ -74,13 +79,50 @@ class RestoreOracleTests(unittest.TestCase):
         with mock.patch.object(oracle, '_main', side_effect=ValueError(secret)), \
              mock.patch('sys.stderr') as stderr:
             self.assertNotEqual(oracle.main([secret]), 0)
-        stderr.write.assert_called_once_with('FAIL: restore baseline failed\\n')
+        stderr.write.assert_called_once_with('FAIL: restore baseline failed\n')
         self.assertNotIn(secret, str(stderr.write.call_args))
 
     def test_parser_errors_are_converted_to_constant_failure(self):
         with mock.patch('sys.stderr') as stderr:
             self.assertEqual(oracle.main(['--unknown', 'secret-body']), 1)
-        stderr.write.assert_called_once_with('FAIL: restore baseline failed\\n')
+        stderr.write.assert_called_once_with('FAIL: restore baseline failed\n')
+
+    def test_ordinary_failures_are_bounded_including_publication(self):
+        argv = ['--root', '/secret/root', '--acceptance-request', '/secret/request',
+                '--config', '/secret/config', '--ledger', '/secret/ledger',
+                '--support', '/secret/support', '--binaries', '/secret/binaries',
+                '--result', '/secret/result']
+        failures = (ValueError('secret malformed JSON'), sqlite3.DatabaseError('secret sqlite'),
+                    subprocess.CalledProcessError(1, ['secret-command']),
+                    subprocess.TimeoutExpired('secret-command', 1),
+                    urllib.error.URLError('secret HTTP body'), OSError('secret descriptor'))
+        for failure in failures:
+            with self.subTest(failure=type(failure).__name__), \
+                 mock.patch.object(oracle, 'restore', side_effect=failure), \
+                 contextlib.redirect_stdout(StringIO()) as stdout, \
+                 contextlib.redirect_stderr(StringIO()) as stderr:
+                self.assertEqual(oracle.main(argv), 1)
+            self.assertEqual(stdout.getvalue(), '')
+            self.assertEqual(stderr.getvalue(), 'FAIL: restore baseline failed\n')
+        with mock.patch.object(oracle, 'restore', return_value={}), \
+             mock.patch.object(oracle.descriptor.DescriptorAuthority, 'open_directory',
+                                side_effect=RuntimeError('secret publication')), \
+             contextlib.redirect_stdout(StringIO()) as stdout, \
+             contextlib.redirect_stderr(StringIO()) as stderr:
+            self.assertEqual(oracle.main(argv), 1)
+        self.assertEqual(stdout.getvalue(), '')
+        self.assertEqual(stderr.getvalue(), 'FAIL: restore baseline failed\n')
+
+    def test_duplicate_secret_input_is_bounded_under_optimization(self):
+        argv = ['--root', '/root', '--acceptance-request', '/request', '--config', '/config',
+                '--ledger', '/ledger', '--support', '/support', '--binaries', '/binaries',
+                '--result', '/result']
+        with mock.patch.object(oracle, '_read', return_value=b'{"secret":"one","secret":"two"}'), \
+             contextlib.redirect_stdout(StringIO()) as stdout, \
+             contextlib.redirect_stderr(StringIO()) as stderr:
+            self.assertEqual(oracle.main(argv), 1)
+        self.assertEqual(stdout.getvalue(), '')
+        self.assertEqual(stderr.getvalue(), 'FAIL: restore baseline failed\n')
 
     def test_success_emits_only_fixed_pass(self):
         with mock.patch.object(oracle, '_main', return_value=0), mock.patch('sys.stdout') as stdout:
