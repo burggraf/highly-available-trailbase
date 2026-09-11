@@ -501,13 +501,15 @@ def _source_config(value, epoch):
 
 
 def _replica_config(value, epoch):
-    if isinstance(value, bytearray): value=bytes(value)
-    if (not isinstance(value, bytes) or not 0 < len(value) <= MAX_INPUT or b"\r" in value
-            or b"\x00" in value or value.startswith(b"\xef\xbb\xbf") or not value.endswith(b"\n")):
+    if isinstance(value,str): raw=value.encode()
+    elif isinstance(value,(bytes,bytearray)): raw=bytes(value)
+    else: raise ValueError('captured replica config is invalid')
+    if (not 0 < len(raw) <= MAX_INPUT or b"\r" in raw or b"\x00" in raw
+            or raw.startswith(b"\xef\xbb\xbf") or not raw.endswith(b"\n")):
         raise ValueError('captured replica config is invalid')
-    try: text=value.decode('utf-8')
+    try: text=raw.decode('utf-8')
     except UnicodeDecodeError as exc: raise ValueError('captured replica config is invalid') from exc
-    lines=value.split(b"\n")[:-1]
+    lines=raw.split(b"\n")[:-1]
     if any(len(line)>8192 for line in lines): raise ValueError('captured replica config is invalid')
     paths=[]
     for line in text.split('\n')[:-1]:
@@ -614,7 +616,7 @@ def _load_input(path, root):
     probe = _writer(health['probe'], value['source_epoch'], value['source_boot'], value['source_config'])
     start = _json(_owned_bytes(value['fault_ledger'], MAX_ARTIFACT, root).splitlines()[0])
     if (probe['config'] != value['source_config'] or probe.get('replica_config') != value['source_replica']
-            or any(probe['status']['positions'][db] < baseline['positions'][db] for db in node.DBS)
+            or any(probe['status']['positions'][db] < baseline['request']['positions'][db] for db in node.DBS)
             or type(health['observed_ns']) is not int or type(start.get('time_ns')) is not int
             or start.get('event') != 'start' or not 0 <= health['observed_ns'] <= start['time_ns']):
         raise ValueError('source health is not bound before fault traffic at the protected baseline')
@@ -946,7 +948,7 @@ def recover(config, *, control_module=None, io_factory=None,
                 writer = _writer(io.remote('A', 'probe-new'),
                                  operation['new_epoch'], input_value['candidate_boot'], input_value['source_config'])
                 positions = writer['status']['positions']
-                if all(positions[db] > state['baseline']['positions'][db] for db in node.DBS): break
+                if all(positions[db] > state['baseline']['request']['positions'][db] for db in node.DBS): break
                 if time.monotonic() > deadline: raise RuntimeError('new writes were not published beyond baseline')
                 time.sleep(1)
             report = io.oracle('new-writes', writer['replica_config'], positions, fresh)

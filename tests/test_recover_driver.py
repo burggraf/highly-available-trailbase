@@ -179,12 +179,17 @@ class RecoverDriverTests(unittest.TestCase):
         protected = root / 'protected.jsonl'
         protected_rows = [
             {'auth_token': 'token', 'retained_refresh': 'keep', 'revoked_refresh': 'gone'},
+            {'event': 'submitted', 'api': 'main_ops',
+             'row': {'op_key': 'd1-main', 'payload': 'old'}, 'time_ns': 1},
             {'event': 'acknowledged', 'api': 'main_ops',
-             'row': {'op_key': 'd1-main', 'payload': 'old'}, 'id': '1', 'time_ns': 1},
+             'row': {'op_key': 'd1-main', 'payload': 'old'}, 'id': '1', 'time_ns': 2},
+            {'event': 'submitted', 'api': 'aux_ops',
+             'row': {'op_key': 'd1-aux', 'payload': 'old'}, 'time_ns': 3},
             {'event': 'acknowledged', 'api': 'aux_ops',
-             'row': {'op_key': 'd1-aux', 'payload': 'old'}, 'id': '1', 'time_ns': 2},
+             'row': {'op_key': 'd1-aux', 'payload': 'old'}, 'id': '2', 'time_ns': 4},
+            {'event': 'smoke_pass'},
         ]
-        protected.write_text(''.join(json.dumps(row) + '\n' for row in protected_rows))
+        protected.write_bytes(b''.join(recovery.canonical_json(row) + b'\n' for row in protected_rows))
         protected.chmod(0o600)
         baseline = root / 'protected-baseline.json'
         private_json(baseline, acceptance_result(
