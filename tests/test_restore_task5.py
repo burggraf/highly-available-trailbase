@@ -6,10 +6,11 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'hat'))
 import control
+import recovery
 
 
 class _Journal:
@@ -97,6 +98,93 @@ class RestoreTask5Tests(unittest.TestCase):
             io._durable_bytes(root / 'replica.yml', raw, label='replica-config')
         self.assertGreater(len(calls), 1)
         self.assertEqual((root / 'replica.yml').read_bytes(), raw)
+
+    def test_recovery_private_writer_rejects_nonpositive_writes(self):
+        for result in (0, -1):
+            with self.subTest(result=result):
+                root = Path(tempfile.mkdtemp())
+                with patch.object(recovery.os, 'write', return_value=result) as write:
+                    with self.assertRaises(OSError):
+                        recovery._write_private(root / 'artifact', b'payload')
+                self.assertEqual(write.call_count, 1)
+
+    def test_recovery_private_writer_reopens_exact_partial_bytes(self):
+        root = Path(tempfile.mkdtemp())
+        raw = b'exact partial bytes'
+        real_write = os.write
+        calls = []
+
+        def partial(fd, value):
+            calls.append(bytes(value))
+            return real_write(fd, value[:1])
+
+        with patch.object(recovery.os, 'write', side_effect=partial):
+            recovery._write_private(root / 'artifact', raw)
+        self.assertGreaterEqual(len(calls), len(raw))
+        self.assertEqual((root / 'artifact').read_bytes(), raw)
+
+    def test_nonzero_command_failure_survives_outcome_write_failure(self):
+        io, root = self.io()
+        process = _Process(); process.returncode = 7
+        original = io._durable_json
+
+        def fail_outcome(path, value, label='json'):
+            if label == 'command-outcome':
+                raise OSError('outcome fsync')
+            return original(path, value, label=label)
+
+        with patch.object(control.subprocess, 'Popen', return_value=process), \
+             patch.object(io, '_durable_json', side_effect=fail_outcome):
+            with self.assertRaisesRegex(RuntimeError, 'command failed'):
+                io.command(['command'])
+        self.assertEqual(process.returncode, 7)
+
+    def test_stderr_open_failure_closes_stdout_and_preserves_generic_error(self):
+        io, root = self.io()
+        real_open = control.os.open
+
+        def fail_stderr(path, *args):
+            if Path(path).suffix == '.stderr':
+                raise OSError('stderr open')
+            return real_open(path, *args)
+
+        with patch.object(control.os, 'open', side_effect=fail_stderr):
+            with self.assertRaisesRegex(OSError, 'stderr open'):
+                io.command(['command'])
+        self.assertEqual(len(list(root.glob('*.stdout'))), 1)
+        self.assertEqual(list(root.glob('*.stderr')), [])
+
+    def test_systemd_timeout_stops_and_verifies_pinned_unit_once(self):
+        io, root = self.io()
+        process = _Process()
+        process.communicate = lambda input=None, timeout=None: (_ for _ in ()).throw(
+            subprocess.TimeoutExpired(['systemd-run'], timeout))
+        verified = b'LoadState=loaded\nActiveState=inactive\nSubState=dead\nMainPID=0\n'
+        stop = Mock(returncode=0)
+        show = Mock(returncode=0, stdout=verified, stderr=b'')
+        with patch.object(control.subprocess, 'Popen', return_value=process), \
+             patch.object(control.subprocess, 'run', side_effect=[stop, show]) as run:
+            with self.assertRaises(subprocess.TimeoutExpired):
+                io.command(['systemd-run', '--unit=hat-test.service'])
+        self.assertEqual(run.call_count, 2)
+        outcome = json.loads(next(root.glob('*.outcome.json')).read_text())
+        self.assertFalse(outcome.get('cleanup_uncertain', False))
+        self.assertEqual(outcome['cleanup']['verify'], 'inactive-dead-mainpid0')
+
+    def test_systemd_cleanup_failure_is_durable_and_generic(self):
+        io, root = self.io()
+        process = _Process()
+        process.communicate = lambda input=None, timeout=None: (_ for _ in ()).throw(
+            subprocess.TimeoutExpired(['systemd-run', '--secret=value'], timeout))
+        with patch.object(control.subprocess, 'Popen', return_value=process), \
+             patch.object(control.subprocess, 'run', side_effect=PermissionError('EPERM')):
+            with self.assertRaises(control.CommandCleanupUncertain) as caught:
+                io.command(['systemd-run', '--unit=hat-test.service', '--secret=value'])
+        self.assertNotIn('secret=value', str(caught.exception))
+        artifact = next(root.glob('*.cleanup-uncertain.json'))
+        value = json.loads(artifact.read_text())
+        self.assertTrue(value['cleanup_uncertain'])
+        self.assertNotIn('secret=value', artifact.read_text())
 
     def test_private_command_seams_are_present(self):
         self.assertTrue(hasattr(control.ControlIO, '_after_command_start'))

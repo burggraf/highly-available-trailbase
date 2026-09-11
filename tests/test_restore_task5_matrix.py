@@ -202,8 +202,15 @@ class RealOracleFixture:
         return self.oracle_root / f'{prefix}-{self.operation["id"]}-{self.phase}'
 
     def popen(self, timeout=False):
-        return patch.object(control.subprocess, 'Popen',
-                            side_effect=lambda argv, **_: _OracleProcess(argv, self.spawns, timeout))
+        stack = ExitStack()
+        stack.enter_context(patch.object(
+            control.subprocess, 'Popen',
+            side_effect=lambda argv, **_: _OracleProcess(argv, self.spawns, timeout)))
+        stack.enter_context(patch.object(
+            control.subprocess, 'run',
+            side_effect=lambda argv, **_: Mock(
+                returncode=0, stdout=b'LoadState=not-found\\nMainPID=0\\n', stderr=b'')))
+        return stack
 
     def invoke(self):
         return self.io.oracle(self.phase, b'replica-config', self.POSITIONS,

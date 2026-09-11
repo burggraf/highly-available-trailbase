@@ -335,6 +335,7 @@ class ControlIOTests(unittest.TestCase):
                     path = fds.get(fd)
                     if path == request_path: events.append('request-fsync')
                     elif path == io.work and 'replica.yml' not in events: events.append('work-fsync')
+                    elif path == control.ORACLE_ROOT: events.append('oracle-root-fsync')
                     elif path == area: events.append('area-fsync')
                 def copied(source, destination, *args, **kwargs):
                     events.append(Path(destination).name)
@@ -353,9 +354,9 @@ class ControlIOTests(unittest.TestCase):
                         io.oracle('compare', 'config', positions, '/tmp/ledger.jsonl',
                                   '/tmp/fault.jsonl' if fault else None)
                 expected = ['operation-request', 'request-fsync', 'work-fsync',
-                            'replica.yml', 'area-fsync', 'ledger.jsonl']
+                            'oracle-root-fsync', 'replica.yml', 'area-fsync', 'ledger.jsonl']
                 if fault: expected.append('fault-ledger.jsonl')
-                expected += ['acceptance-request.json', 'area-fsync']
+                expected += ['acceptance-request.json']
                 self.assertEqual([event for event in events if event in expected], expected)
                 command.assert_called_once()
 
