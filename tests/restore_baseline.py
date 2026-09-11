@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -56,7 +57,8 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
             raise ValueError('fault ledger changed')
     else:
         events = None
-    root = Path(root); root.mkdir(mode=0o700, exist_ok=False)
+    root = Path(root)
+    if not root.is_dir() or root.is_symlink(): raise ValueError('oracle root is unsafe')
     work = root / uuid.uuid4().hex; work.mkdir(mode=0o700)
     depot = work / 'depot'; shutil.copytree(support, depot); data = depot / 'data'; data.mkdir()
     evidence = {'databases': {}}
@@ -74,9 +76,28 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
                 raise ValueError('database checks failed')
         evidence['databases'][name] = {'position': position, 'sha256': hashlib.sha256(target.read_bytes()).hexdigest(), 'integrity':'PASS', 'foreign_keys':'PASS'}
     evidence['signature'] = logical_signature(data)
-    # The HTTP oracle is intentionally independent of request parsing and restore mechanics.
-    with sqlite3.connect(':memory:'):
-        pass
+    with socket.socket() as sock:
+        sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
+    base = f'http://127.0.0.1:{port}'
+    env = {k:v for k,v in os.environ.items() if not k.startswith('IDRIVE_')}
+    log = (work / 'trail-oracle.log').open('xb')
+    child = subprocess.Popen([str(Path(binaries)/'trail'), '--depot', str(depot), 'run', '--address', f'127.0.0.1:{port}', '--stderr-logging'], stdout=log, stderr=subprocess.STDOUT, env=env)
+    try:
+        deadline = time.monotonic() + 60
+        while True:
+            if child.poll() is not None: raise ValueError('oracle TrailBase exited')
+            try:
+                code, _ = request(base, '/api/healthcheck')
+                if code == 200: break
+            except OSError: pass
+            if time.monotonic() >= deadline: raise ValueError('oracle readiness timeout')
+            time.sleep(.2)
+        verify_restore(base, ledger)
+    finally:
+        child.terminate()
+        try: child.wait(timeout=15)
+        except subprocess.TimeoutExpired: child.kill(); child.wait()
+        log.close()
     evidence['checks'] = {'records':'PASS', 'authentication':'PASS'}
     if events is not None:
         outcomes = classify_fault(events, data)
