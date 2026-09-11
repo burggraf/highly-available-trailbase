@@ -122,10 +122,9 @@ pub fn validate_and_restore(
     validate_fixture(&payload, request)?;
 
     fs::create_dir(destination).map_err(|_| RestoreError::Io)?;
-    let result = write_destination(destination, &manifest_bytes, &payload);
-    if result.is_err() {
+    if let Err(error) = write_destination(destination, &manifest_bytes, &payload) {
         let _ = fs::remove_dir_all(destination);
-        return Err(result.unwrap_err());
+        return Err(error);
     }
     Ok(RestoreReceipt {
         database: manifest.database,

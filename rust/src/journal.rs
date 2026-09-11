@@ -98,6 +98,23 @@ impl Journal {
         })
     }
 
+    pub fn receipt(&self, request_id: &str) -> Result<Option<OperationReceipt>, JournalError> {
+        self.connection
+            .query_row(
+                "SELECT request_id, operation_id, state FROM operations WHERE request_id = ?1",
+                params![request_id],
+                |row| {
+                    Ok(OperationReceipt {
+                        request_id: row.get(0)?,
+                        operation_id: row.get(1)?,
+                        state: row.get(2)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
     pub fn submit(
         &mut self,
         request_id: &str,

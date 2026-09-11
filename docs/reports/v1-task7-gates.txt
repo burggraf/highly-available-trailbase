@@ -1,0 +1,19 @@
+Task 7 local acceptance gates
+
+Scope: one fixture-only planned switchover using in-memory node/route state, SQLite journal, fixture restore, and supplied fence evidence. No native TrailBase/Litestream, provider fencing, deployment, VPS, public HTTPS, or disruptive action.
+
+Focused behavioral check:
+- `cargo test --manifest-path rust/Cargo.toml --test operations -- --nocapture`: exit 0; 4 tests.
+- Coverage includes ordered old/candidate quiescence and delayed activation, exact fence action/evidence binding, fresh restore, exact success/uncertain replay receipts, seven effect/lost-response fault points, restore/evidence failure blocking, journal uncertainty refusal, route-publication uncertainty, and stale old activation refusal after quarantine.
+
+Full gates:
+- `cargo fmt --manifest-path rust/Cargo.toml --check`: exit 0.
+- `cargo test --manifest-path rust/Cargo.toml --locked`: exit 0; 29 library tests, 0 binary tests, 3 CLI, 1 controller, 1 dashboard, 1 node, 4 operations, 8 proxy, 4 recovery-boundary tests = 51 passing tests (plus 0 doc tests).
+- `cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings`: exit 0.
+- `cargo build --manifest-path rust/Cargo.toml --release --locked`: exit 0.
+- `git diff --check`: exit 0.
+
+Review:
+- Fresh read-only review passed T7-AC1 through T7-AC4 after quarantine, exact replay, restore-uncertainty, admission-state assertions, and failure coverage were corrected.
+
+Result: local Task 7 criteria pass. This is not a native, provider, deployment, VPS, public-traffic, failover/rejoin, or production qualification claim.

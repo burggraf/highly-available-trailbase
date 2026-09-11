@@ -1,0 +1,13 @@
+Task 7 behavioral RED evidence
+
+Scope: local fixture-only planned switchover. No native TrailBase/Litestream, provider, deployment, VPS, public traffic, or disruptive action.
+
+Initial test-first command:
+  cargo test --manifest-path rust/Cargo.toml --test operations -- --nocapture
+Result: exit 101. The new operations test target could not compile because `rust/src/operations.rs` and its public module were not yet present. This setup failure is retained and is not treated as behavioral RED by itself.
+
+Behavioral regression RED during the implementation loop:
+  cargo test --manifest-path rust/Cargo.toml --test operations -- --nocapture
+Result: exit 101 after temporarily removing the old-node quarantine transition. The suite ran 4 tests; 2 passed and 2 failed. The sequence test and fault-boundary test both failed their `operation.old().node.quarantined()` assertion, demonstrating that stale exact activation protection was required. The quarantine implementation was restored immediately; the subsequent focused suite passed 4/4.
+
+The failed output is retained in `docs/reports/v1-task7-red-behavior.log`; it contains only fixture test names and assertions.

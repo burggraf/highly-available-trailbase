@@ -1,0 +1,18 @@
+Task 7 fresh review disposition
+
+Reviewer: fresh read-only `spec-reviewer` subagent, final review mission `56f25c09-225a-4d9d-bb29-ee7c9d496c70` (recorded session review; no edits)
+Scope: current local-only diff against T7-AC1 through T7-AC4.
+
+Final disposition: pass for the approved local contract.
+
+Covered:
+- Ordered admission closure, owned-child shutdown, exact settled fence action/evidence binding, restore before candidate admission, candidate promotion, and one higher-generation route replacement.
+- Exact journal replay returns the retained receipt without repeating effects; conflicting identities and new submissions after `blocked_uncertain` are refused.
+- Restore/effect-boundary failures retain intent and block uncertainty; route-publication uncertainty is explicit, candidate admission state is tested, and the old exact activation grant is refused after success and fault paths through node quarantine.
+- Full Rust tests, locked release build, fmt, Clippy `-D warnings`, and diff checks were independently run and passed.
+
+Residual risks and explicit non-goals:
+- Route publication is one in-memory fixture table, not distributed proxy rollout or durable route publication.
+- Fence evidence is supplied by a local test boundary; provider settlement and late effects remain unqualified.
+- Restore validation remains fixture JSON; no TrailBase/SQLite application validation occurred.
+- Controller crash/reconciliation, unplanned failover, rejoin, deployment, VPS, public HTTPS, native qualification, and disruptive testing remain later authorization-gated stages.

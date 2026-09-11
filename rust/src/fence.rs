@@ -33,6 +33,7 @@ pub struct FenceRequest {
 }
 
 impl FenceRequest {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         cluster_id: &str,
         operation_id: &str,

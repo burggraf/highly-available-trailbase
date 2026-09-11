@@ -1,0 +1,26 @@
+   Compiling hat v0.1.0 (/Users/markb/dev/hat/rust)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 3.21s
+     Running tests/operations.rs (rust/target/debug/deps/operations-7a849ff7fcb47dbc)
+
+running 4 tests
+
+thread 'lost_or_failed_boundaries_block_conflicting_work_without_reviving_old_writer' (52356815) panicked at tests/operations.rs:211:9:
+assertion failed: operation.old().node.quarantined()
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test lost_or_failed_boundaries_block_conflicting_work_without_reviving_old_writer ... FAILED
+test unsettled_or_wrong_fence_evidence_refuses_before_candidate_activation ... ok
+test restore_failure_blocks_the_operation_before_candidate_activation ... ok
+
+thread 'planned_switchover_quiesces_old_writer_before_candidate_admission_and_replaces_route_once' (52356816) panicked at tests/operations.rs:165:5:
+assertion failed: operation.old().node.quarantined()
+test planned_switchover_quiesces_old_writer_before_candidate_admission_and_replaces_route_once ... FAILED
+
+failures:
+
+failures:
+    lost_or_failed_boundaries_block_conflicting_work_without_reviving_old_writer
+    planned_switchover_quiesces_old_writer_before_candidate_admission_and_replaces_route_once
+
+test result: FAILED. 2 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+error: test failed, to rerun pass `--test operations`

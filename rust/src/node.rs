@@ -30,6 +30,7 @@ pub struct NodeState {
     role: NodeRole,
     admission: Admission,
     writer_epoch: Option<u64>,
+    quarantined: bool,
     revision: u64,
     used_incarnations: HashSet<String>,
 }
@@ -41,9 +42,12 @@ pub enum NodeError {
     WrongNode,
     WrongIncarnation,
     StandbyActivation,
+    AlreadyPrimary,
+    AdmissionOpen,
     MissingEpoch,
     SameIncarnation,
     ReusedIncarnation,
+    Quarantined,
     ChildLimit,
 }
 
@@ -64,12 +68,43 @@ impl NodeState {
             role,
             admission: Admission::Closed,
             writer_epoch: None,
+            quarantined: false,
             revision: 0,
             used_incarnations: HashSet::from([incarnation.to_owned()]),
         })
     }
 
+    pub fn quarantine(&mut self) {
+        self.quarantined = true;
+        self.admission = Admission::Closed;
+        self.writer_epoch = None;
+        self.revision += 1;
+    }
+
+    pub fn quarantined(&self) -> bool {
+        self.quarantined
+    }
+
+    pub fn promote_to_primary(&mut self) -> Result<(), NodeError> {
+        if self.role == NodeRole::Primary {
+            return Err(NodeError::AlreadyPrimary);
+        }
+        if self.admission == Admission::Open || self.writer_epoch.is_some() {
+            return Err(NodeError::AdmissionOpen);
+        }
+        self.role = NodeRole::Primary;
+        self.revision += 1;
+        Ok(())
+    }
+
+    pub fn role(&self) -> NodeRole {
+        self.role
+    }
+
     pub fn activate(&mut self, grant: &ActivationGrant) -> Result<(), NodeError> {
+        if self.quarantined {
+            return Err(NodeError::Quarantined);
+        }
         if grant.cluster_id != self.cluster_id {
             return Err(NodeError::WrongCluster);
         }

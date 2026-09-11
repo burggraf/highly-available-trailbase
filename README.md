@@ -6,13 +6,13 @@ An early-stage project for a single-writer [TrailBase](https://github.com/trailb
 
 ## Current development — Rust V1
 
-**Active scope:** one controller, primary-only proxies, manual fenced failover; no Raft or replica reads. **Current stage: Task 6 local restore/fence boundary accepted.** Task 2, the local-only Task 3 proxy, the fixture-only Task 4 lifecycle/replication boundaries, the local Task 5 controller/journal/auth/dashboard/restart boundaries, and the local Task 6 restore/fence boundary are accepted. Live fencing, failover, deployment, TLS peer identity, public HTTPS, and native qualification remain later stages.
+**Active scope:** one controller, primary-only proxies, manual fenced failover; no Raft or replica reads. **Current stage: Task 7 local planned switchover accepted.** Task 2, the local-only Task 3 proxy, the fixture-only Task 4 lifecycle/replication boundaries, the local Task 5 controller/journal/auth/dashboard/restart boundaries, the local Task 6 restore/fence boundary, and the local Task 7 planned-switchover path are accepted. Live fencing, failover/rejoin, deployment, TLS peer identity, public HTTPS, and native qualification remain later stages.
 
 - [Active plan and restart handoff](docs/plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance) — authoritative stage/acceptance tracker.
 - [Development workflow](AGENTS.md) — restart procedure, autonomous stage loop, evidence and approval rules.
 - [Current status](docs/status.md) and [Rust usage/limits](rust/README.md).
 
-Task 2, Task 3, Task 4, Task 5, and the local-only Task 6 restore/fence boundary are accepted on `main`; Task 6 is committed locally and is not yet pushed. No external effects are authorized.
+Task 2 through Task 7 are accepted only for local fixture behavior on `main`; the Task 7 checkpoint is committed locally and is not yet pushed. No external effects are authorized.
 
 Python `hat/`, `tests/`, `experiments/`, existing `deploy/`, and earlier plans are **historical implementation/evidence**, not instructions to resume old live operations or the current Rust roadmap. Preserve them; do not translate them wholesale or treat their checks as Rust qualification.
 

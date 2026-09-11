@@ -1,6 +1,6 @@
-# HAT Rust V1 — Task 2
+# HAT Rust V1 — local Tasks 2–7
 
-This package implements the inert Task 2 slice from the [single-controller V1 plan](../docs/plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance): bounded configuration validation and in-memory primary-only route selection. It does not listen, connect, start a writer, persist routes, activate nodes, fail over, or inspect referenced files.
+This package implements the accepted local slices from the [single-controller V1 plan](../docs/plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance): bounded configuration validation, primary-only routing/proxying, fixture node/controller state, restore/fence boundaries, and one planned switchover path. It does not perform native TrailBase/Litestream work, provider fencing, deployment, public traffic, or failover/rejoin qualification.
 
 ## Configuration checker
 
@@ -85,3 +85,9 @@ This is not a controller deployment, failover, or native qualification claim. Py
 `fence` defines a bounded executable adapter contract with exact operation/action/target/incarnation/evidence bindings, protected credential references outside argv/results, bounded JSON input/output, process-group cleanup on every post-spawn failure, and typed refusal for stale, uncertain, malformed, delayed, or lost responses. Unknown results mark a journal operation `blocked_uncertain`, which blocks new mutations until a later reconciliation stage. The default tests use disposable local fake executables only; no provider action, deployment, VPS, or live fencing is performed.
 
 This local slice is accepted against T6-AC1 through T6-AC4. Its application/auth checks are fixture JSON validators, not TrailBase validation; filesystem checks are not a complete descriptor-relative anti-TOCTOU implementation.
+
+## Local planned switchover path (Task 7, accepted locally)
+
+`PlannedSwitchover` exercises one in-memory/SQLite fixture handover: it closes old admission, stops the old mutator/uploader and candidate follower children, requires exact settled fence evidence, quarantines the old node, validates/restores a fresh candidate workspace, promotes and activates the candidate, then publishes one higher-generation route. Exact journal replay returns its retained receipt; uncertain restore, fence, and effect-boundary responses mark `blocked_uncertain` and refuse new mutations. Quarantine rejects stale exact activation grants, including after route-publication uncertainty.
+
+The operation tests use disposable `sh` children and fixture JSON only. Route state is in-memory, fence evidence is supplied by the test boundary, and no real provider, TrailBase/Litestream process, deployment, VPS, public listener, distributed route rollout, failover, or rejoin is exercised. Task 8 remains separately authorization-gated.

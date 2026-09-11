@@ -26,7 +26,7 @@ This section is the authoritative restart tracker. Follow [AGENTS.md](../../AGEN
 | Task 4 — lifecycle/replication | accepted | Local fixture-only criteria T4-AC1 through T4-AC5 passed on `main`; native TrailBase/Litestream, systemd, deployment, and live effects remain deferred. |
 | Task 5 — controller/dashboard/restart | accepted | Local-only criteria T5-AC1 through T5-AC5 passed on `main`; VPS/deployment/native/public HTTPS qualification remains separately gated. |
 | Task 6 — restore/fence boundary | accepted | Local-only criteria T6-AC1 through T6-AC4 passed on `main`; fake adapters do not authorize live fencing, native execution, deployment, or VPS effects. |
-| Task 7 — planned switchover | pending | Not authorized; Task 5/6 and fixture approval required. |
+| Task 7 — planned switchover | accepted | Local-only criteria T7-AC1 through T7-AC4 passed on `main`; native/provider/deployment/disruptive effects remain unauthorized. |
 | Task 8 — failover/rejoin | pending | Not authorized; accepted Task 7 required. |
 | Task 9 — deployment/native acceptance | pending | Not authorized; explicit disposable infrastructure and deployment approvals required. |
 | Task 10 — fault/release qualification | pending | Not authorized; workload, attempt budget and soak approval required. |
@@ -414,6 +414,27 @@ Scope: isolated fixture restore validation and a bounded executable fence-adapte
 - **Evidence:** `docs/reports/v1-task6-red.txt`, `docs/reports/v1-task6-gates.txt`, and `docs/reports/v1-task6-review.txt`; final fmt, locked tests, clippy, locked release build, and diff checks exited 0.
 - **Residual scope:** application/auth validation is fixture JSON only; filesystem checks are not a full descriptor-relative anti-TOCTOU implementation; provider late effects/settlement, native restore and real fencing remain unqualified.
 - **Next safe action:** Task 7 planned switchover requires separate authorization and a new acceptance contract. Do not run the fake adapter against real provider credentials or targets.
+
+### Task 7 completion contract — approved for local-only implementation
+
+Scope: one in-memory/SQLite fixture switchover path using the accepted restore/fence boundaries, node admission/child state, and route table. No TrailBase/Litestream process, real provider fence, deployment, VPS, public traffic, or disruptive/native effect is authorized.
+
+| ID | Observable acceptance requirement | Required evidence | Result |
+| --- | --- | --- | --- |
+| T7-AC1 | The planned sequence closes old admission, stops old mutator/uploader children, stops the candidate follower, requires exact settled fence evidence, validates/restores the candidate, and only then opens candidate writer admission. | `rust/tests/operations.rs` sequence/invariant test; `docs/reports/v1-task7-gates.txt` | pass — 4-test operations suite verifies quiescence, exact evidence, restore, and delayed activation |
+| T7-AC2 | One journaled request/operation identity controls the sequence; exact replay returns the retained receipt and never repeats effects; route publication is one validated replacement. | `rust/tests/operations.rs`; `rust/src/journal.rs`; gate report | pass — retained success/uncertain receipts, conflict/uncertainty refusal, and one higher-generation route replacement |
+| T7-AC3 | Failures/lost responses at effect boundaries retain intent, keep service admission closed or uncertain, prevent old-writer revival and prevent conflicting new mutations. | fault-injection tests and review report | pass — seven effect/lost-response points, restore/evidence failures, quarantine, and journal blocking |
+| T7-AC4 | Local behavioral RED, full Rust gates, fresh review, accurate handoff/docs; no external/native claim. | `docs/reports/v1-task7-red.txt`, `docs/reports/v1-task7-gates.txt`, `docs/reports/v1-task7-review.txt` | pass — retained behavioral RED, 51 locked tests, fmt/clippy/release/diff gates, and fresh read-only PASS |
+
+### Restart handoff — Task 7 local acceptance checkpoint
+
+- **State:** accepted locally; T7-AC1 through T7-AC4 passed. No native TrailBase/Litestream, provider fencing, deployment, VPS, public traffic, or disruptive action occurred.
+- **Source:** `main` at the containing local Task 7 checkpoint (obtain the exact revision with `git rev-parse HEAD`), based on local Task 6 `755cc64`; it is two commits ahead of `origin/main`, not pushed. No active processes remain and the working tree is clean at handoff.
+- **Implemented:** `PlannedSwitchover` closes old admission, stops owned old mutator/uploader and candidate follower children, requires exact fence evidence, quarantines the old node, restores into a fresh candidate workspace, promotes/activates the candidate, and publishes one higher-generation route. Journal replay returns retained receipts; uncertain effect boundaries block later mutations. `NodeState` quarantine refuses stale exact activation grants.
+- **Evidence:** `docs/reports/v1-task7-red.txt` retains compile and behavioral RED attempts; `docs/reports/v1-task7-gates.txt` records the focused 4-test suite and full Rust gates; `docs/reports/v1-task7-review.txt` records the fresh read-only criterion review.
+- **Residual scope:** route state is in-memory, the fence evidence is fixture-supplied, restore validation remains fixture JSON, and route-publication uncertainty is modeled locally rather than distributed across proxies. Native/provider settlement, deployment, VPS, public HTTPS, partial-route qualification, controller crash/reconciliation, failover and rejoin remain later stages.
+- **Next safe action:** Task 8 requires separate authorization. Do not run the fixture adapter against real credentials/targets or start native/disruptive qualification.
+- **Processes:** no active processes remain; all test-owned fixture children were reaped.
 
 ### Task 7 — Planned switchover, one vertical path
 
