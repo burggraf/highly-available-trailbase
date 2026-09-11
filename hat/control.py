@@ -405,6 +405,21 @@ class Journal:
         except (TypeError,ValueError) as exc: raise RuntimeError('malformed operation evidence') from exc
         return dict(zip(('id','source','target','source_epoch','new_epoch'),row[:5])),evidence
 
+    def reconcile_rejoin_boot_done(self, ident, evidence):
+        """Durably record an externally completed rejoin_boot at its exact boundary."""
+        self.check_authority()
+        operation, previous = self._boundary(ident, 10, ('B', 'A'))
+        if not isinstance(evidence, dict) or not evidence:
+            raise ValueError('rejoin_boot evidence is required')
+        self.db.execute('INSERT INTO steps VALUES(?,?,?,?,?)',
+                        (ident, 10, 'rejoin_boot', 'done', json.dumps(evidence, allow_nan=False)))
+        self._commit('reconcile-rejoin-boot-done')
+        self.check_authority()
+        self.operation = operation
+        self.next = 11
+        self.pending = False
+        return operation, previous
+
     def comparison_boundary(self, ident):
         return self._boundary(ident,5)
 
@@ -1716,9 +1731,14 @@ class ControlIO:
                 seal = self.state.get('fault_seal')
                 if not isinstance(seal, dict):
                     raise ValueError('sealed fault authority is unavailable')
-                with recovery._open_fault(fault_ledger, self.work.parent,
-                                          seal.get('destination'), seal.get('sha256')) as fault:
-                    fault_identity = fault.identity
+                fault_authority = descriptor.DescriptorAuthority.open_file(
+                    fault_ledger, trusted_root='/', trusted_uids={0, os.geteuid()},
+                    expected_mode=0o600, expected_nlink=1,
+                    expected_sha256=seal.get('sha256'), limit=4 << 20)
+                held.append(fault_authority)
+                fault_raw = fault_authority.read()
+                fault_authority.recheck()
+                fault_identity = fault_authority.identity
                 oracle_fault = area / 'fault-ledger.jsonl'
                 self._copy_bound(fault_ledger, oracle_fault, 0o600, account.pw_uid, account.pw_gid,
                                  request['inputs']['fault_ledger_sha256'], expected_identity=fault_identity,
@@ -1765,7 +1785,9 @@ class ControlIO:
                 events = None
                 if request['profile'] == 'recovery-comparison':
                     # Reparse the controller-held sealed ledger independently of oracle output.
-                    events = client.read_closed_ledger(fault_ledger, self.operation['source_epoch'])
+                    fault_authority.recheck()
+                    events = client.read_closed_ledger(fault_ledger, self.operation['source_epoch'], raw=fault_raw)
+                    fault_authority.recheck()
                 value = recovery.parse_acceptance_result(result_raw, request, self.operation)
                 if events is not None:
                     recovery.validate_fault_outcomes(value['checks']['fault_outcomes'], events)
@@ -2280,11 +2302,8 @@ def reconcile_rejoin_boot(config, operation_id, *, root=Path('/var/lib/hat-contr
         if fresh_cold != original_cold or fresh_cold.get('authority')!='absent' or fresh_cold.get('boot_id')==old_source:
             raise RuntimeError('current B cold evidence differs from retained boot evidence')
         evidence={'receipt':original_receipt,'fresh_provider':fresh_provider,'cold':fresh_cold,'reconciliation':json.loads(marker.read_text()),'a_probe':fresh_a}
-        checked,_=journal._boundary(operation_id,10,('B','A'))
-        if checked!=operation: raise RuntimeError('operation changed during reconciliation')
-        with journal.db:
-            journal.db.execute('INSERT INTO steps VALUES(?,?,?,?,?)',(operation_id,10,'rejoin_boot','done',json.dumps(evidence,allow_nan=False)))
-        journal.operation=operation; journal.next=11; journal.pending=False
+        checked, _ = journal.reconcile_rejoin_boot_done(operation_id, evidence)
+        if checked != operation: raise RuntimeError('operation changed during reconciliation')
         archived=work/'failure.before-reconciliation-rejoin-boot.json'
         failure.rename(archived)
         fd=os.open(work,os.O_RDONLY|os.O_DIRECTORY); os.fsync(fd); os.close(fd)

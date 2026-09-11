@@ -199,6 +199,8 @@ def _verify_records_and_auth(base, ledger):
 
 
 def restore(root, acceptance_request, config, ledger, support, binaries, fault_ledger=None, operation_evidence=None):
+    if operation_evidence is None:
+        raise ValueError('operation evidence is required')
     os.umask(0o077)
     request_raw = _read(acceptance_request, 1 << 20)
     request_object = recovery.parse_canonical_json(request_raw)
@@ -207,10 +209,9 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
                  'source_epoch': request_object['epoch'] if request_object['phase'] in ('compare','reconciled-compare') else 'd1-source',
                  'new_epoch': 'd1-' + request_object['operation']}
     request_value = recovery.parse_acceptance_request(request_raw, operation)
-    if operation_evidence is not None:
-        evidence = recovery.parse_canonical_json(_read(operation_evidence, 1 << 20))
-        if evidence != operation:
-            raise ValueError('operation evidence differs')
+    evidence = recovery.parse_canonical_json(_read(operation_evidence, 1 << 20))
+    if evidence != operation:
+        raise ValueError('operation evidence differs')
     # The CLI fault argument is part of the profile matrix, not an optional
     # caller override.  Reject it before creating any oracle artifacts.
     if (request_value['profile'] == 'recovery-comparison') != (fault_ledger is not None):
@@ -360,7 +361,7 @@ def _parser():
     parser.add_argument('--support', type=Path, required=True)
     parser.add_argument('--binaries', type=Path, required=True)
     parser.add_argument('--fault-ledger', type=Path)
-    parser.add_argument('-O', '--operation-evidence', type=Path)
+    parser.add_argument('-O', '--operation-evidence', type=Path, required=True)
     parser.add_argument('--result', type=Path, required=True)
     return parser
 
