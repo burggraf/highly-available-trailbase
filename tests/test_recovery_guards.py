@@ -328,6 +328,62 @@ class RecoveryGuardTests(unittest.TestCase):
                     try: self.assertFalse(self.m.ingress_allowed(*args))
                     finally: self.m._INGRESS_PRE_FINALIZE_HOOK=None
 
+    def test_ingress_pre_finalize_hook_covers_legacy_new_d2_and_d3_fixtures(self):
+        def completed(root, contract):
+            ingress=root/'proxy.cfg'; ingress.write_text('route B\\n')
+            digest=hashlib.sha256(ingress.read_bytes()).hexdigest()
+            with self.m.Journal(root) as journal:
+                operation=journal.begin('A','B','d1-current')
+                for phase in D2:
+                    evidence={'writer':'B','epoch':operation['new_epoch'],'config_sha':digest} if phase=='route' else {}
+                    journal.step(phase, lambda evidence=evidence:evidence)
+                journal.finish()
+                if contract=='legacy':
+                    journal.db.execute("UPDATE operations SET restore_contract='legacy' WHERE id=?",(operation['id'],)); journal.db.commit()
+            return operation, ingress
+
+        for contract in ('legacy','hat-restore-acceptance-1'):
+            with self.subTest(fixture='completed-'+contract), tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp).resolve(); operation,ingress=completed(root,contract)
+                args=(root,root/'maintenance',root/'permit',ingress,'boot')
+                self.assertTrue(self.m.ingress_allowed(*args))
+                for mutate in (lambda: (root/'maintenance').write_bytes(b'x'),
+                               lambda: ingress.write_bytes(ingress.read_bytes()+b'x'),
+                               lambda: (root/'journal.db.sidecar').write_bytes(b'x')):
+                    self.m._INGRESS_PRE_FINALIZE_HOOK=mutate
+                    try: self.assertFalse(self.m.ingress_allowed(*args))
+                    finally: self.m._INGRESS_PRE_FINALIZE_HOOK=None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve(); ingress=root/'proxy.cfg'; ingress.write_text('route A\\n')
+            with self.m.Journal(root) as journal:
+                operation=journal.begin('A','B','d1-current')
+                for phase in D2[:8]: journal.step(phase,lambda:{})
+                with self.assertRaises(RuntimeError): journal.step('route',lambda: (_ for _ in ()).throw(RuntimeError('pending')))
+            maintenance=self._maintenance(root,operation); permit=root/'permit'
+            permit.write_text(json.dumps({'operation':operation['id'],'boot_id':'boot','pid':os.getpid(),'birth':'stable','config_sha':hashlib.sha256(ingress.read_bytes()).hexdigest()})); permit.chmod(0o600)
+            args=(root,maintenance,permit,ingress,'boot')
+            with mock.patch.object(self.m,'process_identity',return_value='stable'):
+                self.assertTrue(self.m.ingress_allowed(*args))
+                for mutate in (lambda: permit.write_bytes(permit.read_bytes()+b'x'),
+                               lambda: maintenance.write_bytes(maintenance.read_bytes()+b'x'),
+                               lambda: ingress.write_bytes(ingress.read_bytes()+b'x')):
+                    self.m._INGRESS_PRE_FINALIZE_HOOK=mutate
+                    try: self.assertFalse(self.m.ingress_allowed(*args))
+                    finally: self.m._INGRESS_PRE_FINALIZE_HOOK=None
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve(); journal,operation,ingress=self._d3(root,count=10)
+            maintenance=self._maintenance(root,operation); args=(root,maintenance,root/'permit',ingress,'boot')
+            self.assertTrue(self.m.ingress_allowed(*args))
+            for mutate in (lambda: maintenance.write_bytes(maintenance.read_bytes()+b'x'),
+                           lambda: ingress.write_bytes(ingress.read_bytes()+b'x'),
+                           lambda: (root/operation['id']/'failure.json').write_bytes(b'x'),
+                           lambda: (root/'journal.db.sidecar').write_bytes(b'x')):
+                self.m._INGRESS_PRE_FINALIZE_HOOK=mutate
+                try: self.assertFalse(self.m.ingress_allowed(*args))
+                finally: self.m._INGRESS_PRE_FINALIZE_HOOK=None
+
     def test_d3_bootstrap_requires_exact_boundary_and_live_private_permit(self):
         for boundary in ('route-intent','verify-intent'):
             with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as tmp:

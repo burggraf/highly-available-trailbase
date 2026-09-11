@@ -186,6 +186,53 @@ class TransitionTests(unittest.TestCase):
                 with m.Journal(root): pass
             self.assertEqual(path.read_bytes(),before)
 
+    def test_populated_legacy_validation_rejects_each_malformed_shape_before_alter(self):
+        m=self.module()
+        def make(root, mutation):
+            path=root/'journal.db'; ident='b'*32; source_epoch='d1-old'; new_epoch='d1-'+ident
+            with closing(sqlite3.connect(path)) as db:
+                db.executescript('''
+                    CREATE TABLE operations (id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL,
+                        source_epoch TEXT NOT NULL, new_epoch TEXT NOT NULL UNIQUE,
+                        complete INTEGER NOT NULL DEFAULT 0 CHECK(complete IN (0,1)));
+                    CREATE UNIQUE INDEX one_unfinished ON operations(complete) WHERE complete=0;
+                    CREATE TABLE steps (operation TEXT NOT NULL REFERENCES operations(id), position INTEGER NOT NULL,
+                        phase TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('intent','done')),
+                        evidence TEXT NOT NULL, PRIMARY KEY(operation,position,status));
+                ''')
+                db.execute('INSERT INTO operations VALUES(?,?,?,?,?,?)',(ident,'A','B',source_epoch,new_epoch,1))
+                for position,phase in enumerate(m.PHASES):
+                    db.execute('INSERT INTO steps VALUES(?,?,?,?,?)',(ident,position,phase,'intent','{}'))
+                    evidence=json.dumps({'writer':'B','epoch':new_epoch,'config_sha':'0'*64}) if phase=='route' else '{}'
+                    db.execute('INSERT INTO steps VALUES(?,?,?,?,?)',(ident,position,phase,'done',evidence))
+                if mutation=='non-latest':
+                    old='a'*32; db.execute('INSERT INTO operations VALUES(?,?,?,?,?,?)',(old,'A','B','d1-bad','d1-'+old,1))
+                elif mutation=='id': db.execute('UPDATE operations SET id=? WHERE id=?',('bad',ident))
+                elif mutation=='source-epoch': db.execute('UPDATE operations SET source_epoch=? WHERE id=?',('bad',ident))
+                elif mutation=='new-epoch': db.execute('UPDATE operations SET new_epoch=? WHERE id=?',('d1-'+'c'*32,ident))
+                elif mutation=='zero-steps': db.execute('DELETE FROM steps WHERE operation=?',(ident,))
+                elif mutation=='duplicate-done': db.execute("UPDATE steps SET evidence=? WHERE operation=? AND phase='route' AND status='done'",('{"writer":"B","writer":"A"}',ident))
+                elif mutation=='non-object-done': db.execute("UPDATE steps SET evidence='[]' WHERE operation=? AND phase='route' AND status='done'",(ident,))
+                db.commit()
+            path.chmod(0o600); return path
+
+        for mutation in ('non-latest','id','source-epoch','new-epoch','zero-steps','duplicate-done','non-object-done'):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp).resolve(); path=make(root,mutation); before=path.read_bytes()
+                with self.assertRaises((ValueError,RuntimeError,sqlite3.Error)):
+                    with m.Journal(root): pass
+                self.assertEqual(path.read_bytes(),before)
+                with closing(sqlite3.connect(path)) as db:
+                    self.assertNotIn('restore_contract',[row[1] for row in db.execute('PRAGMA table_info(operations)')])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve(); path=make(root,'non-latest'); before=path.read_bytes()
+            ingress=root/'proxy.cfg'; ingress.write_text('route B\\n')
+            self.assertFalse(m.ingress_allowed(root,root/'maintenance',root/'permit',ingress,'boot'))
+            self.assertEqual(path.read_bytes(),before)
+            with closing(sqlite3.connect(path)) as db:
+                self.assertNotIn('restore_contract',[row[1] for row in db.execute('PRAGMA table_info(operations)')])
+
     def test_interrupted_legacy_migration_reopens_as_exact_old_then_new_schema(self):
         m=self.module()
         with tempfile.TemporaryDirectory() as tmp:
