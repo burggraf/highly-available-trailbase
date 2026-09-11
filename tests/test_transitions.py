@@ -1,4 +1,5 @@
 """Direct durable-controller tests; no provider calls or live deployment mutations."""
+import ast
 import importlib.util
 import datetime
 from contextlib import closing
@@ -136,6 +137,122 @@ class TransitionTests(unittest.TestCase):
             with self.assertRaises((ValueError, RuntimeError)):
                 with m.Journal(root): pass
             self.assertEqual(path.read_bytes(), before)
+
+    def test_exact_legacy_journal_migrates_and_new_rows_select_restore_contract(self):
+        m=self.module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve();path=root/'journal.db'
+            with closing(sqlite3.connect(path)) as db:
+                db.executescript('''
+                    CREATE TABLE operations (
+                        id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL,
+                        source_epoch TEXT NOT NULL, new_epoch TEXT NOT NULL UNIQUE,
+                        complete INTEGER NOT NULL DEFAULT 0 CHECK(complete IN (0,1)));
+                    CREATE UNIQUE INDEX one_unfinished ON operations(complete) WHERE complete=0;
+                    CREATE TABLE steps (
+                        operation TEXT NOT NULL REFERENCES operations(id), position INTEGER NOT NULL,
+                        phase TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('intent','done')),
+                        evidence TEXT NOT NULL, PRIMARY KEY(operation,position,status));
+                ''')
+            path.chmod(0o600)
+            with m.Journal(root) as journal:
+                columns=[row[1] for row in journal.db.execute('PRAGMA table_info(operations)')]
+                self.assertEqual(columns,['id','source','target','source_epoch','new_epoch','complete','restore_contract'])
+                self.assertEqual(journal.db.execute('PRAGMA journal_mode').fetchone(),('delete',))
+                self.assertEqual(journal.db.execute('PRAGMA synchronous').fetchone(),(3,))
+                operation=journal.begin('A','B','d1-original')
+                self.assertEqual(journal.db.execute('SELECT restore_contract FROM operations WHERE id=?',(operation['id'],)).fetchone(),('hat-restore-acceptance-1',))
+            self.assertFalse((root/'journal.db-wal').exists());self.assertFalse((root/'journal.db-shm').exists())
+            with m.Journal(root): pass
+
+    def test_interrupted_legacy_migration_reopens_as_exact_old_then_new_schema(self):
+        m=self.module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve();path=root/'journal.db'
+            with closing(sqlite3.connect(path)) as db:
+                db.executescript('''
+                    CREATE TABLE operations (id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL,
+                        source_epoch TEXT NOT NULL, new_epoch TEXT NOT NULL UNIQUE,
+                        complete INTEGER NOT NULL DEFAULT 0 CHECK(complete IN (0,1)));
+                    CREATE UNIQUE INDEX one_unfinished ON operations(complete) WHERE complete=0;
+                    CREATE TABLE steps (operation TEXT NOT NULL REFERENCES operations(id), position INTEGER NOT NULL,
+                        phase TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('intent','done')),
+                        evidence TEXT NOT NULL, PRIMARY KEY(operation,position,status));
+                ''')
+                db.execute('BEGIN IMMEDIATE')
+                db.execute("ALTER TABLE operations ADD COLUMN restore_contract TEXT NOT NULL DEFAULT 'legacy' CHECK(restore_contract IN ('legacy','hat-restore-acceptance-1'))")
+                # Closing without commit simulates interruption; SQLite must roll back to exact legacy.
+            path.chmod(0o600)
+            with m.Journal(root) as journal:
+                self.assertEqual([r[1] for r in journal.db.execute('PRAGMA table_info(operations)')][-1],'restore_contract')
+            with m.Journal(root): pass
+
+    def test_unknown_journal_schema_index_contract_and_wal_refuse(self):
+        m=self.module()
+        for case in ('table','index','contract','wal'):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp).resolve()
+                with m.Journal(root): pass
+                path=root/'journal.db'
+                with closing(sqlite3.connect(path)) as db:
+                    if case=='table': db.execute('CREATE TABLE extra(value TEXT)')
+                    elif case=='index': db.execute('CREATE INDEX extra_index ON steps(phase)')
+                    elif case=='contract':
+                        db.execute('PRAGMA ignore_check_constraints=ON')
+                        db.execute("INSERT INTO operations VALUES('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','A','B','d1-old','d1-new',1,'unknown')")
+                if case=='wal': (root/'journal.db-wal').write_bytes(b'unknown')
+                before=path.read_bytes()
+                with self.assertRaises((ValueError,RuntimeError,OSError,sqlite3.Error)):
+                    with m.Journal(root): pass
+                self.assertEqual(path.read_bytes(),before)
+
+    def test_operations_sql_reference_inventory_is_explicit(self):
+        tree=ast.parse(ENTRY.read_text());found=set()
+        class Scan(ast.NodeVisitor):
+            def __init__(self):self.classes=[];self.functions=[]
+            def visit_ClassDef(self,node):
+                self.classes.append(node.name);self.generic_visit(node);self.classes.pop()
+            def visit_FunctionDef(self,node):
+                self.functions.append(node.name)
+                if any(isinstance(item,ast.Constant) and isinstance(item.value,str) and 'operations' in item.value.lower()
+                       for item in ast.walk(node)):
+                    found.add('.'.join(self.classes+self.functions))
+                self.generic_visit(node);self.functions.pop()
+        Scan().visit(tree)
+        self.assertEqual(found,{
+            'Journal.__enter__','Journal.begin','Journal.step','Journal._boundary',
+            'Journal.continue_rejoin','Journal.finish','_d3_serving_state',
+            'current_writer','ingress_allowed','reconcile_existing',
+        })
+
+    def test_unfinished_legacy_contract_refuses_step_boundaries_accept_and_finish(self):
+        m=self.module()
+        for case in ('step','compare','verify','finish'):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp).resolve();called=[]
+                with m.Journal(root) as journal:
+                    operation=journal.begin('A','B','d1-old')
+                    if case=='step':
+                        journal.db.execute("UPDATE operations SET restore_contract='legacy' WHERE id=?",(operation['id'],));journal.db.commit()
+                        with self.assertRaises(RuntimeError):journal.step('preflight',lambda:called.append(True))
+                        self.assertEqual(called,[]);continue
+                    boundary=5 if case=='compare' else 9 if case=='verify' else len(m.PHASES)
+                    for position,phase in enumerate(m.PHASES[:boundary]):
+                        journal.db.execute('INSERT INTO steps VALUES(?,?,?,?,?)',(operation['id'],position,phase,'intent','{}'))
+                        journal.db.execute('INSERT INTO steps VALUES(?,?,?,?,?)',(operation['id'],position,phase,'done','{}'))
+                    if boundary<len(m.PHASES):
+                        journal.db.execute('INSERT INTO steps VALUES(?,?,?,?,?)',(operation['id'],boundary,m.PHASES[boundary],'intent','{}'))
+                    journal.db.execute("UPDATE operations SET restore_contract='legacy' WHERE id=?",(operation['id'],));journal.db.commit()
+                    journal.operation=operation;journal.next=boundary;journal.pending=boundary<len(m.PHASES)
+                    if case=='compare':
+                        for call in (lambda:journal.comparison_boundary(operation['id']),lambda:journal.accept_comparison(operation['id'],{})):
+                            with self.assertRaises(RuntimeError):call()
+                    elif case=='verify':
+                        for call in (lambda:journal.verification_boundary(operation['id']),lambda:journal.accept_verification(operation['id'],{})):
+                            with self.assertRaises(RuntimeError):call()
+                    else:
+                        journal.pending=False
+                        with self.assertRaises(RuntimeError):journal.finish()
 
     def test_fence_requires_exact_target_fresh_completed_observations(self):
         m = self.module()

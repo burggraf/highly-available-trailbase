@@ -259,6 +259,55 @@ class RecoveryGuardTests(unittest.TestCase):
             maintenance.unlink(); maintenance.symlink_to(root/'missing-marker')
             self.assertFalse(self.m.ingress_allowed(root,maintenance,permit,ingress,'boot'))
 
+    def test_completed_legacy_rows_remain_exact_authority_and_target_b_reconciliation_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve();ingress=root/'proxy.cfg';ingress.write_text('route B\n')
+            digest=hashlib.sha256(ingress.read_bytes()).hexdigest()
+            with self.m.Journal(root) as journal:
+                operation=journal.begin('A','B','d1-old')
+                for phase in D2:
+                    value={'writer':'B','epoch':operation['new_epoch'],'config_sha':digest} if phase=='route' else {}
+                    journal.step(phase,lambda value=value:value)
+                journal.finish()
+                journal.db.execute("UPDATE operations SET restore_contract='legacy' WHERE id=?",(operation['id'],));journal.db.commit()
+                self.assertEqual(self.m.current_writer(journal,ingress),{'operation':operation['id'],'writer':'B','epoch':operation['new_epoch']})
+            maintenance=root/'maintenance'
+            self.assertTrue(self.m.ingress_allowed(root,maintenance,root/'permit',ingress,'boot'))
+            self._maintenance(root,operation)
+            with self.m.Journal(root) as journal:
+                self.assertTrue(self.m.reconcile_existing(journal,maintenance,lambda:(_ for _ in ()).throw(AssertionError('must not stop')),ingress))
+                new=journal.begin('B','A',operation['new_epoch'])
+                self.assertEqual(journal.db.execute('SELECT restore_contract FROM operations WHERE id=?',(new['id'],)).fetchone(),('hat-restore-acceptance-1',))
+            self.assertFalse(maintenance.exists())
+
+    def test_unfinished_legacy_d3_refuses_serving_rejoin_and_reconciliation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve();journal,operation,ingress=self._d3(root)
+            maintenance=self._maintenance(root,operation);failure=root/operation['id']/'failure.json'
+            journal.db.execute("UPDATE operations SET restore_contract='legacy' WHERE id=?",(operation['id'],));journal.db.commit()
+            self.assertFalse(self.m._d3_serving_state(journal.db,operation['id'],hashlib.sha256(ingress.read_bytes()).hexdigest(),failure))
+            journal.__exit__(None,None,None)
+            self.assertFalse(self.m.ingress_allowed(root,maintenance,root/'permit',ingress,'boot'))
+            stopped=[]
+            with self.m.Journal(root) as journal:
+                with self.assertRaises(RuntimeError):journal.continue_rejoin(operation['id'])
+                with self.assertRaises(RuntimeError):self.m.reconcile_existing(journal,maintenance,lambda:stopped.append(True),ingress)
+            self.assertEqual(stopped,[True]);self.assertTrue(maintenance.exists())
+
+    def test_unfinished_legacy_d2_refuses_ingress_and_closes_on_reconcile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve();ingress=root/'proxy.cfg';ingress.write_text('route A\n');maintenance=root/'maintenance'
+            with self.m.Journal(root) as journal:
+                operation=journal.begin('A','B','d1-old')
+                journal.step('preflight',lambda:{})
+                journal.db.execute("UPDATE operations SET restore_contract='legacy' WHERE id=?",(operation['id'],));journal.db.commit()
+            self._maintenance(root,operation)
+            self.assertFalse(self.m.ingress_allowed(root,maintenance,root/'permit',ingress,'boot'))
+            stopped=[]
+            with self.m.Journal(root) as journal:
+                with self.assertRaises(RuntimeError):self.m.reconcile_existing(journal,maintenance,lambda:stopped.append(True),ingress)
+            self.assertEqual(stopped,[True]);self.assertTrue(maintenance.exists())
+
     def test_d3_bootstrap_requires_exact_boundary_and_live_private_permit(self):
         for boundary in ('route-intent','verify-intent'):
             with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as tmp:
