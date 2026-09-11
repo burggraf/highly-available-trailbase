@@ -4,7 +4,11 @@ D0 checkpoint: 2026-09-08 UTC. Delivery direction approved by owner; work stays 
 
 | Delivered | Currently building | Blocker | Next demonstration |
 | --- | --- | --- | --- |
-| D0–D3 delivered with preserved explicit reconciliations; D4 offline refusal diagnostic merged locally | D4 qualification and unresolved safety contracts | Complete acknowledged-write preservation and safe settlement of uncertain external effects are not established | No automatic recovery demonstration authorized or qualified |
+| D0–D3 delivered with preserved explicit reconciliations; D4 offline refusal diagnostic merged locally | `manual-async` product architecture decision | Complete acknowledged-write preservation and safe settlement of uncertain external effects are not established | Specify an installable operator-controlled HA product with an explicit nonzero/unknown RPO |
+
+## Next product direction: manual-async HA
+
+The [manual-async product plan](plans/2026-09-10-manual-async-ha-product-plan.md) defines the next language-neutral target: an installable one-writer/warm-standby system for supported existing TrailBase applications, with independently fenced operator-controlled failover and an explicit contract that recent acknowledged writes may be lost. D4 becomes an additive future durability profile rather than a prerequisite for the first HA product. The immediate next decision is Python vs Go vs Rust vs a hybrid; the current Python deployment remains an executable specification and test harness, not a language commitment or production qualification.
 
 ## Task6 unified restore-acceptance-1 source/test closure — checkpoint `ce1b66651a5c442f44e6459fe17ada9f4ab441b6`
 
