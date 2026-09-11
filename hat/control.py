@@ -129,6 +129,23 @@ def _check_constraints(db, contract):
             raise ValueError('journal constraints differ')
     finally: probe.close()
 
+def _validate_legacy_rows(db):
+    """Validate populated raw legacy rows before ALTER; this is the sole legacy reader."""
+    rows=db.execute('SELECT id,source,target,complete,new_epoch FROM operations').fetchall()
+    ids={row[0] for row in rows}
+    for ident,source,target,complete,_ in rows:
+        if complete not in (0,1): raise ValueError('unrecognized legacy operation')
+        plan=phase_plan(source,target)
+        steps=db.execute('SELECT position,phase,status,evidence FROM steps WHERE operation=? ORDER BY rowid',(ident,)).fetchall()
+        expected=[(i,p,s) for i,p in enumerate(plan) for s in ('intent','done')]
+        if [step[:3] for step in steps] != expected[:len(steps)] or any(value!='{}' for _,_,status,value in steps if status=='intent'):
+            raise ValueError('unrecognized legacy operation steps')
+        if complete and [step[:3] for step in steps] != expected:
+            raise ValueError('unrecognized legacy completed operation')
+    if db.execute('SELECT operation FROM steps').fetchall() and any(row[0] not in ids for row in db.execute('SELECT operation FROM steps')):
+        raise ValueError('unrecognized legacy operation reference')
+
+
 def _journal_schema(db):
     """Return exact semantic journal generation; unknown or corrupt state refuses."""
     expected_sql = {
@@ -229,6 +246,7 @@ class Journal:
             if existing:
                 kind=_journal_schema(self.db)
                 if kind==LEGACY_RESTORE_CONTRACT:
+                    _validate_legacy_rows(self.db)
                     self.db.execute('BEGIN IMMEDIATE')
                     try:
                         self.db.execute("ALTER TABLE operations ADD COLUMN restore_contract TEXT NOT NULL DEFAULT 'legacy' CHECK(restore_contract IN ('legacy','hat-restore-acceptance-1'))")
