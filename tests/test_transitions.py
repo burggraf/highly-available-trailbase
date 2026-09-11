@@ -25,6 +25,33 @@ def load():
     return module
 
 class TransitionTests(unittest.TestCase):
+    def test_journal_commit_seams_are_internal_and_ordered(self):
+        m = self.module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve(); events = []
+            with m.Journal(root) as journal:
+                journal._before_commit = lambda label: events.append(('before', label))
+                journal._after_commit = lambda label: events.append(('after', label))
+                operation = journal.begin('A', 'B', 'd1-original')
+                journal.step('preflight', lambda: {})
+            self.assertEqual([kind for kind, _ in events], ['before', 'after'] * 3)
+            self.assertEqual([label for _, label in events], ['begin', 'begin', 'step-intent:preflight', 'step-intent:preflight', 'step-done:preflight', 'step-done:preflight'])
+
+    def test_done_commit_exception_does_not_replay_action(self):
+        m = self.module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve(); calls = []
+            with m.Journal(root) as journal:
+                operation = journal.begin('A', 'B', 'd1-original')
+                def after(label):
+                    if label == 'step-done:preflight': raise RuntimeError('after durable commit')
+                journal._after_commit = after
+                with self.assertRaises(RuntimeError): journal.step('preflight', lambda: calls.append(1))
+            with m.Journal(root) as journal:
+                self.assertEqual(calls, [1])
+                self.assertEqual(journal.db.execute('SELECT phase,status FROM steps').fetchall(), [('preflight', 'intent'), ('preflight', 'done')])
+                with self.assertRaises(RuntimeError): journal.begin('A', 'B', 'd1-original')
+
     def module(self):
         self.assertTrue(ENTRY.is_file(), 'missing operational controller journal')
         return load()
