@@ -361,11 +361,32 @@ mod tests {
             routes.install(route(&config, 1, "node-a")),
             Err(RouteError::Rollback)
         ));
-        assert!(matches!(
-            routes.install(route(&config, 2, "node-a")),
-            Err(RouteError::Conflict)
-        ));
-        assert_eq!(routes.active(), Some(&active));
+        let mut conflicts = Vec::new();
+        conflicts.push(route(&config, 2, "node-a"));
+        let mut epoch_conflict = active.clone();
+        epoch_conflict.writer_epoch = 2;
+        conflicts.push(epoch_conflict);
+
+        let mut incarnation_conflict = active.clone();
+        incarnation_conflict.primary_incarnation = "00000000-0000-4000-8000-000000000003".into();
+        conflicts.push(incarnation_conflict);
+
+        let mut release_conflict = active.clone();
+        release_conflict.release_digest =
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc".into();
+        conflicts.push(release_conflict);
+
+        let mut config_conflict = active.clone();
+        config_conflict.config_digest =
+            "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd".into();
+        conflicts.push(config_conflict);
+        for conflict in conflicts {
+            assert!(matches!(
+                routes.install(conflict),
+                Err(RouteError::Conflict)
+            ));
+            assert_eq!(routes.active(), Some(&active));
+        }
         assert!(routes.install(active).is_ok());
     }
 

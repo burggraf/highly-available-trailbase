@@ -6,13 +6,13 @@ An early-stage project for a single-writer [TrailBase](https://github.com/trailb
 
 ## Current development — Rust V1
 
-**Active scope:** one controller, primary-only proxies, manual fenced failover; no Raft or replica reads. **Current stage: Task 2, partial—not accepted.** The package has configuration/routing unit code, but its executable has an empty `main()`; there is no configuration-check command or proxy yet.
+**Active scope:** one controller, primary-only proxies, manual fenced failover; no Raft or replica reads. **Current stage: Task 2 accepted.** The inert package provides bounded configuration checking and inventory-bound primary-only route selection; proxy, controller, and failover work remain later stages.
 
 - [Active plan and restart handoff](docs/plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance) — authoritative stage/acceptance tracker.
 - [Development workflow](AGENTS.md) — restart procedure, autonomous stage loop, evidence and approval rules.
 - [Current status](docs/status.md) and [Rust usage/limits](rust/README.md).
 
-Next implementation work: finish Task 2's runnable checker and configuration/route schema validation, then meet its acceptance gates before Task 3. Current changes are isolated on `hat-v1-task2`, not merged into `main`.
+Task 2 is accepted at local checkpoint `c51e0f0`; Task 3 is not authorized or started. Current changes are isolated on `hat-v1-task2`, not merged into `main`.
 
 Python `hat/`, `tests/`, `experiments/`, existing `deploy/`, and earlier plans are **historical implementation/evidence**, not instructions to resume old live operations or the current Rust roadmap. Preserve them; do not translate them wholesale or treat their checks as Rust qualification.
 

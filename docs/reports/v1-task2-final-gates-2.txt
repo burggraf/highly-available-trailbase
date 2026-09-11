@@ -1,0 +1,13 @@
+
+$ cargo fmt --manifest-path rust/Cargo.toml --check
+Diff in /Users/markb/dev/hat/.worktrees/v1-task2/rust/src/routing.rs:368:
+         conflicts.push(epoch_conflict);
+ 
+         let mut incarnation_conflict = active.clone();
+[31m-        incarnation_conflict.primary_incarnation =
+(B[m[31m-            "00000000-0000-4000-8000-000000000003".into();
+(B[m[32m+        incarnation_conflict.primary_incarnation = "00000000-0000-4000-8000-000000000003".into();
+(B[m         conflicts.push(incarnation_conflict);
+ 
+         let mut release_conflict = active.clone();
+exit 1

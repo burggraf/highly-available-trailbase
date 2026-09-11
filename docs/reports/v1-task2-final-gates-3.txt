@@ -1,0 +1,62 @@
+
+$ cargo fmt --manifest-path rust/Cargo.toml --check
+exit 0
+
+$ cargo test --manifest-path rust/Cargo.toml --locked
+   Compiling hat v0.1.0 (/Users/markb/dev/hat/.worktrees/v1-task2/rust)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.21s
+     Running unittests src/main.rs (rust/target/debug/deps/hat-511b8f1c21500c7a)
+
+running 13 tests
+test config::tests::rejects_duplicate_node_ids ... ok
+test config::tests::accepts_the_v1_configuration_shape ... ok
+test config::tests::rejects_incompatible_schema_version ... ok
+test config::tests::rejects_relative_traversal_and_unsupported_paths ... ok
+test config::tests::rejects_requested_replica_reads ... ok
+test config::tests::rejects_invalid_endpoints_and_duplicate_json_keys ... ok
+test routing::tests::every_application_request_selects_the_active_primary ... ok
+test config::tests::rejects_unknown_primary ... ok
+test routing::tests::missing_route_refuses_selection ... ok
+test routing::tests::rollback_and_conflicting_equal_generation_leave_active_route_unchanged ... ok
+test config::tests::rejects_missing_or_local_database_inventory ... ok
+test routing::tests::route_binds_to_inventory_endpoint_and_wire_generation_is_decimal ... ok
+test routing::tests::route_wire_refuses_unknown_fields_nodes_bad_numbers_and_wrong_cluster ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/cli.rs (rust/target/debug/deps/cli-1ff9ea4a3d57b99c)
+
+running 3 tests
+test config_check_accepts_valid_stdin_without_opening_referenced_paths ... ok
+test config_check_refuses_invalid_input_without_echoing_supplied_content ... ok
+test unknown_command_and_oversized_input_are_refused_without_echoing_content ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.22s
+
+exit 0
+
+$ cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+    Checking hat v0.1.0 (/Users/markb/dev/hat/.worktrees/v1-task2/rust)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.60s
+exit 0
+
+$ cargo build --manifest-path rust/Cargo.toml --release --locked
+   Compiling proc-macro2 v1.0.107
+   Compiling quote v1.0.47
+   Compiling unicode-ident v1.0.24
+   Compiling serde_core v1.0.229
+   Compiling zmij v1.0.23
+   Compiling serde_json v1.0.151
+   Compiling serde v1.0.229
+   Compiling itoa v1.0.18
+   Compiling memchr v2.8.3
+   Compiling syn v3.0.5
+   Compiling serde_derive v1.0.229
+   Compiling hat v0.1.0 (/Users/markb/dev/hat/.worktrees/v1-task2/rust)
+    Finished `release` profile [optimized] target(s) in 5.73s
+exit 0
+
+$ git diff --check
+exit 0
+
+all final gates passed

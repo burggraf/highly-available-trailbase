@@ -1,14 +1,13 @@
 # HAT delivery status
 
-## Current development — Rust V1, Task 2 partial
+## Current development — Rust V1, Task 2 accepted
 
 The [active plan's execution state and acceptance](plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance) is the authoritative tracker and restart handoff. Follow [AGENTS.md](../AGENTS.md); [rust/README.md](../rust/README.md) describes actual executable behavior.
 
 - **Scope:** single controller, all traffic to the primary, manual failover; no Raft or qualified replica reads.
-- **Current branch/worktree:** `hat-v1-task2` / `.worktrees/v1-task2`; not merged into `main`.
-- **Delivered provisionally:** Rust package plus config/routing unit code. Previous local verification: 14 tests including six routing; fmt/clippy/locked release build passed. No fresh Rust verification in this documentation-only update.
-- **Not accepted:** Task 2. The executable has an empty `main()`, no usable checker CLI, and incomplete config/route schema boundaries. Earlier chat readiness/completion claims were incorrect. No proxy, activation or failover exists in Rust.
-- **Next:** confirm the explicit Task 2 completion criteria, then finish that one stage with failing-first real-entrypoint checks and acceptance review. Do not start Task 3 yet.
+- **Current branch/worktree:** `hat-v1-task2` / `.worktrees/v1-task2`; checkpoint `c51e0f0`; not merged into `main`.
+- **Task 2 accepted:** the Rust binary validates bounded configuration via `hat config check` and selects primary-only routes from a strict inventory-bound route record. Local evidence is in `docs/reports/v1-task2-red.txt` and `docs/reports/v1-task2-gates.txt`; the fresh read-only review found no implementation security defects after the documented test-coverage correction.
+- **Not implemented:** proxy, activation, controller, failover, deployment, and native qualification. Task 3 is not authorized or started.
 - **Autonomy:** owner approved local test/fix/review iterations through one authorized stage and local checkpoint commits; merge/push and all external effects remain separately gated.
 
 All Python/deployment checkpoints below are **historical evidence**, not current Rust capability or permission to resume prior operations. The former planning-only update is retained below as history.
