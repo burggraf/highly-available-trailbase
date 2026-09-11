@@ -1,6 +1,6 @@
 # Rust TrailBase HA Architecture and Rewrite Plan
 
-**Status:** High-level architecture approved through the replicated-system boundary. Detailed Raft state-machine, protocol, certificate-lifecycle, and qualification designs remain to be completed before implementation.
+**Status:** High-level architecture, replicated/local state split, serialized mutation policy, and individual-certificate operator roles approved. Detailed Raft state-machine, protocol, certificate-lifecycle, and qualification designs remain to be completed before implementation.
 
 **Goal:** Replace the Python production prototype with one installable Rust HAT executable that provides a highly available three-controller control plane for supported existing TrailBase applications.
 
@@ -119,6 +119,28 @@ If a request times out, a controller dies, or leadership changes after an effect
 
 An operator request is complete when its operation reaches a committed terminal state, not when the original leader or CLI connection survives. Client disconnect does not cancel a committed operation.
 
+### 5.1 Approved replicated/local state boundary
+
+Raft stores facts needed to determine authority or safely resume an operation, not application data, secrets, bulk telemetry, or raw diagnostics.
+
+Replicated state includes approved identities and compatibility ranges, writer/epoch/fencing token, route generation, release/config/database-inventory identities, administrative requests and approvals, operation phases, effect intents, sanitized canonical results, eligibility/refusal decisions, accepted restore cuts/results, unresolved uncertainty, and append-only operation history with evidence digests. Snapshots preserve this logical state; the Raft log is not the permanent audit archive.
+
+Frequent telemetry stays local. An observation used for an operation is captured and committed with its operation/request nonce, observer and target identities, boot/incarnation, relevant state/positions, release/config binding, validity constraints, and evidence binding. State-machine application is deterministic and does not consult local clocks. Exact freshness validation, expiry at effect execution, and invalidation after intervening changes remain protocol-design requirements; commitment alone does not make an observation indefinitely valid.
+
+Controller-local state includes connections, caches, timers, telemetry, metrics, raw diagnostics, and temporary transfer files. Physical Raft storage is local to each member; logical safety state must remain recoverable from quorum persistence. Nodes independently retain their identity, local action intent/result journal, activation/quarantine records, protected release/config identities, restore workspaces, cleanup state, and secrets. Process state and database positions must be freshly inspected rather than trusted from a stale journal.
+
+A replacement leader reconciles using exact operation identities. Missing required evidence or unknown effects block progress, never justify replay. Raft retains bounded canonical results and digests; protected full evidence may be archived separately. Missing optional diagnostics does not invalidate an already accepted canonical result, but missing evidence required by a pending phase refuses progress.
+
+### 5.2 Approved operation serialization
+
+V0.1 permits one cluster-wide mutating operation at a time, with no queue. Competing requests are rejected rather than retained for later execution. Status reads, telemetry, steady replication, and evidence collection remain concurrent.
+
+The operation lifecycle distinguishes proposed/active work from `succeeded`, `failed-safe`, and `blocked-uncertain`. Success and independently established safe failure release the mutation slot. Uncertain effects, authority, or required cleanup retain it. Explicit reconciliation operates within the retained operation slot; it cannot acquire a competing slot or erase historical failures.
+
+There is no generic cancellation once effects begin. A safe-stop request may stop before effects, follow explicitly authorized cleanup phases, or remain blocked when safety cannot be established. Detailed transitions and safe-stop authorization remain to be specified.
+
+The serialization rule covers supported switchover, failover, rejoin, route repair, replacement, and upgrade operations. It does not introduce online controller membership changes or online certificate rotation into v0.1; offline recovery/replacement requires a separate procedure. The interaction between this slot and urgent operator-access revocation remains an explicit open decision.
+
 ## 6. Manual first, automatic later
 
 The first release has distributed controller availability but operator-triggered failover:
@@ -163,6 +185,20 @@ The first release requires mTLS with pre-provisioned fixed controller identities
 - certificate mismatch, replacement, expiry, or unapproved identity refuses participation.
 
 Certificate issuance, expiry defaults, revocation, rotation, and offline recovery still require a dedicated design. Static controller membership does not mean certificates may be permanent or unrotatable.
+
+### 8.1 Approved operator authorization model
+
+Each operator uses an individual mTLS certificate, not a shared password or bearer token. A replicated ACL binds the certificate public-key hash to a role:
+
+- `viewer`: status and authorized sanitized evidence, never secrets or unrestricted raw diagnostics;
+- `operator`: switchover, failover, safe stop, and rejoin;
+- `administrator`: configuration, upgrades, and supported identity/replacement procedures.
+
+Operator additions and revocations require quorum commitment. Revocation is enforced by the ACL even before certificate expiry. ACL freshness on persistent connections and forwarded requests must be specified; an old TLS session is not permanent authorization. A separate offline recovery identity is proposed for the separately designed disaster-recovery procedure, not an online quorum bypass.
+
+Mutating requests bind cluster ID, unique request ID, authenticated operator, operation kind and exact parameters, expected cluster generation/writer epoch, and expiry. Acceptance precedes execution through quorum commitment. Exact retries return the existing operation; reuse of an ID with different identity or parameters refuses. Deduplication retention and request-expiry enforcement remain protocol details.
+
+Followers may securely forward requests, preserving authenticated identity. Losing the client connection does not cancel committed work. One authorized operator suffices initially; two-person approval is deferred. SSH remains bootstrap/convenience transport, not runtime authority.
 
 ## 9. Ingress model
 
@@ -252,12 +288,12 @@ The Python deployment remains untouched during Rust development. No in-place mix
 
 Before an implementation plan is approved, decide and document:
 
-- exact replicated versus local state boundaries;
+- exact schemas and freshness rules for the approved replicated/local state split;
 - OpenRaft version and acceptance criteria;
 - SQLite schema, durability mode, storage actor, and snapshot format;
 - RPC encoding/framework, size limits, deadlines, and backpressure;
 - certificate issuance, rotation, revocation, and recovery;
-- operator API authentication and authorization;
+- operator ACL enforcement, forwarding, request deduplication, and revocation during blocked operations;
 - privileged executor authorization protocol;
 - node observation freshness and eligibility rules;
 - fence and ingress adapter schemas;
