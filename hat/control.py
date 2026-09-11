@@ -1103,6 +1103,10 @@ class ControlIO:
         """Crash-test boundary after Popen proves a child may exist."""
         return None
 
+    def _before_command_timeout(self, process):
+        """Crash-test boundary before strict cleanup of a timed-out child."""
+        return None
+
     def _stop_command(self, process):
         """Do not leave an uncertain command running after communication failure."""
         if process.poll() is None:
@@ -1145,7 +1149,9 @@ class ControlIO:
                     self._after_command_start(process)
                     process.communicate(input=data, timeout=timeout)
                 except subprocess.TimeoutExpired as exc:
-                    try: self._stop_command(process)
+                    try:
+                        self._before_command_timeout(process)
+                        self._stop_command(process)
                     finally: self._record_command_outcome(prefix.with_suffix('.outcome.json'), argv,
                                                           returncode=None, uncertain=True, error=exc)
                     raise
