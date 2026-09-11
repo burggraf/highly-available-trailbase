@@ -38,9 +38,24 @@ def _trusted_ancestry(path):
             raise ValueError('oracle input ancestry is unsafe')
 
 
+def _open_descriptor(path, flags=os.O_RDONLY):
+    path = Path(path)
+    if not path.is_absolute(): raise ValueError('oracle input path is not absolute')
+    fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        parts = [part for part in path.parts if part not in ('/', '')]
+        for part in parts[:-1]:
+            next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd); fd = next_fd
+        result = os.open(parts[-1], flags | os.O_NOFOLLOW, dir_fd=fd)
+        return result
+    finally:
+        os.close(fd)
+
+
 def _raw(path, limit=4 << 20, expected=None):
     _trusted_ancestry(path)
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    fd = _open_descriptor(path)
     try:
         before = os.fstat(fd)
         if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
@@ -69,6 +84,10 @@ def _copy_fixed_support(source, destination, names):
     source, destination = Path(source), Path(destination)
     expected = set(names)
     if not source.is_dir() or source.is_symlink(): raise ValueError('support root is unsafe')
+    _trusted_ancestry(source / 'placeholder')
+    root_stat = source.lstat()
+    if root_stat.st_uid != os.geteuid() or root_stat.st_mode & 0o022:
+        raise ValueError('support root is unsafe')
     found = set()
     for current, dirs, files in os.walk(source, topdown=True, followlinks=False):
         current = Path(current)
@@ -92,7 +111,8 @@ def _copy_fixed_support(source, destination, names):
         fd = os.open(target, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, 'wb') as stream:
             stream.write(raw); stream.flush(); os.fsync(stream.fileno())
-    for parent in {destination, *(destination / rel).parent for rel in expected}:
+    parents = {destination} | {(destination / rel).parent for rel in expected}
+    for parent in parents:
         parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(parent, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
         os.fsync(fd); os.close(fd)
@@ -100,28 +120,45 @@ def _copy_fixed_support(source, destination, names):
 
 def restore(root, acceptance_request, config, ledger, support, binaries, fault_ledger=None):
     os.umask(0o077)
-    request_raw = _raw(acceptance_request, 1 << 20)
+    request_raw = _read(acceptance_request, 1 << 20)
     request_object = recovery.parse_canonical_json(request_raw)
     operation = {'id': request_object['operation'], 'source': request_object['source'],
                  'target': request_object['target'],
                  'source_epoch': request_object['epoch'] if request_object['phase'] in ('compare','reconciled-compare') else 'd1-source',
                  'new_epoch': 'd1-' + request_object['operation']}
     request_value = recovery.parse_acceptance_request(request_raw, operation)
-    config_raw = _raw(config, 1 << 20)
+    config_raw = _read(config, 1 << 20)
+    if hashlib.sha256(config_raw).hexdigest() != request_value['inputs']['replica_config_sha256']:
+        raise ValueError('replica configuration changed')
     recovery._replica_config(config_raw, request_value['epoch'])
-    ledger_raw = _raw(ledger)
+    ledger_raw = _read(ledger)
     if request_value['profile'] != 'recovery-comparison':
         recovery._protected_ledger(ledger_raw)
     if fault_ledger is not None:
         events = read_closed_ledger(fault_ledger, request_value['epoch'])
-        if hashlib.sha256(_raw(fault_ledger)).hexdigest() != request_value['inputs']['fault_ledger_sha256']:
+        if hashlib.sha256(_read(fault_ledger)).hexdigest() != request_value['inputs']['fault_ledger_sha256']:
             raise ValueError('fault ledger changed')
     else:
         events = None
     root = Path(root)
     if not root.is_dir() or root.is_symlink(): raise ValueError('oracle root is unsafe')
     work = root / uuid.uuid4().hex; work.mkdir(mode=0o700)
-    depot = work / 'depot'; shutil.copytree(support, depot); data = depot / 'data'; data.mkdir()
+    expected_support = request_value['inputs']['support']
+    _copy_fixed_support(support, work / 'depot', expected_support)
+    expected_binaries = request_value['inputs']['binaries']
+    if set(expected_binaries) != {'trail', 'litestream'}:
+        raise ValueError('binary set is invalid')
+    binary_root = Path(binaries)
+    _trusted_ancestry(binary_root / 'placeholder')
+    if not binary_root.is_dir() or binary_root.is_symlink() or binary_root.lstat().st_mode & 0o022:
+        raise ValueError('binary root is unsafe')
+    if {item.name for item in binary_root.iterdir()} != {'trail', 'litestream'}:
+        raise ValueError('binary set is invalid')
+    for name, digest in expected_binaries.items():
+        actual = _read(binary_root / name, 128 << 20)
+        if hashlib.sha256(actual).hexdigest() != digest:
+            raise ValueError('binary identity differs')
+    depot = work / 'depot'; data = depot / 'data'; data.mkdir(mode=0o700)
     evidence = {'databases': {}}
     for name in ('main', 'session', 'aux'):
         position = request_value['positions'][name]
@@ -135,7 +172,8 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
             db.execute('PRAGMA ignore_check_constraints=ON')
             if db.execute('PRAGMA integrity_check').fetchone() != ('ok',) or db.execute('PRAGMA foreign_key_check').fetchall():
                 raise ValueError('database checks failed')
-        evidence['databases'][name] = {'position': position, 'sha256': hashlib.sha256(target.read_bytes()).hexdigest(), 'integrity':'PASS', 'foreign_keys':'PASS'}
+        restored = _read(target, 64 << 20)
+        evidence['databases'][name] = {'position': position, 'sha256': hashlib.sha256(restored).hexdigest(), 'integrity':'PASS', 'foreign_keys':'PASS'}
     evidence['signature'] = logical_signature(data)
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
@@ -167,12 +205,14 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
     result = {'schema':'hat-restore-acceptance-1', 'request':request_value,
               'request_sha256':hashlib.sha256(recovery.canonical_json(request_value)).hexdigest(),
               'databases':evidence['databases'], 'signature':evidence['signature'], 'checks':evidence['checks']}
+    recovery.validate_acceptance_result(result, request_value, operation)
     raw = recovery.canonical_json(result)
     result_path = work / 'result.json'
     fd = os.open(result_path, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, 'wb') as stream: stream.write(raw); stream.flush(); os.fsync(stream.fileno())
     dfd=os.open(work, os.O_RDONLY|os.O_DIRECTORY); os.fsync(dfd); os.close(dfd)
-    recovery.validate_acceptance_result(result, request_value, operation)
+    if _read(result_path, 1 << 20) != raw:
+        raise ValueError('result changed after write')
     return result
 
 
@@ -188,7 +228,15 @@ if __name__ == '__main__':
     p.add_argument('--result', type=Path, required=True)
     a = p.parse_args()
     value = restore(a.root, a.acceptance_request, a.config, a.ledger, a.support, a.binaries, a.fault_ledger)
-    fd = os.open(a.result, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600)
-    with os.fdopen(fd, 'wb') as stream: stream.write(recovery.canonical_json(value)); stream.flush(); os.fsync(stream.fileno())
-    dfd=os.open(a.result.parent, os.O_RDONLY|os.O_DIRECTORY); os.fsync(dfd); os.close(dfd)
+    raw = recovery.canonical_json(value)
+    _trusted_ancestry(a.result)
+    parent_fd = os.open(a.result.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        fd = os.open(a.result.name, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600, dir_fd=parent_fd)
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+        os.fsync(parent_fd)
+        if _read(a.result, 1 << 20) != raw: raise ValueError('result changed after write')
+    finally:
+        os.close(parent_fd)
     print('PASS: independent finite restore acceptance')

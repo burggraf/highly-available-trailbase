@@ -6,9 +6,24 @@ import tempfile
 import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'hat'))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import recovery
 
 class RestoreTask3Tests(unittest.TestCase):
+    def test_oracle_raw_rejects_symlinked_ancestor(self):
+        import restore_baseline
+        root = Path(tempfile.mkdtemp(dir=Path.cwd()))
+        real = root / 'real'; real.mkdir(); (real / 'x').write_bytes(b'x')
+        link = root / 'link'; link.symlink_to(real, target_is_directory=True)
+        with self.assertRaises(ValueError): restore_baseline._raw(link / 'x')
+
+    def test_oracle_fixed_support_rejects_extra_file(self):
+        import restore_baseline
+        root = Path(tempfile.mkdtemp(dir=Path.cwd()))
+        source = root / 'support'; source.mkdir()
+        (source / 'ok').write_bytes(b'ok'); (source / 'extra').write_bytes(b'x')
+        with self.assertRaises(ValueError): restore_baseline._copy_fixed_support(source, root / 'out', {'ok'})
+
     def test_request_bytes_are_canonical_and_no_positions_file_contract(self):
         op = {'id':'a'*32,'source':'A','target':'B','source_epoch':'d1-source','new_epoch':'d1-'+'a'*32}
         auth={'schema':'hat-restore-input-authority-1','operation':op['id'],'origin':'d2-preflight',
