@@ -5,8 +5,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import socket
+import stat
 import sqlite3
 import subprocess
 import sys
@@ -21,20 +21,81 @@ from recovery import classify_fault
 from transition import logical_signature
 
 
-def _raw(path, limit=4 << 20):
+def _stat_identity(st):
+    return (st.st_dev, st.st_ino, st.st_mode, st.st_uid, st.st_gid, st.st_nlink, st.st_size)
+
+
+def _trusted_ancestry(path):
+    path = Path(path)
+    if not path.is_absolute():
+        raise ValueError('oracle input path is not absolute')
+    parts = path.parts
+    current = Path(parts[0])
+    for part in parts[1:-1]:
+        current /= part
+        st = current.lstat()
+        if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o022:
+            raise ValueError('oracle input ancestry is unsafe')
+
+
+def _raw(path, limit=4 << 20, expected=None):
+    _trusted_ancestry(path)
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     try:
-        st = os.fstat(fd)
-        if not (st.st_mode & 0o170000) == 0o100000 or st.st_nlink != 1 or st.st_size > limit:
+        before = os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
+                or before.st_mode & 0o022 or before.st_size > limit):
             raise ValueError('unsafe oracle input')
+        if expected is not None and _stat_identity(before) != expected:
+            raise ValueError('oracle input identity changed')
         data = bytearray()
         while len(data) <= limit:
             part = os.read(fd, min(65536, limit + 1-len(data)))
             if not part: break
             data.extend(part)
-        if len(data) > limit: raise ValueError('oversized oracle input')
-        return bytes(data)
-    finally: os.close(fd)
+        after = os.fstat(fd)
+        if len(data) > limit or _stat_identity(before) != _stat_identity(after):
+            raise ValueError('oracle input changed')
+        return bytes(data), _stat_identity(after)
+    finally:
+        os.close(fd)
+
+
+def _read(path, limit=4 << 20, expected=None):
+    return _raw(path, limit, expected)[0]
+
+
+def _copy_fixed_support(source, destination, names):
+    source, destination = Path(source), Path(destination)
+    expected = set(names)
+    if not source.is_dir() or source.is_symlink(): raise ValueError('support root is unsafe')
+    found = set()
+    for current, dirs, files in os.walk(source, topdown=True, followlinks=False):
+        current = Path(current)
+        dirs[:] = sorted(dirs)
+        for name in dirs + files:
+            path = current / name
+            rel = path.relative_to(source).as_posix()
+            st = path.lstat()
+            if stat.S_ISLNK(st.st_mode) or (stat.S_ISDIR(st.st_mode) and st.st_nlink != 1):
+                raise ValueError('support tree contains unsafe entry')
+            if not stat.S_ISDIR(st.st_mode):
+                if rel not in expected: raise ValueError('support tree has unexpected file')
+                if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_mode & 0o022:
+                    raise ValueError('support file is unsafe')
+                found.add(rel)
+    if found != expected: raise ValueError('support tree is incomplete')
+    for rel in sorted(expected):
+        target = destination / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        raw = _read(source / rel)
+        fd = os.open(target, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+    for parent in {destination, *(destination / rel).parent for rel in expected}:
+        parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(parent, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+        os.fsync(fd); os.close(fd)
 
 
 def restore(root, acceptance_request, config, ledger, support, binaries, fault_ledger=None):
