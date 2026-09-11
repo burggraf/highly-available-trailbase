@@ -1,9 +1,11 @@
 """Deterministic crash-boundary matrix for unified restore acceptance (Task5)."""
+from contextlib import ExitStack
 import hashlib
 import json
 import os
 from pathlib import Path
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -39,6 +41,199 @@ class _Proc:
         return b'', b''
     def kill(self): self.killed = True
     def wait(self, timeout=None): self.waited = True
+
+
+class _OracleProcess:
+    """A completed child which exclusively publishes a canonical oracle result."""
+    def __init__(self, argv, spawns, timeout=False):
+        self.argv = argv
+        self.spawns = spawns
+        self.timeout = timeout
+        self.returncode = 0
+        self.killed = False
+        spawns.append(tuple(argv))
+
+    def poll(self):
+        return -9 if self.killed else (None if self.timeout else self.returncode)
+
+    def communicate(self, input=None, timeout=None):
+        request_path = Path(self.argv[self.argv.index('--acceptance-request') + 1])
+        result_path = Path(self.argv[self.argv.index('--result') + 1])
+        request = recovery.parse_canonical_json(request_path.read_bytes())
+        checks = {'records': 'PASS', 'authentication': 'PASS'}
+        if request['profile'] == 'recovery-comparison':
+            operations = request['inputs']['fault_operations']
+            checks.update(fault_outcomes={'recovered': operations, 'lost': [], 'ambiguous': [],
+                                          'unacknowledged_recovered': [], 'rejected': []},
+                          acknowledged_loss='NONE')
+        value = {
+            'schema': recovery._ACCEPTANCE_SCHEMA,
+            'request': request,
+            'request_sha256': hashlib.sha256(recovery.canonical_json(request)).hexdigest(),
+            'databases': {name: {'position': request['positions'][name], 'sha256': '9' * 64,
+                                 'integrity': 'PASS', 'foreign_keys': 'PASS'} for name in DBS},
+            'signature': {name: hashlib.sha256((request['phase'] + name).encode()).hexdigest()
+                          for name in DBS},
+            'checks': checks,
+        }
+        fd = os.open(result_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(recovery.canonical_json(value))
+        if self.timeout:
+            raise subprocess.TimeoutExpired(self.argv, timeout)
+        return b'', b''
+
+    def kill(self):
+        self.killed = True
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
+class RealOracleFixture:
+    """Real Journal/ControlIO/descriptor fixture with only fixed roots patched."""
+    POSITIONS = {'main': 11, 'session': 12, 'aux': 13}
+
+    def __init__(self, test, *, phase='compare', recovery_compare=False):
+        self.test = test
+        self.phase = phase
+        self.recovery_compare = recovery_compare
+        self.temp = tempfile.TemporaryDirectory(dir=Path.cwd())
+        self.root = Path(self.temp.name).resolve()
+        self.oracle_root = self.root / 'oracle'
+        self.binary_root = self.root / 'oracle-bin'
+        self.spawns = []
+        self.stack = ExitStack()
+        self.stack.enter_context(patch.object(control, 'ORACLE_ROOT', self.oracle_root, create=True))
+        self.stack.enter_context(patch.object(control, 'ORACLE_BIN_ROOT', self.binary_root, create=True))
+        self.stack.enter_context(patch.object(control, 'ROOT_UID', os.geteuid(), create=True))
+        self.stack.enter_context(patch.object(recovery, 'CONTROLLER_ROOT', self.root, create=True))
+        account = type('Account', (), {'pw_uid': os.geteuid(), 'pw_gid': os.getegid()})()
+        self.stack.enter_context(patch.object(control.pwd, 'getpwnam', return_value=account))
+        self._install_inputs()
+        self.journal = self.stack.enter_context(control.Journal(self.root))
+        source, target = ('B', 'A') if recovery_compare else ('A', 'B')
+        self.operation = self.journal.begin(source, target, 'd1-source')
+        self.work = self.root / self.operation['id']
+        self.work.mkdir(mode=0o700)
+        self.ledger = self._ledger()
+        support = self._manifest(self.oracle_root / 'support')
+        binaries = self._manifest(self.binary_root)
+        self.state = {'source': {'config': {'support': support, 'binaries': binaries}}}
+        self.io = control.ControlIO(self.journal, {}, self.operation, self.work, self.state)
+        origin = 'd3-recovery-input' if recovery_compare else 'd2-preflight'
+        authority = self.io.capture_protected_authority(self.ledger, origin, support, binaries)
+        plan = control.D3_PHASES if recovery_compare else control.PHASES
+        target_phase = 'verify' if phase == 'new-writes' else phase
+        self.position = plan.index(target_phase)
+        evidence = {'preflight': {'ledger_authority': authority}}
+        for current in plan[:self.position]:
+            self.journal.step(current, lambda current=current: evidence.get(current, {}))
+        with test.assertRaisesRegex(RuntimeError, 'pending-intent'):
+            self.journal.step(target_phase, lambda: (_ for _ in ()).throw(RuntimeError('pending-intent')))
+        self.fault = self._fault_ledger() if recovery_compare else None
+        if phase == 'new-writes':
+            self.selected = self.work / 'new-writes.jsonl'
+            self.selected.write_bytes(b'fresh-writes\n')
+            self.selected.chmod(0o600)
+            self.io.authorize_fresh_writes(self.selected)
+        else:
+            self.selected = self.ledger
+        (self.work / 'failure.json').write_bytes(b'pending oracle failure evidence')
+        (self.work / 'failure.json').chmod(0o600)
+
+    def _install_inputs(self):
+        support = self.oracle_root / 'support'
+        for name in ('config.textproto', 'migrations/main/U100__hat_ops.sql',
+                     'migrations/aux/U100__hat_ops.sql', 'secrets/keys/private_key.pem',
+                     'secrets/keys/public_key.pem'):
+            path = support / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(('support:' + name).encode())
+            path.chmod(0o640)
+        self.binary_root.mkdir(mode=0o755)
+        for name in ('trail', 'litestream'):
+            path = self.binary_root / name
+            path.write_bytes(('binary:' + name).encode())
+            path.chmod(0o755)
+
+    @staticmethod
+    def _manifest(root):
+        return {str(path.relative_to(root)): hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in root.rglob('*') if path.is_file()}
+
+    def _ledger(self):
+        if self.recovery_compare:
+            previous = self.root / ('b' * 32)
+            previous.mkdir(mode=0o700)
+            ledger = previous / 'ledger.jsonl'
+        else:
+            ledger = self.work / 'ledger.jsonl'
+        ledger.write_bytes(b'protected-ledger\n')
+        ledger.chmod(0o600)
+        return ledger
+
+    def _fault_ledger(self):
+        row = {'op_key': 'd3-fault', 'payload': 'accepted before fault'}
+        rows = [
+            {'event': 'start', 'run_id': 'd3-' + 'c' * 32, 'source_epoch': 'd1-source',
+             'time_ns': 1, 'utc': '2026-01-01T00:00:00Z'},
+            {'event': 'submitted', 'api': 'main_ops', 'row': row, 'time_ns': 2},
+            {'event': 'acknowledged', 'api': 'main_ops', 'row': row, 'id': '7', 'time_ns': 3},
+            {'event': 'stop', 'submitted': 1, 'acknowledged': 1, 'rejected': 0,
+             'uncertain': 0, 'time_ns': 4, 'utc': '2026-01-01T00:00:01Z'},
+        ]
+        path = self.work / 'fault-ledger.jsonl'
+        path.write_bytes(b''.join(json.dumps(row, separators=(',', ':')).encode() + b'\n' for row in rows))
+        path.chmod(0o600)
+        return path
+
+    @property
+    def area(self):
+        prefix = 'd3' if self.recovery_compare else 'd2'
+        return self.oracle_root / f'{prefix}-{self.operation["id"]}-{self.phase}'
+
+    def popen(self, timeout=False):
+        return patch.object(control.subprocess, 'Popen',
+                            side_effect=lambda argv, **_: _OracleProcess(argv, self.spawns, timeout))
+
+    def invoke(self):
+        return self.io.oracle(self.phase, b'replica-config', self.POSITIONS,
+                              self.selected, self.fault)
+
+    def reopen(self):
+        self.journal.__exit__(None, None, None)
+        self.journal = control.Journal(self.root).__enter__()
+        self.stack.callback(self.journal.__exit__, None, None, None)
+        operation, _ = self.journal._boundary(self.operation['id'], self.position)
+        self.journal.operation = operation
+        self.journal.next = self.position
+        self.journal.pending = True
+        self.io = control.ControlIO(self.journal, {}, operation, self.work, self.state)
+        if self.phase == 'new-writes':
+            selected = descriptor.DescriptorAuthority.open_file(
+                self.selected, trusted_root=self.work, trusted_uids={0, os.geteuid()},
+                expected_uid=os.geteuid(), expected_mode=0o600, expected_nlink=1)
+            authority = recovery.parse_canonical_json(
+                (self.work / 'new-writes-input-authority.json').read_bytes())
+            self.io._fresh_writes = selected, authority
+
+    def artifacts(self):
+        return {str(path.relative_to(self.root)): (path.stat().st_ino, path.read_bytes())
+                for path in self.root.rglob('*') if path.is_file()}
+
+    def assert_pending(self):
+        target = 'verify' if self.phase == 'new-writes' else self.phase
+        rows = self.journal.db.execute(
+            'SELECT status FROM steps WHERE operation=? AND phase=? ORDER BY rowid',
+            (self.operation['id'], target)).fetchall()
+        self.test.assertEqual(rows, [('intent',)])
+        self.test.assertEqual((self.work / 'failure.json').read_bytes(),
+                              b'pending oracle failure evidence')
+
+    def close(self):
+        self.stack.close()
+        self.temp.cleanup()
 
 
 class RestoreTask5Matrix(unittest.TestCase):
@@ -359,6 +554,156 @@ class RestoreTask5Matrix(unittest.TestCase):
             try:
                 with self.assertRaises(ValueError): auth.recheck()
             finally: auth.close()
+
+    def test_real_oracle_pending_replay_matrix_refuses_preexisting_artifact_without_respawn(self):
+        stages = (
+            ('operation-request', 'acceptance-request.file'),
+            ('oracle-copies', 'oracle-request.dir'),
+            ('command-intent', 'command-intent.dir'),
+            ('command-outcome', 'command-outcome.dir'),
+            ('oracle-result-before-read', 'before-result-read'),
+            ('oracle-result-after-read', 'after-result-read'),
+            ('retained-result', 'retained-result.dir'),
+        )
+        for phase in ('compare', 'baseline', 'new-writes'):
+            for stage, boundary in stages:
+                with self.subTest(phase=phase, stage=stage):
+                    fixture = RealOracleFixture(self, phase=phase)
+                    try:
+                        def fail(label, path, boundary=boundary):
+                            if label == boundary:
+                                raise RuntimeError('injected crash at ' + boundary)
+                        fixture.io._after_fsync = fail
+                        if boundary == 'before-result-read':
+                            fixture.io._before_result_read = lambda path: (_ for _ in ()).throw(
+                                RuntimeError('injected crash before result read'))
+                        elif boundary == 'after-result-read':
+                            fixture.io._after_result_read = lambda path: (_ for _ in ()).throw(
+                                RuntimeError('injected crash after result read'))
+                        with fixture.popen(), self.assertRaises(RuntimeError):
+                            fixture.invoke()
+                        spawn_count = len(fixture.spawns)
+                        before = fixture.artifacts()
+                        fixture.reopen()
+                        with fixture.popen(), self.assertRaises(FileExistsError):
+                            fixture.invoke()
+                        self.assertEqual(len(fixture.spawns), spawn_count)
+                        self.assertEqual(fixture.artifacts(), before)
+                        fixture.assert_pending()
+                    finally:
+                        fixture.close()
+
+        with self.subTest(phase='compare', stage='timeout-outcome'):
+            fixture = RealOracleFixture(self, phase='compare')
+            try:
+                with fixture.popen(timeout=True), self.assertRaises(subprocess.TimeoutExpired):
+                    fixture.invoke()
+                self.assertEqual(len(fixture.spawns), 1)
+                outcome = json.loads(next(fixture.work.glob('*.outcome.json')).read_text())
+                self.assertTrue(outcome['uncertain'])
+                before = fixture.artifacts()
+                fixture.reopen()
+                with fixture.popen(), self.assertRaises(FileExistsError):
+                    fixture.invoke()
+                self.assertEqual(len(fixture.spawns), 1)
+                self.assertEqual(fixture.artifacts(), before)
+                fixture.assert_pending()
+            finally:
+                fixture.close()
+
+    def test_real_oracle_replacement_matrix_refuses_every_bound_consumer(self):
+        artifacts = ('replica', 'ledger', 'fault', 'request')
+        mutations = ('content-hash', 'path-inode', 'parent')
+        for artifact in artifacts:
+            for mutation in mutations:
+                with self.subTest(artifact=artifact, mutation=mutation):
+                    fixture = RealOracleFixture(self, recovery_compare=artifact == 'fault')
+                    preserved = []
+                    try:
+                        def mutate(_argv):
+                            paths = {
+                                'replica': fixture.area / 'replica.yml',
+                                'ledger': fixture.area / 'ledger.jsonl',
+                                'fault': fixture.area / 'fault-ledger.jsonl',
+                                'request': fixture.area / 'acceptance-request.json',
+                            }
+                            path = paths[artifact]
+                            raw = path.read_bytes()
+                            if mutation == 'content-hash':
+                                path.write_bytes(bytes([raw[0] ^ 1]) + raw[1:])
+                                preserved.append(path)
+                            elif mutation == 'path-inode':
+                                original = path.with_name(path.name + '.original')
+                                path.rename(original)
+                                path.write_bytes(raw)
+                                path.chmod(stat.S_IMODE(original.stat().st_mode))
+                                preserved.extend((original, path))
+                            else:
+                                relative = path.relative_to(fixture.area)
+                                old_area = fixture.area.with_name(fixture.area.name + '.original')
+                                fixture.area.rename(old_area)
+                                fixture.area.mkdir(mode=0o750)
+                                (fixture.area / 'work').mkdir(mode=0o700)
+                                replacement = fixture.area / relative
+                                replacement.parent.mkdir(parents=True, exist_ok=True)
+                                replacement.write_bytes(raw)
+                                replacement.chmod(stat.S_IMODE((old_area / relative).stat().st_mode))
+                                preserved.extend((old_area / relative, replacement))
+                        fixture.io._before_command_spawn = mutate
+                        with fixture.popen(), self.assertRaises(ValueError):
+                            fixture.invoke()
+                        fixture.assert_pending()
+                        self.assertFalse((fixture.work / 'compare-acceptance-result.json').exists())
+                        self.assertTrue(all(path.exists() for path in preserved))
+                        self.assertTrue(fixture.ledger.exists())
+                        if fixture.fault is not None:
+                            self.assertTrue(fixture.fault.exists())
+                    finally:
+                        fixture.close()
+
+        result_boundaries = ('before-read', 'after-read', 'before-recheck', 'after-recheck')
+        for boundary in result_boundaries:
+            with self.subTest(artifact='oracle-result', boundary=boundary):
+                fixture = RealOracleFixture(self)
+                try:
+                    def replace(path):
+                        path = Path(path)
+                        raw = path.read_bytes()
+                        path.rename(path.with_name(path.name + '.original'))
+                        path.write_bytes(raw)
+                        path.chmod(0o600)
+                    setattr(fixture.io, {
+                        'before-read': '_before_result_read',
+                        'after-read': '_after_result_read',
+                        'before-recheck': '_before_result_recheck',
+                        'after-recheck': '_after_result_recheck',
+                    }[boundary], replace)
+                    with fixture.popen(), self.assertRaises(ValueError):
+                        fixture.invoke()
+                    fixture.assert_pending()
+                finally:
+                    fixture.close()
+
+        with self.subTest(artifact='retained-result', mutation='destination-parent'):
+            fixture = RealOracleFixture(self)
+            try:
+                old_work = fixture.work.with_name(fixture.work.name + '.original')
+                def replace_parent(label, path):
+                    if label == 'retained-result.file':
+                        fixture.work.rename(old_work)
+                        fixture.work.mkdir(mode=0o700)
+                fixture.io._after_fsync = replace_parent
+                with fixture.popen(), self.assertRaises(ValueError):
+                    fixture.invoke()
+                rows = fixture.journal.db.execute(
+                    "SELECT status FROM steps WHERE operation=? AND phase='compare' ORDER BY rowid",
+                    (fixture.operation['id'],)).fetchall()
+                self.assertEqual(rows, [('intent',)])
+                self.assertTrue((old_work / 'failure.json').exists())
+                self.assertTrue((old_work / 'ledger.jsonl').exists())
+                self.assertTrue((old_work / 'compare-acceptance-result.json').exists())
+            finally:
+                fixture.close()
 
     def test_completed_authority_negative_matrix_only_exact_route_done_is_accepted(self):
         cases = {
