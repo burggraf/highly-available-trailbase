@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'hat'))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import recovery
 
 class RestoreTask3Tests(unittest.TestCase):
