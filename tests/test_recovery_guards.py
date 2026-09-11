@@ -354,6 +354,7 @@ class RecoveryGuardTests(unittest.TestCase):
                 mutations=(lambda: permit.write_bytes(permit.read_bytes()+b'x'),
                            lambda: maintenance.unlink(),
                            lambda: (root/operation['id']/'failure.json').write_bytes(b'x'),
+                           lambda: (root/operation['id']/'failure.json').write_bytes(b'y'),
                            lambda: ingress.write_bytes(ingress.read_bytes()+b'x'))
                 for mutate in mutations:
                     self.m._INGRESS_PRE_FINALIZE_HOOK=mutate
@@ -415,6 +416,17 @@ class RecoveryGuardTests(unittest.TestCase):
                 self.m._INGRESS_PRE_FINALIZE_HOOK=mutate
                 try: self.assertFalse(self.m.ingress_allowed(*args))
                 finally: self.m._INGRESS_PRE_FINALIZE_HOOK=None
+
+    def test_d3_failure_sidecar_is_finalized_from_captured_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve(); journal,operation,ingress=self._d3(root,count=10)
+            maintenance=self._maintenance(root,operation); args=(root,maintenance,root/'permit',ingress,'boot')
+            self.assertTrue(self.m.ingress_allowed(*args))
+            failure=root/operation['id']/'failure.json'
+            for payload in (b'x', b'y'):
+                self.m._INGRESS_PRE_FINALIZE_HOOK=lambda payload=payload: failure.write_bytes(payload)
+                try: self.assertFalse(self.m.ingress_allowed(*args))
+                finally: self.m._INGRESS_PRE_FINALIZE_HOOK=None; failure.unlink(missing_ok=True)
 
     def test_d3_bootstrap_requires_exact_boundary_and_live_private_permit(self):
         for boundary in ('route-intent','verify-intent'):

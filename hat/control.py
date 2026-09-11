@@ -474,7 +474,7 @@ def _validate_d3_proof(operation, evidence, verified=True):
         raise RuntimeError('D3 recovery proof differs or is malformed') from exc
 
 
-def _d3_serving_state(db, ident, digest, failure):
+def _d3_serving_state(db, ident, digest, failure, failure_snapshot=None, failure_bytes=None):
     row=db.execute('SELECT source,target,new_epoch,complete,restore_contract FROM operations WHERE id=?',(ident,)).fetchone()
     if not row or row[:2]!=('B','A') or row[3] or row[4]!=RESTORE_CONTRACT: return False
     steps=db.execute('SELECT position,phase,status,evidence FROM steps WHERE operation=? ORDER BY rowid',(ident,)).fetchall()
@@ -489,10 +489,17 @@ def _d3_serving_state(db, ident, digest, failure):
     except (TypeError,ValueError,RuntimeError): return False
     route=evidence['route']
     if set(route)!={'writer','epoch','config_sha'} or route['config_sha']!=digest: return False
-    if failure.exists() or failure.is_symlink():
+    if failure_snapshot is None:
+        try: raw, identity = _stable_private_bytes(failure, strict=False)
+        except FileNotFoundError: failure_snapshot = None
+        except (OSError, ValueError): return False
+        else:
+            failure_snapshot = (identity, hashlib.sha256(raw).digest())
+            failure_bytes = raw
+    if failure_snapshot is not None:
         if (len(steps)-len(base))%2 != 1: return False
-        try: private_file(failure); value=json.loads(failure.read_text())
-        except (OSError,ValueError,TypeError): return False
+        try: value=json.loads(failure_bytes)
+        except (ValueError,TypeError): return False
         if (not isinstance(value,dict) or set(value)!={'phase','error'} or value['phase']!=steps[-1][1]
                 or value['phase'] not in D3_PHASES[10:] or not isinstance(value['error'],str)
                 or not re.fullmatch('[A-Za-z][A-Za-z0-9_]*',value['error'])):
@@ -525,8 +532,10 @@ def current_writer(journal, ingress):
     return {'operation':ident,'writer':target,'epoch':epoch}
 
 
-def _ingress_allowed_body(root, maintenance, permit, ingress, boot):
+def _ingress_allowed_body(root, maintenance, permit, ingress, boot, tracked=None, paths=None):
     """Boot/restart gate for exact completed, live D2 route, or verified D3 route."""
+    if tracked is None: tracked = {}
+    if paths is None: paths = []
     try:
         marker_present=maintenance.exists() or maintenance.is_symlink()
         permit_present=permit.exists() or permit.is_symlink()
@@ -566,7 +575,12 @@ def _ingress_allowed_body(root, maintenance, permit, ingress, boot):
                 if not re.fullmatch('[0-9a-f]{32}',ident) or not marker_present: return False
                 if json.loads(maintenance.read_text())!={'operation':ident}: return False
                 failure=root/ident/'failure.json'
-                if _d3_serving_state(db,ident,digest,failure):
+                failure_key=str(failure)
+                paths.append(failure)
+                try: raw, identity = _stable_private_bytes(failure, strict=False)
+                except FileNotFoundError: tracked[failure_key] = None
+                else: tracked[failure_key] = (identity, hashlib.sha256(raw).digest()); tracked[failure_key+'#bytes'] = raw
+                if _d3_serving_state(db,ident,digest,failure,tracked[failure_key],tracked.get(failure_key+'#bytes')):
                     return (journal_identity==_stable_private_bytes(path)[1]
                             and ingress_identity==_stable_private_bytes(ingress,strict=False)[1]
                             and not permit_present)
@@ -575,7 +589,7 @@ def _ingress_allowed_body(root, maintenance, permit, ingress, boot):
                 verify_pending=[(i,p,s) for i,p in enumerate(D3_PHASES[:9]) for s in ('intent','done')]+[(9,'verify','intent')]
                 if ([step[:3] for step in steps] not in (route_pending,verify_pending)
                         or any(value!='{}' for _,_,status,value in steps if status=='intent')
-                        or failure.exists() or failure.is_symlink()):
+                        or tracked[failure_key] is not None):
                     return False
                 evidence={phase:json.loads(value) for _,phase,status,value in steps if status=='done'}
                 _validate_d3_proof({'id':ident,'source':source,'target':target,'new_epoch':epoch},evidence,False)
@@ -652,7 +666,7 @@ def ingress_allowed(root, maintenance, permit, ingress, boot):
     try:
         snapshot = _ingress_file_snapshot(root, paths)
         if any(snapshot[str(path)] is not None for path in paths[-3:]): return False
-        allowed = _ingress_allowed_body(root, maintenance, permit, ingress, boot)
+        allowed = _ingress_allowed_body(root, maintenance, permit, ingress, boot, snapshot, paths)
         return _ingress_file_finalize(root, paths, snapshot, allowed)
     except (OSError, RuntimeError, ValueError, KeyError, TypeError, sqlite3.Error):
         return False
