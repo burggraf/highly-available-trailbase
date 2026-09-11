@@ -97,6 +97,24 @@ class RestoreTask3Tests(unittest.TestCase):
                 restore_baseline.restore(root, request_path, config, ledger, root, root,
                                          operation_evidence=operation_path)
 
+    def test_oracle_ledger_requires_running_identity_and_rejects_root_owner(self):
+        import restore_baseline
+        root = Path(tempfile.mkdtemp(dir=Path.cwd()))
+        ledger = root / 'ledger.jsonl'; ledger.write_bytes(b'ledger\n'); ledger.chmod(0o600)
+        oracle_uid, oracle_gid = 2001, 2002
+        root_identity = (1, 2, 0o100600, 0, 0, 1, ledger.stat().st_size)
+        authority = unittest.mock.MagicMock()
+        authority.__enter__.return_value = authority
+        authority.identity = root_identity
+        authority.read.return_value = ledger.read_bytes()
+        with unittest.mock.patch.object(restore_baseline.os, 'geteuid', return_value=oracle_uid), \
+             unittest.mock.patch.object(restore_baseline.os, 'getegid', return_value=oracle_gid), \
+             unittest.mock.patch.object(restore_baseline.descriptor.DescriptorAuthority, 'open_file', return_value=authority) as opened:
+            with self.assertRaisesRegex(ValueError, 'oracle input identity'):
+                restore_baseline._raw(ledger, expected_uid=oracle_uid, expected_gid=oracle_gid)
+        self.assertEqual(opened.call_args.kwargs['expected_uid'], oracle_uid)
+        self.assertEqual(opened.call_args.kwargs['expected_gid'], oracle_gid)
+
     def test_internal_descriptor_identity_still_rejects_gid_mutation(self):
         import restore_baseline
         root = Path(tempfile.mkdtemp(dir=Path.cwd()))
