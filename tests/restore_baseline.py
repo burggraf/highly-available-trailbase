@@ -144,7 +144,7 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
     expected_stat = authority['ledger']
     actual_identity = {'device': ledger_stat.st_dev, 'inode': ledger_stat.st_ino,
                        'mode': ledger_stat.st_mode & 0o777, 'uid': ledger_stat.st_uid,
-                       'links': ledger_stat.st_nlink, 'bytes': ledger_stat.st_size,
+                       'gid': ledger_stat.st_gid, 'links': ledger_stat.st_nlink, 'bytes': ledger_stat.st_size,
                        'sha256': hashlib.sha256(ledger_raw).hexdigest()}
     if any(actual_identity[key] != expected_stat[key] for key in actual_identity):
         raise ValueError('ledger authority differs')

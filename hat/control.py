@@ -787,7 +787,7 @@ def _copy_bound_input(source, destination, mode, uid, gid, expected_sha, expecte
         raise ValueError('source is not a regular file') from exc
     try:
         before = os.fstat(fd)
-        identity_of = lambda value: (value.st_dev, value.st_ino, stat.S_IMODE(value.st_mode), value.st_uid, value.st_nlink, value.st_size)
+        identity_of = lambda value: (value.st_dev, value.st_ino, stat.S_IMODE(value.st_mode), value.st_uid, value.st_gid, value.st_nlink, value.st_size)
         if (not stat.S_ISREG(before.st_mode) or before.st_uid != uid or before.st_nlink != 1
                 or (private and before.st_mode & 0o077) or before.st_size <= 0 or before.st_size > limit
                 or (expected_identity is not None and identity_of(before) != expected_identity)):
@@ -1051,7 +1051,7 @@ class ControlIO:
         support_names = ('config.textproto','migrations/main/U100__hat_ops.sql','migrations/aux/U100__hat_ops.sql','secrets/keys/private_key.pem','secrets/keys/public_key.pem')
         support = {name: hashlib.sha256((support_root/name).read_bytes()).hexdigest() for name in support_names}
         binaries = {name: hashlib.sha256((Path('/opt/hat-oracle/bin')/name).read_bytes()).hexdigest() for name in ('trail','litestream')}
-        authority = {'schema': recovery._AUTHORITY_SCHEMA, 'operation': self.operation['id'], 'origin': ('current-verify-exclusive' if profile == 'fresh-writes' else ('d3-recovery-input' if self.operation['source'] == 'B' else 'd2-preflight')), 'ledger': {'path': str(ledger.absolute()), 'device': st.st_dev, 'inode': st.st_ino, 'mode': stat.S_IMODE(st.st_mode), 'uid': st.st_uid, 'links': st.st_nlink, 'bytes': st.st_size, 'sha256': hashlib.sha256(ledger.read_bytes()).hexdigest()}, 'support': support, 'binaries': binaries}
+        authority = {'schema': recovery._AUTHORITY_SCHEMA, 'operation': self.operation['id'], 'origin': ('current-verify-exclusive' if profile == 'fresh-writes' else ('d3-recovery-input' if self.operation['source'] == 'B' else 'd2-preflight')), 'ledger': {'path': str(ledger.absolute()), 'device': st.st_dev, 'inode': st.st_ino, 'mode': stat.S_IMODE(st.st_mode), 'uid': st.st_uid, 'gid': st.st_gid, 'links': st.st_nlink, 'bytes': st.st_size, 'sha256': hashlib.sha256(ledger.read_bytes()).hexdigest()}, 'support': support, 'binaries': binaries}
         inputs = {'replica_config_sha256': hashlib.sha256(replica_config.encode() if isinstance(replica_config,str) else bytes(replica_config)).hexdigest(), 'ledger_sha256': authority['ledger']['sha256'], 'ledger_authority': authority, 'restore_points': {db: {'source':'/var/lib/hat-demo/depot/data/'+db+'.db', 'position': positions[db]} for db in positions}, 'support': support, 'binaries': binaries}
         if profile == 'recovery-comparison':
             from client import read_closed_ledger
@@ -1078,7 +1078,7 @@ class ControlIO:
         ledger_path = Path(authority['ledger']['path'])
         if ledger_path.absolute() != Path(selected_ledger).absolute():
             raise ValueError('selected ledger differs from authority')
-        identity = tuple(authority['ledger'][key] for key in ('device','inode','mode','uid','links','bytes'))
+        identity = tuple(authority['ledger'][key] for key in ('device','inode','mode','uid','gid','links','bytes'))
         if not (ledger_path.is_absolute() and ledger_path.exists()):
             raise ValueError('authorized ledger is unavailable')
         if request['profile'] != 'fresh-writes':
