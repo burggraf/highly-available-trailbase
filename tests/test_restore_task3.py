@@ -108,7 +108,7 @@ class RestoreTask3Tests(unittest.TestCase):
             restore_baseline._verify_restore_position(b'{"txid":"0000000000000002"}', 1)
         restore_baseline._verify_restore_position(b'{"txid":"0000000000000001"}', 1)
 
-    def test_result_signature_uses_held_database_descriptors(self):
+    def test_result_signature_uses_normative_function_with_held_database_descriptors(self):
         import restore_baseline
         root = Path(tempfile.mkdtemp(dir=Path.cwd()))
         authorities = []
@@ -121,9 +121,12 @@ class RestoreTask3Tests(unittest.TestCase):
                 authorities.append(restore_baseline.descriptor.DescriptorAuthority.open_file(
                     path, trusted_root=root, trusted_uids={os.geteuid()}, expected_uid=os.geteuid(),
                     expected_mode=0o600, expected_nlink=1, limit=1 << 20))
-            before = restore_baseline._logical_signature_from_authorities(authorities)
-            (root / 'main.db').unlink()
-            self.assertEqual(before, restore_baseline._logical_signature_from_authorities(authorities))
+            expected = {'main': 'patched'}
+            with unittest.mock.patch.object(restore_baseline.transition, 'logical_signature',
+                                            return_value=expected) as signature:
+                self.assertIs(restore_baseline._signature_for_data(root, authorities), expected)
+            signature.assert_called_once_with(root)
+            self.assertTrue(all(authority.file_fd >= 0 for authority in authorities))
         finally:
             for authority in reversed(authorities): authority.close()
 
