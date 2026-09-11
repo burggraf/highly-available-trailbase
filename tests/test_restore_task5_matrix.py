@@ -591,7 +591,8 @@ class RestoreTask5Matrix(unittest.TestCase):
                         spawn_count = len(fixture.spawns)
                         before = fixture.artifacts()
                         fixture.reopen()
-                        with fixture.popen(), self.assertRaises(FileExistsError):
+                        error = RuntimeError if stage == 'retained-result' else FileExistsError
+                        with fixture.popen(), self.assertRaises(error):
                             fixture.invoke()
                         self.assertEqual(len(fixture.spawns), spawn_count)
                         self.assertEqual(fixture.artifacts(), before)

@@ -1449,12 +1449,14 @@ class ControlIO:
                     or not isinstance(intent['failure_sha'], str)
                     or not re.fullmatch('[0-9a-f]{64}', intent['failure_sha'])):
                 raise RuntimeError('reconciliation intent differs')
-            for suffix in ('request', 'result'):
-                replay = self.work / (phase + '-acceptance-' + suffix + '.json')
-                if replay.exists() or replay.is_symlink():
-                    raise RuntimeError('reconciliation acceptance artifacts were already used')
+            replay = self.work / (phase + '-acceptance-request.json')
+            if replay.exists() or replay.is_symlink():
+                raise RuntimeError('reconciliation acceptance artifacts were already used')
         elif self.journal.pending is not True or self.journal.next != expected_position:
             raise RuntimeError('restore request is not at the locked journal boundary')
+        retained = self.work / (phase + '-acceptance-result.json')
+        if retained.exists() or retained.is_symlink():
+            raise RuntimeError('acceptance result already exists')
         if not isinstance(positions, dict) or set(positions) != {'main','session','aux'}:
             raise ValueError('invalid restore positions')
         ledger = Path(ledger).absolute()
