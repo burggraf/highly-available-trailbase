@@ -823,8 +823,7 @@ def _open_held_inputs(expected, trusted_uids=None):
                 expected_nlink=1, limit=limit))
         return held
     except BaseException:
-        for item in reversed(held):
-            item.close()
+        descriptor.close_all(held)
         raise
 
 
@@ -954,14 +953,14 @@ class ControlIO:
             self._fresh_writes = selected, authority
             return authority
         except BaseException:
-            selected.close()
+            descriptor.close_all([selected])
             raise
 
     def _close_fresh_writes(self):
         value = getattr(self, '_fresh_writes', None)
         if value is not None:
             del self._fresh_writes
-            value[0].close()
+            descriptor.close_all([value[0]])
 
     def command(self, args, data=None, timeout=180):
         self.journal.check_authority()
@@ -1203,8 +1202,7 @@ class ControlIO:
                 return result, transferred
             return result
         finally:
-            while held:
-                held.pop().close()
+            descriptor.close_all(held)
 
     def _recheck_installed_manifest(self, root, names, held):
         """Recheck held fixed inputs, including the exact child namespace."""
@@ -1243,7 +1241,28 @@ class ControlIO:
         import recovery
         has_fault = fault_ledger is not None
         profile, epoch, expected_position, reconciled = recovery.derive_restore_profile(self.operation, phase, has_fault)
-        if self.journal.pending is not True or self.journal.next != expected_position:
+        if reconciled:
+            if self.journal.pending is not False:
+                raise RuntimeError('reconciliation crossed the ordinary journal boundary')
+            operation, _ = self.journal._boundary(self.operation['id'], expected_position)
+            if operation != self.operation:
+                raise RuntimeError('reconciliation operation differs')
+            filename, action = ({
+                'reconciled-compare': ('reconciliation.json', 'accept-checked-comparison'),
+                'verification-baseline': ('verification-reconciliation.json', 'verification-only'),
+            })[phase]
+            raw, _ = _stable_private_bytes(self.work / filename)
+            intent = recovery.parse_canonical_json(raw)
+            if (not isinstance(intent, dict) or set(intent) != {'operation','action','failure_sha'}
+                    or intent['operation'] != self.operation['id'] or intent['action'] != action
+                    or not isinstance(intent['failure_sha'], str)
+                    or not re.fullmatch('[0-9a-f]{64}', intent['failure_sha'])):
+                raise RuntimeError('reconciliation intent differs')
+            for suffix in ('request', 'result'):
+                replay = self.work / (phase + '-acceptance-' + suffix + '.json')
+                if replay.exists() or replay.is_symlink():
+                    raise RuntimeError('reconciliation acceptance artifacts were already used')
+        elif self.journal.pending is not True or self.journal.next != expected_position:
             raise RuntimeError('restore request is not at the locked journal boundary')
         if not isinstance(positions, dict) or set(positions) != {'main','session','aux'}:
             raise ValueError('invalid restore positions')
@@ -1323,8 +1342,7 @@ class ControlIO:
             return (*result, installed_holds, identity) if hold_installed else result
         except BaseException:
             if hold_installed:
-                for item in reversed(installed_holds):
-                    item.close()
+                descriptor.close_all(installed_holds)
             if profile == 'fresh-writes': self._close_fresh_writes()
             raise
 
@@ -1429,11 +1447,10 @@ class ControlIO:
             return value
 
         finally:
-            for item in reversed(held):
-                item.close()
-            for item in reversed(installed_holds):
-                item.close()
-            self._close_fresh_writes()
+            fresh = getattr(self, '_fresh_writes', None)
+            if fresh is not None:
+                del self._fresh_writes
+            descriptor.close_all(([fresh[0]] if fresh is not None else []) + installed_holds + held)
 
     def verify_url(self, ledger):
         from demo_smoke import verify_restore
@@ -1456,6 +1473,7 @@ def switchover(config, reconcile=None, verification_only=False):
     from transition import atomic_json, validate_cut
     from demo_smoke import smoke, verify_restore, request
     import node
+    import recovery
     root = Path('/var/lib/hat-control')
     maintenance = Path('/etc/hat-control/maintenance')
     ingress = Path('/etc/hat-ingress/haproxy.cfg')
@@ -1572,7 +1590,7 @@ def switchover(config, reconcile=None, verification_only=False):
                     raise RuntimeError('not the approved pre-write HTTP failure boundary')
                 intent=work/'verification-reconciliation.json'
                 if intent.exists() or intent.is_symlink():raise RuntimeError('verification reconciliation already attempted')
-                atomic_json(intent,dict(operation=reconcile,action='verification-only',failure_sha=hashlib.sha256(failure.read_bytes()).hexdigest()))
+                io._durable_bytes(intent, recovery.canonical_json(dict(operation=reconcile,action='verification-only',failure_sha=hashlib.sha256(failure.read_bytes()).hexdigest())))
                 close_ingress()
                 fresh_fence=fence('inspect','offline')
                 state['B']={'boot_id':previous['preflight']['candidate_boot']}
@@ -1607,7 +1625,7 @@ def switchover(config, reconcile=None, verification_only=False):
                 if json.loads(failure.read_text()).get('phase')!='compare':raise RuntimeError('unexpected failed phase')
                 intent=work/'reconciliation.json'
                 if intent.exists() or intent.is_symlink():raise RuntimeError('reconciliation already attempted')
-                atomic_json(intent,dict(operation=reconcile,action='accept-checked-comparison',failure_sha=hashlib.sha256(failure.read_bytes()).hexdigest()))
+                io._durable_bytes(intent, recovery.canonical_json(dict(operation=reconcile,action='accept-checked-comparison',failure_sha=hashlib.sha256(failure.read_bytes()).hexdigest())))
                 close_ingress()
                 state['fence']=previous['fence']; fresh_fence=fence('inspect','offline')
                 state['B']={'boot_id':previous['preflight']['candidate_boot']}

@@ -127,7 +127,7 @@ def _validate_fixed_files(root, names, uid, gid, modes):
         for item in authorities: item.recheck()
         return authorities
     except BaseException:
-        for item in reversed(authorities): item.close()
+        descriptor.close_all(authorities)
         raise
 
 
@@ -259,15 +259,7 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
         for authority in support_authorities + binary_authorities + database_authorities: authority.recheck()
         return result
     finally:
-        failed = sys.exc_info()[0] is not None
-        close_error = None
-        for authority in reversed(support_authorities + binary_authorities + database_authorities):
-            try:
-                authority.close()
-            except BaseException as exc:
-                if close_error is None: close_error = exc
-        if close_error is not None and not failed:
-            raise close_error
+        descriptor.close_all(support_authorities + binary_authorities + database_authorities)
 
 
 if __name__ == '__main__':

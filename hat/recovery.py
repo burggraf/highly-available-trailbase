@@ -205,7 +205,7 @@ def derive_restore_profile(operation, phase, has_fault):
     except KeyError as exc: raise ValueError('unsupported restore acceptance phase') from exc
 
 
-def _authority(value, operation, profile):
+def _authority(value, operation, profile, controller_root=Path('/var/lib/hat-control')):
     if (not isinstance(value, dict) or set(value) != {'schema','operation','origin','ledger','support','binaries'}
             or not isinstance(value.get('support'), dict) or not isinstance(value.get('binaries'), dict)):
         raise ValueError('invalid restore input authority')
@@ -228,13 +228,16 @@ def _authority(value, operation, profile):
             or type(ledger['bytes']) is not int or not 0 < ledger['bytes'] <= MAX_ARTIFACT
             or not _HEX64.fullmatch(ledger['sha256'])):
         raise ValueError('invalid restore ledger authority')
+    controller_root = Path(controller_root).absolute()
     if origin == 'd3-recovery-input':
-        match = re.fullmatch(r'/var/lib/hat-control/([0-9a-f]{32})/ledger\.jsonl', ledger['path'])
-        if not match or match.group(1) == operation['id']:
+        try: relative = Path(ledger['path']).relative_to(controller_root)
+        except ValueError: relative = None
+        if (relative is None or len(relative.parts) != 2 or relative.name != 'ledger.jsonl'
+                or not _OPERATION.fullmatch(relative.parts[0]) or relative.parts[0] == operation['id']):
             raise ValueError('restore ledger authority path differs')
     else:
         expected_name='new-writes.jsonl' if origin=='current-verify-exclusive' else 'ledger.jsonl'
-        if ledger['path'] != '/var/lib/hat-control/'+operation['id']+'/'+expected_name:
+        if ledger['path'] != str(controller_root / operation['id'] / expected_name):
             raise ValueError('restore ledger authority path differs')
     if set(value['binaries']) != {'trail','litestream'} or any(not isinstance(v,str) or not _HEX64.fullmatch(v) for v in value['binaries'].values()):
         raise ValueError('invalid restore binary authority')
@@ -243,7 +246,7 @@ def _authority(value, operation, profile):
         raise ValueError('invalid restore support authority')
 
 
-def _validate_acceptance_request(request, operation):
+def _validate_acceptance_request(request, operation, controller_root=Path('/var/lib/hat-control')):
     operation = _acceptance_operation(operation)
     if not isinstance(request,dict) or set(request) != {'schema','operation','phase','source','target','epoch','positions','profile','inputs'}:
         raise ValueError('invalid restore acceptance request')
@@ -261,7 +264,7 @@ def _validate_acceptance_request(request, operation):
         raise ValueError('invalid restore request inputs')
     if not _HEX64.fullmatch(inputs['replica_config_sha256']) or not _HEX64.fullmatch(inputs['ledger_sha256']):
         raise ValueError('invalid restore input hashes')
-    _authority(inputs['ledger_authority'],operation,profile)
+    _authority(inputs['ledger_authority'], operation, profile, controller_root)
     if inputs['ledger_authority']['ledger']['sha256'] != inputs['ledger_sha256'] or inputs['support'] != inputs['ledger_authority']['support'] or inputs['binaries'] != inputs['ledger_authority']['binaries']:
         raise ValueError('restore request authority mismatch')
     points=inputs['restore_points']
@@ -282,8 +285,8 @@ def _validate_acceptance_request(request, operation):
     return request
 
 
-def validate_acceptance_request(request, operation):
-    try: return _validate_acceptance_request(request, operation)
+def validate_acceptance_request(request, operation, controller_root=Path('/var/lib/hat-control')):
+    try: return _validate_acceptance_request(request, operation, controller_root)
     except ValueError: raise
     except (KeyError,TypeError,AttributeError,OverflowError) as exc:
         raise ValueError('invalid restore acceptance request') from exc
@@ -368,8 +371,9 @@ def validate_fault_outcomes(value, events):
     except (KeyError,TypeError,AttributeError) as exc: raise ValueError('invalid fault outcomes') from exc
 
 
-def _validate_acceptance_result(result, request, operation, events=None):
-    validate_acceptance_request(request, operation)
+def _validate_acceptance_result(result, request, operation, events=None,
+                                controller_root=Path('/var/lib/hat-control')):
+    validate_acceptance_request(request, operation, controller_root)
     if not isinstance(result,dict) or set(result) != {'schema','request','request_sha256','databases','signature','checks'} or result['schema'] != _ACCEPTANCE_SCHEMA or result['request'] != request or result['request_sha256'] != hashlib.sha256(canonical_json(request)).hexdigest():
         raise ValueError('invalid restore acceptance result')
     if set(result['databases']) != set(_DBS) or set(result['signature']) != set(_DBS): raise ValueError('invalid restore result databases')
@@ -398,8 +402,9 @@ def _validate_acceptance_result(result, request, operation, events=None):
     return result
 
 
-def validate_acceptance_result(result, request, operation, events=None):
-    try: return _validate_acceptance_result(result, request, operation, events)
+def validate_acceptance_result(result, request, operation, events=None,
+                               controller_root=Path('/var/lib/hat-control')):
+    try: return _validate_acceptance_result(result, request, operation, events, controller_root)
     except ValueError: raise
     except (KeyError,TypeError,AttributeError,OverflowError) as exc:
         raise ValueError('invalid restore acceptance result') from exc
@@ -615,13 +620,37 @@ def _load_input(path, root):
     expected_cgroup = '/sys/fs/cgroup/system.slice/' + value['producer_unit'] if match else None
     if not match or value['producer_cgroup'] != expected_cgroup:
         raise ValueError('producer unit or cgroup is not the fixed D3 producer')
+    root = Path(root).absolute()
+    expected_root = root / value['authority_operation']
+    expected_paths = {
+        'protected_ledger': expected_root / 'ledger.jsonl',
+        'protected_baseline': expected_root / 'baseline-acceptance-result.json',
+    }
     for name in ('protected_ledger', 'protected_baseline', 'fault_ledger'):
         if not isinstance(value[name], str) or not Path(value[name]).is_absolute():
             raise ValueError('artifact paths must be absolute')
+        if name in expected_paths and value[name] != str(expected_paths[name]):
+            raise ValueError('protected artifact is not the completed operation artifact')
         _owned_bytes(value[name], MAX_ARTIFACT, root)
     protected_raw = _owned_bytes(value['protected_ledger'], MAX_ARTIFACT, root)
     _protected_ledger(protected_raw)
-    baseline = _cut_report(_json(_owned_bytes(value['protected_baseline'], MAX_INPUT, root)), value['source_epoch'])
+    baseline_raw = _owned_bytes(value['protected_baseline'], MAX_INPUT, root)
+    baseline = parse_canonical_json(baseline_raw)
+    protected_operation = {'id': value['authority_operation'], 'source': 'A', 'target': 'B',
+                           'source_epoch': 'd1-protected-source',
+                           'new_epoch': 'd1-' + value['authority_operation']}
+    validate_acceptance_result(baseline, baseline['request'], protected_operation,
+                               controller_root=root)
+    request = baseline['request']
+    ledger_authority = request['inputs']['ledger_authority']
+    if (request['phase'] != 'baseline' or request['epoch'] != value['source_epoch']
+            or request['operation'] != value['authority_operation']
+            or request['inputs']['replica_config_sha256'] != hashlib.sha256(value['source_replica'].encode()).hexdigest()
+            or request['inputs']['ledger_sha256'] != hashlib.sha256(protected_raw).hexdigest()
+            or ledger_authority['ledger']['path'] != value['protected_ledger']
+            or ledger_authority['support'] != value['source_config']['support']
+            or ledger_authority['binaries'] != value['source_config']['binaries']):
+        raise ValueError('protected baseline binding differs')
     health = value['source_health']
     if (not isinstance(health, dict) or set(health) != {'authority_operation', 'observed_ns', 'probe'}
             or health['authority_operation'] != value['authority_operation']):
@@ -713,8 +742,7 @@ def _oracle_identity(source, support, binaries):
         for authority in authorities:
             authority.recheck()
     finally:
-        for authority in reversed(authorities):
-            authority.close()
+        descriptor.close_all(authorities)
 
 
 def _cold(value, operation, epoch, boot, role, source, replica):

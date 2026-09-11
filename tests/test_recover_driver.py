@@ -182,7 +182,8 @@ class RecoverDriverTests(unittest.TestCase):
             binaries[name] = hashlib.sha256(path.read_bytes()).hexdigest()
         source = {'role': 'writer', 'epoch': source_epoch, 'hostname': 'source-b',
                   'bootstrap': False, 'binaries': binaries, 'support': support}
-        protected = root / 'protected.jsonl'
+        operation_root = root / authority['id']; operation_root.mkdir(mode=0o700)
+        protected = operation_root / 'ledger.jsonl'
         protected_rows = [
             {'auth_token': 'token', 'retained_refresh': 'keep', 'revoked_refresh': 'gone'},
             {'event': 'submitted', 'api': 'main_ops',
@@ -197,10 +198,23 @@ class RecoverDriverTests(unittest.TestCase):
         ]
         protected.write_bytes(b''.join(recovery.canonical_json(row) + b'\n' for row in protected_rows))
         protected.chmod(0o600)
-        baseline = root / 'protected-baseline.json'
-        private_json(baseline, acceptance_result(
+        baseline = operation_root / 'baseline-acceptance-result.json'
+        baseline_value = acceptance_result(
             authority, 'baseline', dict(main=5, session=6, aux=7),
-            {db: hashlib.sha256(('protected-' + db).encode()).hexdigest() for db in DBS}))
+            {db: hashlib.sha256(('protected-' + db).encode()).hexdigest() for db in DBS})
+        ledger_stat = protected.stat()
+        ledger_wire = baseline_value['request']['inputs']['ledger_authority']['ledger']
+        ledger_wire.update(path=str(protected), device=ledger_stat.st_dev, inode=ledger_stat.st_ino,
+                           uid=ledger_stat.st_uid, bytes=ledger_stat.st_size,
+                           sha256=hashlib.sha256(protected.read_bytes()).hexdigest())
+        baseline_value['request']['inputs'].update(
+            replica_config_sha256=hashlib.sha256(replica(source_epoch).encode()).hexdigest(),
+            ledger_sha256=ledger_wire['sha256'], support=support, binaries=binaries)
+        baseline_value['request']['inputs']['ledger_authority'].update(
+            support=support, binaries=binaries)
+        baseline_value['request_sha256'] = hashlib.sha256(
+            recovery.canonical_json(baseline_value['request'])).hexdigest()
+        baseline.write_bytes(recovery.canonical_json(baseline_value)); baseline.chmod(0o600)
         fault = root / 'fault.jsonl'
         rows = [
             {'event': 'start', 'run_id': 'd3-' + '1' * 32, 'source_epoch': source_epoch,
@@ -360,16 +374,14 @@ class RecoverDriverTests(unittest.TestCase):
             self.assertEqual(journal.db.execute('SELECT count(*) FROM operations WHERE complete=0').fetchone()[0], 0)
 
     def test_recovery_input_refuses_noncanonical_or_unrelated_protected_ledger(self):
-        temporary, root, authority, args = self.fixture(); self.addCleanup(temporary.cleanup)
+        temporary, root, _, args = self.fixture(); self.addCleanup(temporary.cleanup)
         contract = json.loads(Path(args['input_path']).read_text())
+        unrelated = root / 'unrelated-ledger.jsonl'
+        unrelated.write_bytes(Path(contract['protected_ledger']).read_bytes()); unrelated.chmod(0o600)
+        contract['protected_ledger'] = str(unrelated)
+        private_json(args['input_path'], contract)
         with self.assertRaises(ValueError):
             recovery._load_input(args['input_path'], root)
-        expected = root / authority['id'] / 'ledger.jsonl'
-        expected.parent.mkdir(exist_ok=True)
-        Path(contract['protected_ledger']).replace(expected)
-        contract['protected_ledger'] = str(expected)
-        private_json(args['input_path'], contract)
-        recovery._load_input(args['input_path'], root)
 
     def test_recovery_input_refuses_unrelated_or_wrong_phase_protected_baseline(self):
         for change in ('operation', 'phase'):

@@ -3,6 +3,7 @@ import hashlib
 import os
 from pathlib import Path
 import stat
+import sys
 
 
 _ID_FIELDS = ('st_dev', 'st_ino', 'st_mode', 'st_uid', 'st_gid', 'st_nlink', 'st_size')
@@ -13,6 +14,20 @@ _FILE_FLAGS = os.O_RDONLY | os.O_NOFOLLOW | getattr(os, 'O_NONBLOCK', 0)
 def stat_identity(value):
     """Return the complete file identity used at every restore boundary."""
     return tuple(getattr(value, field) for field in _ID_FIELDS)
+
+
+def close_all(authorities):
+    """Close every authority in reverse without hiding an active failure."""
+    active = sys.exc_info()[0] is not None
+    first = None
+    for authority in reversed(authorities):
+        try:
+            authority.close()
+        except BaseException as exc:
+            if first is None:
+                first = exc
+    if first is not None and not active:
+        raise first
 
 
 def _directory_identity(value):
@@ -68,7 +83,7 @@ class DescriptorAuthority:
     def open_directory(cls, path, *, trusted_root, trusted_uids):
         authority = cls(path, trusted_root, trusted_uids, directory=True)
         if authority.directory_path != authority.path:
-            authority.close()
+            close_all([authority])
             raise ValueError('descriptor directory path differs')
         return authority
 
@@ -83,7 +98,7 @@ class DescriptorAuthority:
                                  expected_size, expected_sha256, limit, allow_empty)
             return authority
         except BaseException:
-            authority.close()
+            close_all([authority])
             raise
 
     @property
@@ -251,4 +266,4 @@ class DescriptorAuthority:
         return self
 
     def __exit__(self, *_):
-        self.close()
+        close_all([self])
