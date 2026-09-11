@@ -829,7 +829,7 @@ def oracle_directory(area):
     area.chmod(0o750)  # mkdir's mode is otherwise reduced to 0700 by the controller umask.
 
 
-def _copy_bound_input(source, destination, mode, uid, gid, expected_sha, expected_identity=None, limit=4 * 1024 * 1024, private=True):
+def _copy_bound_input(source, destination, mode, uid, gid, expected_sha, expected_identity=None, limit=4 * 1024 * 1024, private=True, fsync=None):
     """Copy through one descriptor authority; callers retain longer-lived handles."""
     source, destination = Path(source).absolute(), Path(destination).absolute()
     trusted = {0, os.geteuid()}
@@ -845,7 +845,7 @@ def _copy_bound_input(source, destination, mode, uid, gid, expected_sha, expecte
         identity = bound.identity
         if expected_identity is not None and identity != expected_identity:
             raise ValueError('source identity is not trusted')
-        copied = bound.copy_to(parent, destination.name, mode=mode, uid=uid, gid=gid)
+        copied = bound.copy_to(parent, destination.name, mode=mode, uid=uid, gid=gid, fsync=fsync)
         descriptor.close_all([copied])
         bound.recheck(); parent.recheck()
         return (identity[0], identity[1], stat.S_IMODE(identity[2]), *identity[3:])
@@ -886,19 +886,35 @@ class ControlIO:
         self.maintenance = Path(maintenance)
         self.ingress = Path(ingress)
 
-    def _durable_json(self, path, value):
+    def _before_fsync(self, label, path):
+        return None
+
+    def _after_fsync(self, label, path):
+        return None
+
+    def _fsync(self, fd, label, path):
+        path = Path(path)
+        self._before_fsync(label, path)
+        os.fsync(fd)
+        self._after_fsync(label, path)
+
+    def _copy_bound(self, source, destination, mode, uid, gid, expected_sha, expected_identity=None):
+        return _copy_bound_input(source, destination, mode, uid, gid, expected_sha,
+                                 expected_identity, fsync=self._fsync)
+
+    def _durable_json(self, path, value, label='json'):
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, 'w') as stream:
             json.dump(value, stream, separators=(',', ':'), allow_nan=False)
             stream.flush()
-            os.fsync(stream.fileno())
+            self._fsync(stream.fileno(), label + '.file', path)
         fd = os.open(self.work, os.O_RDONLY | os.O_DIRECTORY)
         try:
-            os.fsync(fd)
+            self._fsync(fd, label + '.dir', self.work)
         finally:
             os.close(fd)
 
-    def _durable_bytes(self, path, raw):
+    def _durable_bytes(self, path, raw, label='bytes'):
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         try:
             view = memoryview(raw)
@@ -906,10 +922,10 @@ class ControlIO:
                 written = os.write(fd, view)
                 if written <= 0: raise OSError('short durable write')
                 view = view[written:]
-            os.fsync(fd)
+            self._fsync(fd, label + '.file', path)
         finally: os.close(fd)
         directory = os.open(Path(path).parent, os.O_RDONLY | os.O_DIRECTORY)
-        try: os.fsync(directory)
+        try: self._fsync(directory, label + '.dir', Path(path).parent)
         finally: os.close(directory)
 
     def _committed_preflight_authority(self, required=True):
@@ -1400,7 +1416,7 @@ class ControlIO:
             request, request_bytes, installed_holds, ledger_identity = self._acceptance_request(
                 phase, replica_config, positions, selected_ledger, fault_ledger, hold_installed=True)
             request_path = self.work / (phase + '-acceptance-request.json')
-            self._durable_bytes(request_path, request_bytes)
+            self._durable_bytes(request_path, request_bytes, label='acceptance-request')
             if request['phase'] != phase or request['positions'] != positions:
                 raise ValueError('restore request does not match locked phase')
             if (request['profile'] == 'recovery-comparison') != (fault_ledger is not None):
@@ -1434,18 +1450,20 @@ class ControlIO:
             # The config is already an authorized raw byte value; write it only after all preflight checks.
             fd = os.open(area / 'replica.yml', os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o640)
             try:
-                os.write(fd, config_raw); os.fchmod(fd, 0o640); os.fchown(fd, 0, account.pw_gid); os.fsync(fd)
+                os.write(fd, config_raw); os.fchmod(fd, 0o640); os.fchown(fd, 0, account.pw_gid); self._fsync(fd, 'replica-config.file', area / 'replica.yml')
             finally: os.close(fd)
             # Support and binaries are fixed installed inputs; copying them would widen the trust boundary.
-            _copy_bound_input(ledger_path, area / 'ledger.jsonl', 0o600, 0, account.pw_gid, authority['ledger']['sha256'], identity)
+            self._copy_bound(ledger_path, area / 'ledger.jsonl', 0o600, 0, account.pw_gid, authority['ledger']['sha256'], identity)
             oracle_fault = None
             if fault_ledger is not None:
                 oracle_fault = area / 'fault-ledger.jsonl'
-                _copy_bound_input(fault_ledger, oracle_fault, 0o600, os.geteuid(), account.pw_gid, request['inputs']['fault_ledger_sha256'])
-            _copy_bound_input(request_path, area / 'acceptance-request.json', 0o640, 0, account.pw_gid, hashlib.sha256(request_bytes).hexdigest())
+                self._copy_bound(fault_ledger, oracle_fault, 0o600, os.geteuid(), account.pw_gid, request['inputs']['fault_ledger_sha256'])
+            self._copy_bound(request_path, area / 'acceptance-request.json', 0o640, 0, account.pw_gid, hashlib.sha256(request_bytes).hexdigest())
             for directory in (area, output, self.work):
                 fd=os.open(directory, os.O_RDONLY|os.O_DIRECTORY)
-                try: os.fsync(fd)
+                try:
+                    label = 'oracle-area.dir' if directory == area else ('oracle-output.dir' if directory == output else 'acceptance-work.dir')
+                    self._fsync(fd, label, directory)
                 finally: os.close(fd)
             result = output / 'result.json'
             unit = 'hat-' + prefix + '-' + self.operation['id'] + '-' + phase
@@ -1481,7 +1499,7 @@ class ControlIO:
                 if events is not None:
                     recovery.validate_fault_outcomes(value['checks']['fault_outcomes'], events)
                 retained = self.work / (phase + '-acceptance-result.json')
-                _copy_bound_input(result, retained, 0o600, account.pw_uid, os.getegid(), result_authority.sha256)
+                self._copy_bound(result, retained, 0o600, account.pw_uid, os.getegid(), result_authority.sha256)
                 result_authority.recheck()
             for item in held: item.recheck()
             self._recheck_installed_manifest(
