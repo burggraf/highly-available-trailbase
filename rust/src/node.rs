@@ -85,6 +85,29 @@ impl NodeState {
         self.quarantined
     }
 
+    pub fn adopt_observed_primary(&mut self, grant: &ActivationGrant) -> Result<(), NodeError> {
+        if self.quarantined {
+            return Err(NodeError::Quarantined);
+        }
+        if grant.cluster_id != self.cluster_id {
+            return Err(NodeError::WrongCluster);
+        }
+        if grant.node_id != self.node_id {
+            return Err(NodeError::WrongNode);
+        }
+        if grant.incarnation != self.incarnation {
+            return Err(NodeError::WrongIncarnation);
+        }
+        if grant.writer_epoch == 0 {
+            return Err(NodeError::MissingEpoch);
+        }
+        self.role = NodeRole::Primary;
+        self.writer_epoch = Some(grant.writer_epoch);
+        self.admission = Admission::Open;
+        self.revision += 1;
+        Ok(())
+    }
+
     pub fn promote_to_primary(&mut self) -> Result<(), NodeError> {
         if self.role == NodeRole::Primary {
             return Err(NodeError::AlreadyPrimary);
@@ -150,6 +173,14 @@ impl NodeState {
 
     pub fn admission(&self) -> Admission {
         self.admission
+    }
+
+    pub fn cluster_id(&self) -> &str {
+        &self.cluster_id
+    }
+
+    pub fn node_id(&self) -> &str {
+        &self.node_id
     }
 
     pub fn incarnation(&self) -> &str {
@@ -221,6 +252,10 @@ impl ChildSupervisor {
             }
             None => Ok(ChildState::Running),
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.children.is_empty()
     }
 
     pub fn stop(&mut self, name: &str) -> std::io::Result<ChildState> {

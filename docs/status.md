@@ -1,13 +1,13 @@
 # HAT delivery status
 
-## Current development — Rust V1, Task 7 planned switchover accepted
+## Current development — Rust V1, Task 8 failover/reconciliation/rejoin accepted
 
 The [active plan's execution state and acceptance](plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance) is the authoritative tracker and restart handoff. Follow [AGENTS.md](../AGENTS.md); [rust/README.md](../rust/README.md) describes actual executable behavior.
 
 - **Scope:** single controller, all traffic to the primary, manual failover; no Raft or qualified replica reads.
-- **Current branch/worktree:** `main` at the local Task 7 checkpoint, clean and two commits ahead of `origin/main`; Tasks 6–7 are accepted only for local fixture behavior and the checkpoint is not yet pushed.
+- **Current branch/worktree:** `main` at the local Task 8 checkpoint, clean and one commit ahead of `origin/main`; Task 7 is pushed, and Task 8 is accepted only for local fixture behavior until its checkpoint is separately pushed.
 - **Task 2 accepted:** the Rust binary validates bounded configuration via `hat config check` and selects primary-only routes from a strict inventory-bound route record. Local evidence is in `docs/reports/v1-task2-red.txt` and `docs/reports/v1-task2-gates.txt`; the fresh read-only review found no implementation security defects after the documented test-coverage correction. Task 3 now covers local real-boundary streaming proxy tests and a bounded private-peer boundary; it does not authorize deployment or native qualification.
-- **Not implemented:** TrailBase/Litestream execution, native restore, systemd/deployment, unplanned failover/rejoin, TLS peer identity qualification, public HTTPS, and native qualification. Task 4, the local-only Task 5 controller/journal/auth/dashboard/restart slice, the local Task 6 restore/fence boundary, and the local Task 7 planned-switchover path are accepted. Actual VPS testing remains separately gated.
+- **Not implemented:** TrailBase/Litestream execution, native restore, systemd/deployment, live provider fencing, TLS peer identity qualification, public HTTPS, and native qualification. Task 4, the local-only Task 5 controller/journal/auth/dashboard/restart slice, the local Task 6 restore/fence boundary, the local Task 7 planned-switchover path, and the local Task 8 failover/reconciliation/rejoin path are accepted. Actual VPS testing remains separately gated.
 - **Autonomy:** owner approved local test/fix/review iterations through one authorized stage and local checkpoint commits; merge/push and all external effects remain separately gated.
 
 All Python/deployment checkpoints below are **historical evidence**, not current Rust capability or permission to resume prior operations. The former planning-only update is retained below as history.

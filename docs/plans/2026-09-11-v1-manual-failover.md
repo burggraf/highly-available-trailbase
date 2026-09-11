@@ -27,7 +27,7 @@ This section is the authoritative restart tracker. Follow [AGENTS.md](../../AGEN
 | Task 5 — controller/dashboard/restart | accepted | Local-only criteria T5-AC1 through T5-AC5 passed on `main`; VPS/deployment/native/public HTTPS qualification remains separately gated. |
 | Task 6 — restore/fence boundary | accepted | Local-only criteria T6-AC1 through T6-AC4 passed on `main`; fake adapters do not authorize live fencing, native execution, deployment, or VPS effects. |
 | Task 7 — planned switchover | accepted | Local-only criteria T7-AC1 through T7-AC4 passed on `main`; native/provider/deployment/disruptive effects remain unauthorized. |
-| Task 8 — failover/rejoin | pending | Not authorized; accepted Task 7 required. |
+| Task 8 — failover/rejoin | accepted | Local-only criteria T8-AC1 through T8-AC5 passed on `main`; native/provider/deployment/disruptive effects remain unauthorized. |
 | Task 9 — deployment/native acceptance | pending | Not authorized; explicit disposable infrastructure and deployment approvals required. |
 | Task 10 — fault/release qualification | pending | Not authorized; workload, attempt budget and soak approval required. |
 
@@ -449,9 +449,32 @@ Scope: one in-memory/SQLite fixture switchover path using the accepted restore/f
 
 **Exit:** a disposable planned handover preserves the quiesced test ledger and changes writer through the same URL. It must finish cleanly at least once before adding more machinery.
 
+### Task 8 completion contract — approved for local-only implementation
+
+Scope: one in-memory/SQLite fixture manual-failover, same-operation reconciliation, and clean reseed/rejoin path built on the accepted Task 6/7 boundaries. No native TrailBase/Litestream, provider, deployment, VPS, public traffic, or disruptive effect is authorized.
+
+| ID | Observable requirement, including refusal cases | Exact check/evidence | Result |
+| --- | --- | --- | --- |
+| T8-AC1 | Manual failover refuses without explicit possible-loss acceptance or settled exact fence evidence; an accepted test loss report preserves unknown bounds instead of inventing a loss number. | `rust/tests/operations.rs` failover refusal/loss tests; `docs/reports/v1-task8-review.txt` | pass — acceptance, exact fence identity, and `LossBound::Unknown` are enforced |
+| T8-AC2 | Accepted unplanned recovery reuses the durable restore/activation/route path, is one-operation idempotent, and returns the retained receipt without repeating effects. | operations tests and journal evidence | pass — durable failover policy, restore path, route publication, and retained replay pass |
+| T8-AC3 | Same-operation inspect/reconcile survives journal reopen; delayed activation or unresolved evidence keeps the operation blocked, while exact settled candidate state may complete only that existing operation. | operations tests and journal tests | pass — journal/node reconstruction, exact observations, unresolved blocking, and repeated reconcile pass |
+| T8-AC4 | A quarantined former primary can be reseeded into a fresh directory as a closed standby without mutating the original source/history; old and new writable activation are refused. | operations/rejoin tests | pass — fresh destination/source preservation/quarantine/standby refusal pass |
+| T8-AC5 | Behavioral RED, full Rust gates, fresh review, accurate handoff/docs; no external/native claim. | `docs/reports/v1-task8-red.txt`, `docs/reports/v1-task8-gates.txt`, `docs/reports/v1-task8-review.txt` | pass — retained RED, 55 locked tests, fmt/clippy/release/diff gates, and fresh review pass |
+
+### Restart handoff — Task 8 local acceptance checkpoint
+
+- **State:** accepted locally; T8-AC1 through T8-AC5 passed. No native TrailBase/Litestream, provider fencing, deployment, VPS, public traffic, or disruptive action occurred.
+- **Authorization:** local fixture-only failover/reconciliation/reseed work was authorized by the owner's request to push Task 7 and move to the next task. Native/provider/deployment/VPS/public/disruptive effects remain unauthorized.
+- **Source:** `main` at the containing local Task 8 checkpoint (obtain the exact revision with `git rev-parse HEAD`), based on pushed Task 7 `956c4e3`; no active processes remain and the working tree is clean at handoff.
+- **Implemented:** `ManualFailover` requires explicit accepted-loss policy, persists that policy with the operation, reuses restore/activation/route publication, refuses unsettled effects, and supports exact inspect/reconcile after journal/node reconstruction. `reseed_rejoin` restores a quarantined former primary into a fresh closed standby while preserving the original source.
+- **Evidence:** `docs/reports/v1-task8-red.txt` and `docs/reports/v1-task8-red-behavior.log` retain failing-first evidence; `docs/reports/v1-task8-gates.txt` records the focused 8-test suite and full Rust gates; `docs/reports/v1-task8-review.txt` records the fresh read-only criterion review.
+- **Residual scope:** evidence is a local typed observation boundary, restore is fixture JSON, and route/child state is local. Native/provider settlement, deployment, VPS, public HTTPS, live failover/rejoin, and disruptive qualification remain later stages.
+- **Next safe action:** Task 9 requires separate authorization; do not run native or deployment qualification from this checkpoint.
+- **Processes:** no active processes remain; all test-owned fixture children were reaped.
+
 ### Task 8 — Manual failover, reconciliation and clean rejoin
 
-**Files:** extend `rust/src/operations.rs`, `rust/tests/operations.rs`, `rust/src/main.rs`.
+**Files:** extend `rust/src/operations.rs`, `rust/tests/operations.rs`; extend `rust/src/main.rs` only if a bounded local command is required.
 
 1. Test failover refusal without confirmed fencing, explicit possible-loss acceptance, allowed lost test writes, and unknown rather than invented loss bounds.
 2. Implement unplanned recovery through the existing restore/activation path. Do not carry over the Python strict-zero-known-loss guard as an accidental V1 requirement; leave that Python guard unchanged.

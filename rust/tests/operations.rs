@@ -2,7 +2,10 @@ use hat::{
     config::Config,
     journal::Journal,
     node::{Admission, ChildState, NodeRole, NodeRuntime, NodeState},
-    operations::{FaultPoint, FenceEvidence, PlannedSwitchover, SwitchoverError, SwitchoverSpec},
+    operations::{
+        FailoverError, FaultPoint, FenceEvidence, LossBound, LossReport, ManualFailover,
+        PlannedSwitchover, ReconcileEvidence, RejoinSpec, SwitchoverError, SwitchoverSpec,
+    },
     restore::RestoreRequest,
     routing::{Route, RouteTable},
 };
@@ -29,7 +32,7 @@ fn config() -> Config {
     .unwrap()
 }
 
-fn root(label: &str) -> PathBuf {
+fn temp_root(label: &str) -> PathBuf {
     let suffix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -37,6 +40,20 @@ fn root(label: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("hat-task7-{label}-{suffix}"));
     fs::create_dir(&path).unwrap();
     path
+}
+
+fn restore_request() -> RestoreRequest {
+    RestoreRequest {
+        cluster_id: CLUSTER.into(),
+        database: "main".into(),
+        history_id: "history-a".into(),
+        position: 7,
+        schema_digest: "schema-a".into(),
+        config_digest: "config-a".into(),
+        key_version: "key-a".into(),
+        application_marker: "app-ok".into(),
+        auth_marker: "auth-ok".into(),
+    }
 }
 
 fn restore_fixture(root: &Path) -> (RestoreRequest, PathBuf, PathBuf) {
@@ -53,17 +70,7 @@ fn restore_fixture(root: &Path) -> (RestoreRequest, PathBuf, PathBuf) {
         r#"{{"schema_version":1,"cluster_id":"{CLUSTER}","database":"main","history_id":"history-a","position":7,"schema_digest":"schema-a","config_digest":"config-a","key_version":"key-a","payload_bytes":{},"payload_sha256":"{}"}}"#,
         payload.len(), hash
     )).unwrap();
-    let request = RestoreRequest {
-        cluster_id: CLUSTER.into(),
-        database: "main".into(),
-        history_id: "history-a".into(),
-        position: 7,
-        schema_digest: "schema-a".into(),
-        config_digest: "config-a".into(),
-        key_version: "key-a".into(),
-        application_marker: "app-ok".into(),
-        auth_marker: "auth-ok".into(),
-    };
+    let request = restore_request();
     (request, source, destination)
 }
 
@@ -138,11 +145,12 @@ fn harness(root: &Path) -> (PlannedSwitchover, Journal) {
 
 #[test]
 fn planned_switchover_quiesces_old_writer_before_candidate_admission_and_replaces_route_once() {
-    let root = root("success");
+    let root = temp_root("success");
     let (mut operation, mut journal) = harness(&root);
     let receipt = operation
         .execute(&mut journal, &evidence(), FaultPoint::None)
         .unwrap();
+    let old_revision = operation.old().node.revision();
     assert_eq!(receipt.operation_id, "operation-switchover");
     assert_eq!(operation.old().node.admission(), Admission::Closed);
     assert_eq!(
@@ -185,10 +193,10 @@ fn planned_switchover_quiesces_old_writer_before_candidate_admission_and_replace
         Ok(hat::operations::SwitchoverReceipt {
             request_id: "request-switchover".into(),
             operation_id: "operation-switchover".into(),
-            state: "succeeded".into(),
-            generation: 2
+            state: "succeeded".into()
         })
     );
+    assert_eq!(operation.old().node.revision(), old_revision);
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -203,10 +211,11 @@ fn lost_or_failed_boundaries_block_conflicting_work_without_reviving_old_writer(
         FaultPoint::LostRestoreResponse,
         FaultPoint::LostRouteResponse,
     ] {
-        let root = root("fault");
+        let root = temp_root("fault");
         let (mut operation, mut journal) = harness(&root);
         let result = operation.execute(&mut journal, &evidence(), fault);
         assert_eq!(result, Err(SwitchoverError::BlockedUncertain));
+        let old_revision = operation.old().node.revision();
         assert_eq!(operation.old().node.admission(), Admission::Closed);
         assert!(operation.old().node.quarantined());
         assert_eq!(
@@ -235,8 +244,9 @@ fn lost_or_failed_boundaries_block_conflicting_work_without_reviving_old_writer(
         );
         assert!(matches!(
             operation.execute(&mut journal, &evidence(), fault),
-            Ok(receipt) if receipt.state == "blocked_uncertain"
+            Err(SwitchoverError::ExistingBlocked(receipt)) if receipt.state == "blocked_uncertain"
         ));
+        assert_eq!(operation.old().node.revision(), old_revision);
         if matches!(
             fault,
             FaultPoint::AfterRoutePublication | FaultPoint::LostRouteResponse
@@ -250,8 +260,87 @@ fn lost_or_failed_boundaries_block_conflicting_work_without_reviving_old_writer(
 }
 
 #[test]
+fn reconciliation_reconstructs_node_state_after_controller_and_node_restart() {
+    let root = temp_root("reconcile-restart");
+    let (planned, mut journal) = harness(&root);
+    let mut failover = ManualFailover::new(planned, true, loss_report());
+    assert_eq!(
+        failover.execute(
+            &mut journal,
+            &evidence(),
+            FaultPoint::AfterCandidateActivation
+        ),
+        Err(FailoverError::Switchover(SwitchoverError::BlockedUncertain))
+    );
+    drop(journal);
+    drop(failover);
+
+    let config = config();
+    let old = NodeRuntime::new(
+        NodeState::new(CLUSTER, "node-a", OLD_INCARNATION, NodeRole::Primary).unwrap(),
+    );
+    let candidate = NodeRuntime::new(
+        NodeState::new(CLUSTER, "node-b", NEW_INCARNATION, NodeRole::Standby).unwrap(),
+    );
+    let old_route = Route::for_node(
+        &config,
+        "node-a",
+        1,
+        1,
+        OLD_INCARNATION,
+        RELEASE,
+        CONFIG_DIGEST,
+    )
+    .unwrap();
+    let mut routes = RouteTable::new(&config);
+    routes.install(old_route).unwrap();
+    let planned = PlannedSwitchover::new(
+        config,
+        routes,
+        old,
+        candidate,
+        spec(&root, restore_request()),
+    );
+    let mut recovered = ManualFailover::new(planned, true, loss_report());
+    let mut journal = Journal::open(root.join("journal.db"), "task8-node-restart").unwrap();
+    let receipt = recovered
+        .reconcile(
+            &mut journal,
+            &ReconcileEvidence {
+                operation_id: "operation-switchover".into(),
+                candidate_node_id: "node-b".into(),
+                candidate_incarnation: NEW_INCARNATION.into(),
+                candidate_active: true,
+                candidate_follower_stopped: true,
+                candidate_writer_epoch: 2,
+                old_quarantined: true,
+                old_children_stopped: true,
+                fence_settled: true,
+                fence_action_id: ACTION.into(),
+                fence_target: "node-a".into(),
+                fence_incarnation: OLD_INCARNATION.into(),
+                fence_evidence_nonce: EVIDENCE.into(),
+                route_published: false,
+                route_generation: 2,
+                route_node_id: "node-b".into(),
+                route_incarnation: NEW_INCARNATION.into(),
+                route_writer_epoch: 2,
+            },
+        )
+        .unwrap();
+    assert_eq!(receipt.switchover.state, "succeeded");
+    assert!(recovered.old().node.quarantined());
+    assert_eq!(recovered.candidate().node.admission(), Admission::Open);
+    assert_eq!(
+        recovered.routes().active().unwrap().primary_node_id(),
+        "node-b"
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn unsettled_or_wrong_fence_evidence_refuses_before_candidate_activation() {
-    let root = root("fence-refuse");
+    let root = temp_root("fence-refuse");
     let (mut operation, mut journal) = harness(&root);
     let mut evidence = evidence();
     evidence.settled = false;
@@ -274,14 +363,14 @@ fn unsettled_or_wrong_fence_evidence_refuses_before_candidate_activation() {
     );
     assert!(matches!(
         operation.execute(&mut journal, &evidence, FaultPoint::None),
-        Ok(receipt) if receipt.state == "blocked_uncertain"
+        Err(SwitchoverError::ExistingBlocked(receipt)) if receipt.state == "blocked_uncertain"
     ));
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn restore_failure_blocks_the_operation_before_candidate_activation() {
-    let root = root("restore-failure");
+    let root = temp_root("restore-failure");
     let (mut operation, mut journal) = harness(&root);
     fs::remove_dir_all(root.join("source")).unwrap();
     assert!(matches!(
@@ -295,5 +384,246 @@ fn restore_failure_blocks_the_operation_before_candidate_activation() {
         journal.submit("other-request", "other-operation", "other-digest"),
         Err(hat::journal::JournalError::Uncertain)
     );
+    fs::remove_dir_all(root).unwrap();
+}
+
+fn loss_report() -> LossReport {
+    LossReport {
+        possible_loss: LossBound::Unknown,
+    }
+}
+
+#[test]
+fn manual_failover_requires_loss_acceptance_and_settled_fence_without_inventing_loss() {
+    let root = temp_root("failover-refuse");
+    let (planned, mut journal) = harness(&root);
+    let mut failover = ManualFailover::new(planned, false, loss_report());
+    assert_eq!(
+        failover.execute(&mut journal, &evidence(), FaultPoint::None),
+        Err(FailoverError::PossibleLossNotAccepted)
+    );
+    assert!(journal.receipt("request-switchover").unwrap().is_none());
+    fs::remove_dir_all(root).unwrap();
+
+    let root = temp_root("failover-unknown");
+    let (planned, mut journal) = harness(&root);
+    let mut failover = ManualFailover::new(planned, true, loss_report());
+    let mut unsettled = evidence();
+    unsettled.settled = false;
+    assert_eq!(
+        failover.execute(&mut journal, &unsettled, FaultPoint::None),
+        Err(FailoverError::Switchover(SwitchoverError::BlockedUncertain))
+    );
+    assert_eq!(
+        journal.submit("other-request", "other-operation", "other-digest"),
+        Err(hat::journal::JournalError::Uncertain)
+    );
+    fs::remove_dir_all(root).unwrap();
+
+    let root = temp_root("failover-success");
+    let (planned, mut journal) = harness(&root);
+    let mut failover = ManualFailover::new(planned, true, loss_report());
+    let receipt = failover
+        .execute(&mut journal, &evidence(), FaultPoint::None)
+        .unwrap();
+    assert_eq!(receipt.loss, loss_report());
+    assert_eq!(
+        failover.routes().active().unwrap().primary_node_id(),
+        "node-b"
+    );
+    let replay = failover
+        .execute(&mut journal, &evidence(), FaultPoint::None)
+        .unwrap();
+    assert_eq!(replay.switchover.state, "succeeded");
+    assert_eq!(replay.loss, loss_report());
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn reconciliation_reopens_the_same_operation_but_unresolved_activation_stays_blocked() {
+    let root = temp_root("reconcile");
+    let (planned, journal) = harness(&root);
+    let journal_path = root.join("journal.db");
+    let mut failover = ManualFailover::new(planned, true, loss_report());
+    let mut journal = journal;
+    assert_eq!(
+        failover.execute(
+            &mut journal,
+            &evidence(),
+            FaultPoint::AfterCandidateActivation
+        ),
+        Err(FailoverError::Switchover(SwitchoverError::BlockedUncertain))
+    );
+    assert_eq!(failover.candidate().node.admission(), Admission::Open);
+    assert_eq!(
+        failover.routes().active().unwrap().primary_node_id(),
+        "node-a"
+    );
+    drop(journal);
+    let mut journal = Journal::open(&journal_path, "task8-reopen").unwrap();
+    let inspection = failover.inspect(&journal).unwrap();
+    assert_eq!(inspection.state.as_deref(), Some("blocked_uncertain"));
+    let receipt = failover
+        .reconcile(
+            &mut journal,
+            &ReconcileEvidence {
+                operation_id: "operation-switchover".into(),
+                candidate_node_id: "node-b".into(),
+                candidate_incarnation: NEW_INCARNATION.into(),
+                candidate_active: true,
+                candidate_follower_stopped: true,
+                candidate_writer_epoch: 2,
+                old_quarantined: true,
+                old_children_stopped: true,
+                fence_settled: true,
+                fence_action_id: ACTION.into(),
+                fence_target: "node-a".into(),
+                fence_incarnation: OLD_INCARNATION.into(),
+                fence_evidence_nonce: EVIDENCE.into(),
+                route_published: false,
+                route_generation: 2,
+                route_node_id: "node-b".into(),
+                route_incarnation: NEW_INCARNATION.into(),
+                route_writer_epoch: 2,
+            },
+        )
+        .unwrap();
+    assert_eq!(receipt.switchover.state, "succeeded");
+    assert_eq!(
+        failover.routes().active().unwrap().primary_node_id(),
+        "node-b"
+    );
+    assert_eq!(
+        journal
+            .receipt("request-switchover")
+            .unwrap()
+            .unwrap()
+            .state,
+        "succeeded"
+    );
+    let replay = failover
+        .reconcile(
+            &mut journal,
+            &ReconcileEvidence {
+                operation_id: "operation-switchover".into(),
+                candidate_node_id: "node-b".into(),
+                candidate_incarnation: NEW_INCARNATION.into(),
+                candidate_active: true,
+                candidate_follower_stopped: true,
+                candidate_writer_epoch: 2,
+                old_quarantined: true,
+                old_children_stopped: true,
+                fence_settled: true,
+                fence_action_id: ACTION.into(),
+                fence_target: "node-a".into(),
+                fence_incarnation: OLD_INCARNATION.into(),
+                fence_evidence_nonce: EVIDENCE.into(),
+                route_published: true,
+                route_generation: 2,
+                route_node_id: "node-b".into(),
+                route_incarnation: NEW_INCARNATION.into(),
+                route_writer_epoch: 2,
+            },
+        )
+        .unwrap();
+    assert_eq!(replay.switchover.state, "succeeded");
+    fs::remove_dir_all(root).unwrap();
+
+    let root = temp_root("reconcile-unresolved");
+    let (planned, mut journal) = harness(&root);
+    let mut failover = ManualFailover::new(planned, true, loss_report());
+    assert_eq!(
+        failover.execute(&mut journal, &evidence(), FaultPoint::AfterRestore),
+        Err(FailoverError::Switchover(SwitchoverError::BlockedUncertain))
+    );
+    assert_eq!(
+        failover.reconcile(
+            &mut journal,
+            &ReconcileEvidence {
+                operation_id: "operation-switchover".into(),
+                candidate_node_id: "node-b".into(),
+                candidate_incarnation: NEW_INCARNATION.into(),
+                candidate_active: false,
+                candidate_follower_stopped: true,
+                candidate_writer_epoch: 2,
+                old_quarantined: true,
+                old_children_stopped: true,
+                fence_settled: true,
+                fence_action_id: ACTION.into(),
+                fence_target: "node-a".into(),
+                fence_incarnation: OLD_INCARNATION.into(),
+                fence_evidence_nonce: EVIDENCE.into(),
+                route_published: false,
+                route_generation: 2,
+                route_node_id: "node-b".into(),
+                route_incarnation: NEW_INCARNATION.into(),
+                route_writer_epoch: 2,
+            },
+        ),
+        Err(FailoverError::Unresolved)
+    );
+    assert_eq!(
+        journal.submit("other-request", "other-operation", "other-digest"),
+        Err(hat::journal::JournalError::Uncertain)
+    );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn quarantined_former_primary_reseeds_to_a_fresh_closed_standby_without_mutating_source() {
+    let root = temp_root("rejoin");
+    let (mut operation, mut journal) = harness(&root);
+    assert_eq!(
+        operation.execute(&mut journal, &evidence(), FaultPoint::AfterFence),
+        Err(SwitchoverError::BlockedUncertain)
+    );
+    let source_manifest = fs::read(root.join("source/manifest.json")).unwrap();
+    let source_payload = fs::read(root.join("source/payload.bin")).unwrap();
+    let destination = root.join("rejoined");
+    let (mut rejoined, receipt) = hat::operations::reseed_rejoin(
+        operation.old_mut(),
+        &RejoinSpec {
+            cluster_id: CLUSTER.into(),
+            node_id: "node-a".into(),
+            incarnation: "66666666-6666-4666-8666-666666666666".into(),
+            restore: restore_request(),
+            restore_source: root.join("source"),
+            destination: destination.clone(),
+        },
+    )
+    .unwrap();
+    assert_eq!(receipt.destination, destination);
+    assert_eq!(rejoined.node.role(), NodeRole::Standby);
+    assert_eq!(rejoined.node.admission(), Admission::Closed);
+    assert_eq!(
+        rejoined.node.activate(&hat::node::ActivationGrant {
+            cluster_id: CLUSTER.into(),
+            node_id: "node-a".into(),
+            incarnation: "66666666-6666-4666-8666-666666666666".into(),
+            writer_epoch: 9,
+        }),
+        Err(hat::node::NodeError::StandbyActivation)
+    );
+    assert_eq!(
+        operation
+            .old_mut()
+            .node
+            .activate(&hat::node::ActivationGrant {
+                cluster_id: CLUSTER.into(),
+                node_id: "node-a".into(),
+                incarnation: OLD_INCARNATION.into(),
+                writer_epoch: 9,
+            }),
+        Err(hat::node::NodeError::Quarantined)
+    );
+    assert_eq!(
+        source_manifest,
+        fs::read(root.join("source/manifest.json")).unwrap()
+    );
+    assert_eq!(
+        source_payload,
+        fs::read(root.join("source/payload.bin")).unwrap()
+    );
+    assert!(destination.join("payload.bin").is_file());
     fs::remove_dir_all(root).unwrap();
 }

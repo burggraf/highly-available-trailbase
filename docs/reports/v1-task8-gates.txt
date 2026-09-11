@@ -1,0 +1,19 @@
+Task 8 local acceptance gates
+
+Scope: one fixture-only manual failover, durable same-operation reconciliation, and quarantine/reseed/rejoin path. No native TrailBase/Litestream, provider fencing, deployment, VPS, public HTTPS, or disruptive action.
+
+Focused behavioral check:
+- `cargo test --manifest-path rust/Cargo.toml --test operations -- --nocapture`: exit 0; 8 tests.
+- Coverage includes explicit possible-loss refusal, settled fence refusal, unknown loss preservation, restore/activation/route reuse, exact success replay without revision mutation, durable failover policy matching, blocked/active replay refusal, journal reopen plus node/controller reconstruction, exact fence evidence reconciliation, delayed/unresolved activation blocking, repeated reconcile, fresh-directory reseed, source preservation, quarantine, and closed-standby writable refusal.
+
+Full gates:
+- `cargo fmt --manifest-path rust/Cargo.toml --check`: exit 0.
+- `cargo test --manifest-path rust/Cargo.toml --locked`: exit 0; 29 library tests, 0 binary tests, 3 CLI, 1 controller, 1 dashboard, 1 node, 8 operations, 8 proxy, 4 recovery-boundary tests = 55 passing tests (plus 0 doc tests).
+- `cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings`: exit 0.
+- `cargo build --manifest-path rust/Cargo.toml --release --locked`: exit 0.
+- `git diff --check`: exit 0.
+
+Review:
+- Fresh read-only review passed T8-AC1 through T8-AC4 after durable policy matching, exact fence identity checks, candidate identity validation, repeated reconcile handling, and crash reconstruction evidence were added.
+
+Result: local Task 8 criteria pass. This is not a native, provider, deployment, VPS, public-traffic, failover qualification, or production-readiness claim.

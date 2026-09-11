@@ -1,0 +1,13 @@
+Task 8 behavioral RED evidence
+
+Scope: local fixture-only manual failover, same-operation reconciliation, and reseed/rejoin. No native TrailBase/Litestream, provider, deployment, VPS, public traffic, or disruptive action.
+
+Initial test-first command:
+  cargo test --manifest-path rust/Cargo.toml --test operations -- --nocapture
+Result: exit 101. The new failover/reconcile/rejoin API and fault point were not implemented yet, so the operations test target reported unresolved imports/variants. Two helper-name collisions in the newly written test were corrected before implementation. This setup RED is retained and is not treated as the behavioral result by itself.
+
+Behavioral regression RED during the implementation loop:
+  cargo test --manifest-path rust/Cargo.toml --test operations manual_failover_requires_loss_acceptance -- --nocapture
+Result: exit 101 after temporarily removing the possible-loss acceptance guard. The test executed the real fixture path and failed because an unaccepted failover returned a successful receipt instead of `PossibleLossNotAccepted`. The guard was restored immediately; the focused operations suite subsequently passed 8/8.
+
+The failed behavioral output is retained in `docs/reports/v1-task8-red-behavior.log`. It is a local fixture assertion only; no external command or service ran.

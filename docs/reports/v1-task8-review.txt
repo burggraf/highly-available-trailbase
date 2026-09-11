@@ -1,0 +1,17 @@
+Task 8 fresh review disposition
+
+Reviewer: fresh read-only `spec-reviewer` subagent, final source review mission `fa8bc14e-32c0-4dfc-9df4-bf8b0d5d3853` (no edits)
+Scope: current local-only diff against T8-AC1 through T8-AC4.
+
+Final disposition: pass for the approved local contract.
+
+Covered:
+- Manual failover requires explicit possible-loss acceptance and settled exact fence identity (action, target, old incarnation, and evidence nonce). Loss bounds are only represented as `Unknown`; no numeric loss is invented.
+- Restore, activation, and route publication reuse the accepted planned path. Failover policy is durably recorded in `operation_policies`, exact policy-matched replay returns retained success, and active/blocked replay refuses without effects.
+- Same-operation inspection/reconciliation validates exact operation, candidate, fence, route, child/quarantine, and writer observations; journal and node state are reconstructed after simulated controller/node restart. Delayed or unresolved activation remains blocked; repeated successful reconciliation is idempotent.
+- Reseed/rejoin copies into a fresh directory, leaves source files unchanged, leaves the former primary quarantined, and returns a closed standby that cannot activate as a writer.
+
+Residual risks and explicit non-goals:
+- Reconcile evidence is a local typed observation boundary, not independent provider/native attestation.
+- Restore remains fixture JSON validation; route state and child observations are local fixtures.
+- Native TrailBase/Litestream, provider settlement, deployment, VPS, public HTTPS, unplanned live failover, and disruptive qualification remain later authorization-gated stages.

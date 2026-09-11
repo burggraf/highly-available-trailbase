@@ -17,6 +17,7 @@ pub enum JournalError {
     InvalidInput,
     AlreadyOwned,
     Conflict,
+    PolicyConflict,
     Uncertain,
     Sql(String),
 }
@@ -53,6 +54,10 @@ impl Journal {
                  digest TEXT NOT NULL,
                  state TEXT NOT NULL,
                  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+             );
+             CREATE TABLE IF NOT EXISTS operation_policies (
+                 operation_id TEXT PRIMARY KEY REFERENCES operations(operation_id),
+                 failover INTEGER NOT NULL CHECK (failover IN (0, 1))
              );
              CREATE TABLE IF NOT EXISTS accounts (
                  account TEXT PRIMARY KEY,
@@ -115,11 +120,68 @@ impl Journal {
             .map_err(Into::into)
     }
 
+    pub fn retained(
+        &self,
+        request_id: &str,
+        operation_id: &str,
+        digest: &str,
+        failover: bool,
+    ) -> Result<Option<OperationReceipt>, JournalError> {
+        let Some((existing_operation, existing_digest, state)) = self
+            .connection
+            .query_row(
+                "SELECT operation_id, digest, state FROM operations WHERE request_id = ?1",
+                params![request_id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()?
+        else {
+            return Ok(None);
+        };
+        if existing_operation != operation_id || existing_digest != digest {
+            return Err(JournalError::Conflict);
+        }
+        let stored_failover = self
+            .connection
+            .query_row(
+                "SELECT failover FROM operation_policies WHERE operation_id = ?1",
+                params![operation_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .unwrap_or(0)
+            != 0;
+        if stored_failover != failover {
+            return Err(JournalError::PolicyConflict);
+        }
+        Ok(Some(OperationReceipt {
+            request_id: request_id.to_owned(),
+            operation_id: existing_operation,
+            state,
+        }))
+    }
+
     pub fn submit(
         &mut self,
         request_id: &str,
         operation_id: &str,
         digest: &str,
+    ) -> Result<OperationReceipt, JournalError> {
+        self.submit_with_policy(request_id, operation_id, digest, false)
+    }
+
+    pub fn submit_with_policy(
+        &mut self,
+        request_id: &str,
+        operation_id: &str,
+        digest: &str,
+        failover: bool,
     ) -> Result<OperationReceipt, JournalError> {
         if invalid_id(request_id)
             || invalid_id(operation_id)
@@ -146,11 +208,27 @@ impl Journal {
             )
             .optional()?
         {
-            if existing.1 == operation_id && existing.2 == digest {
-                tx.commit()?;
-                return Ok(OperationReceipt { request_id: existing.0, operation_id: existing.1, state: existing.3 });
+            if existing.1 != operation_id || existing.2 != digest {
+                return Err(JournalError::Conflict);
             }
-            return Err(JournalError::Conflict);
+            let stored_failover = tx
+                .query_row(
+                    "SELECT failover FROM operation_policies WHERE operation_id = ?1",
+                    params![operation_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .unwrap_or(0)
+                != 0;
+            if stored_failover != failover {
+                return Err(JournalError::PolicyConflict);
+            }
+            tx.commit()?;
+            return Ok(OperationReceipt {
+                request_id: existing.0,
+                operation_id: existing.1,
+                state: existing.3,
+            });
         }
         if tx
             .query_row(
@@ -167,6 +245,12 @@ impl Journal {
             "INSERT INTO operations(request_id, operation_id, digest, state) VALUES (?1, ?2, ?3, 'active')",
             params![request_id, operation_id, digest],
         )?;
+        if failover {
+            tx.execute(
+                "INSERT INTO operation_policies(operation_id, failover) VALUES (?1, 1)",
+                params![operation_id],
+            )?;
+        }
         tx.commit()?;
         Ok(OperationReceipt {
             request_id: request_id.to_owned(),
@@ -177,6 +261,20 @@ impl Journal {
 
     pub fn block_uncertain(&mut self, operation_id: &str) -> Result<(), JournalError> {
         self.finish(operation_id, "blocked_uncertain")
+    }
+
+    pub fn reconcile(&mut self, operation_id: &str) -> Result<(), JournalError> {
+        if invalid_id(operation_id) {
+            return Err(JournalError::InvalidInput);
+        }
+        let changed = self.connection.execute(
+            "UPDATE operations SET state = 'succeeded' WHERE operation_id = ?1 AND state = 'blocked_uncertain'",
+            params![operation_id],
+        )?;
+        if changed == 0 {
+            return Err(JournalError::InvalidInput);
+        }
+        Ok(())
     }
 
     pub fn finish(&mut self, operation_id: &str, state: &str) -> Result<(), JournalError> {

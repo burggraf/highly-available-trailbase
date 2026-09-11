@@ -1,0 +1,17 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 2.25s
+     Running tests/operations.rs (rust/target/debug/deps/operations-7a849ff7fcb47dbc)
+
+running 1 test
+
+thread 'manual_failover_requires_loss_acceptance_and_settled_fence_without_inventing_loss' (52419370) panicked at tests/operations.rs:316:5:
+assertion `left == right` failed
+  left: Ok(ManualFailoverReceipt { switchover: SwitchoverReceipt { request_id: "request-switchover", operation_id: "operation-switchover", state: "succeeded", generation: 2 }, loss: LossReport { acknowledged: 3, possible_loss: Unknown } })
+ right: Err(PossibleLossNotAccepted)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+failures:
+    manual_failover_requires_loss_acceptance_and_settled_fence_without_inventing_loss
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.12s
+
+error: test failed, to rerun pass `--test operations`

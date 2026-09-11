@@ -1,6 +1,6 @@
-# HAT Rust V1 — local Tasks 2–7
+# HAT Rust V1 — local Tasks 2–8
 
-This package implements the accepted local slices from the [single-controller V1 plan](../docs/plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance): bounded configuration validation, primary-only routing/proxying, fixture node/controller state, restore/fence boundaries, and one planned switchover path. It does not perform native TrailBase/Litestream work, provider fencing, deployment, public traffic, or failover/rejoin qualification.
+This package implements the accepted local slices from the [single-controller V1 plan](../docs/plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance): bounded configuration validation, primary-only routing/proxying, fixture node/controller state, restore/fence boundaries, planned switchover, and manual failover/reconciliation/reseed. It does not perform native TrailBase/Litestream work, provider fencing, deployment, public traffic, or live qualification.
 
 ## Configuration checker
 
@@ -90,4 +90,10 @@ This local slice is accepted against T6-AC1 through T6-AC4. Its application/auth
 
 `PlannedSwitchover` exercises one in-memory/SQLite fixture handover: it closes old admission, stops the old mutator/uploader and candidate follower children, requires exact settled fence evidence, quarantines the old node, validates/restores a fresh candidate workspace, promotes and activates the candidate, then publishes one higher-generation route. Exact journal replay returns its retained receipt; uncertain restore, fence, and effect-boundary responses mark `blocked_uncertain` and refuse new mutations. Quarantine rejects stale exact activation grants, including after route-publication uncertainty.
 
-The operation tests use disposable `sh` children and fixture JSON only. Route state is in-memory, fence evidence is supplied by the test boundary, and no real provider, TrailBase/Litestream process, deployment, VPS, public listener, distributed route rollout, failover, or rejoin is exercised. Task 8 remains separately authorization-gated.
+The operation tests use disposable `sh` children and fixture JSON only. Route state is in-memory, fence evidence is supplied by the test boundary, and no real provider, TrailBase/Litestream process, deployment, VPS, public listener, distributed route rollout, failover, or rejoin is exercised.
+
+## Local failover, reconciliation, and rejoin path (Task 8, accepted locally)
+
+`ManualFailover` requires explicit possible-loss acceptance and settled fence identity, retaining `LossBound::Unknown` rather than inventing a loss estimate. It reuses the restore/activation/route path, durably binds the failover policy, refuses active/uncertain replay, and supports same-operation inspect/reconcile after journal and node-state reconstruction. Exact fence, candidate, route, quarantine, and child-containment observations are required before a blocked operation can complete; repeated reconciliation is idempotent.
+
+`reseed_rejoin` validates a quarantined former primary, restores into a fresh directory, preserves the original source/history, and returns a closed standby. Both the former primary and the new standby refuse writable activation. This remains fixture-only; native/provider settlement, deployment, VPS, public HTTPS, live failover, and disruptive qualification are not claimed. Task 9 remains separately authorization-gated.
