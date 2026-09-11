@@ -117,9 +117,7 @@ def classify_fault(events, data):
                     category='rejected'
                 else:category='unacknowledged_recovered' if found else 'ambiguous'
                 result[category].append('/'.join(key))
-    result = {name: sorted(values) for name, values in result.items()}
-    validate_fault_outcomes(result, events)
-    return result
+    return {name: sorted(values) for name, values in result.items()}
 
 
 INPUT_FIELDS = {

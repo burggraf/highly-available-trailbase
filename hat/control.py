@@ -394,16 +394,20 @@ class Journal:
         validate_cut(result['positions'])
         baseline = result['baseline_recheck']
         fresh = result['new_writes']
+        if (not isinstance(baseline, dict) or not isinstance(baseline.get('request'), dict)
+                or not isinstance(fresh, dict) or not isinstance(fresh.get('request'), dict)):
+            raise ValueError('verification evidence shape differs')
         recovery.validate_acceptance_result(baseline, baseline['request'], operation)
         recovery.validate_acceptance_result(fresh, fresh['request'], operation)
         expected = previous['baseline']
+        expected_positions = expected['request']['positions']
         if (result['writer']!='B' or result['epoch']!=operation['new_epoch']
                 or baseline['request'].get('phase')!='verification-baseline'
                 or baseline['request'].get('source')!=operation['source']
                 or baseline['request'].get('target')!=operation['target']
                 or baseline['request'].get('profile')!='baseline'
                 or baseline['request'].get('epoch')!=operation['new_epoch']
-                or baseline['request'].get('positions')!=expected['positions']
+                or baseline['request'].get('positions')!=expected_positions
                 or baseline.get('signature')!=expected['signature']
                 or fresh['request'].get('phase')!='new-writes'
                 or fresh['request'].get('source')!=operation['source']
@@ -411,7 +415,7 @@ class Journal:
                 or fresh['request'].get('profile')!='fresh-writes'
                 or fresh['request'].get('epoch')!=operation['new_epoch']
                 or fresh['request'].get('positions')!=result['positions']
-                or any(result['positions'][db]<=pos for db,pos in expected['positions'].items())):
+                or any(result['positions'][db]<=pos for db,pos in expected_positions.items())):
             raise ValueError('verification evidence does not reconcile baseline and fresh writes')
         with self.db:
             self.db.execute('INSERT INTO steps VALUES(?,?,?,?,?)',(ident,9,'verify','done',json.dumps(result,allow_nan=False)))
