@@ -1,0 +1,21 @@
+Task 6 local acceptance gates
+
+Scope: isolated fixture restore validation and a fake executable fencing adapter. No real database restore, TrailBase/Litestream, provider action, deployment, native qualification, VPS, or disruptive effect.
+
+Behavioral tests:
+- `cargo test --manifest-path rust/Cargo.toml --test recovery_boundaries -- --nocapture`: exit 0; 4 tests.
+- Recovery tests cover missing source, wrong history/position/schema/config/key, corrupted payload, truncated manifest, duplicate fixture JSON keys, application/auth validation failures, source symlink refusal, fresh-workspace copy and destination reuse refusal.
+- Fence tests cover wrong target, wrong incarnation, stale evidence nonce binding, uncertain result, timeout, stdout-retaining descendant deadline/cleanup, oversized output, and durable `blocked_uncertain` journal blocking after response-loss/unknown outcome.
+
+Full gates:
+- `cargo fmt --manifest-path rust/Cargo.toml --check`: exit 0.
+- `cargo test --manifest-path rust/Cargo.toml --locked`: exit 0; 29 library tests, 0 binary tests, 3 CLI, 1 controller, 1 dashboard, 1 node, 8 proxy, 4 recovery-boundary tests = 45 passing tests (plus 0 doc tests).
+- `cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings`: exit 0.
+- `cargo build --manifest-path rust/Cargo.toml --release --locked`: exit 0.
+- `git diff --check`: exit 0.
+
+Review:
+- Fresh read-only spec review passed T6-AC1 through T6-AC4 after fixes.
+- Fixes included bounded post-exit output receive, process-group cleanup for every post-spawn error, uncertain classification for status/process I/O errors, exact evidence nonce binding, duplicate-key fixture rejection, explicit fixture application/auth JSON validation, and durable uncertainty propagation through the journal.
+
+Result: local Task 6 criteria pass. This is not live fencing, provider settlement, native restore, deployment, or production qualification.

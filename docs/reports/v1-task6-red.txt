@@ -1,0 +1,10 @@
+Task 6 behavioral boundary RED evidence
+
+Command:
+  cargo test --manifest-path rust/Cargo.toml --test recovery_boundaries
+
+Initial result: failed because the new restore/fence boundary was not yet present; Cargo reported the missing `fence` and `restore` modules. This is retained as setup RED, not claimed as a behavioral implementation failure.
+
+During the implementation loop, the real recovery-boundary test also failed behaviorally when fresh destinations under the macOS `/tmp` symlink path were incorrectly refused (`UnsafePath`), and when the fence test initially used an insufficient 500 ms startup deadline. Both were corrected without weakening refusal behavior. Later tests exercised the implemented refusal paths and passed.
+
+No external/native/VPS/disruptive action occurred.

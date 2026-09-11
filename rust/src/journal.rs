@@ -17,6 +17,7 @@ pub enum JournalError {
     InvalidInput,
     AlreadyOwned,
     Conflict,
+    Uncertain,
     Sql(String),
 }
 
@@ -134,6 +135,17 @@ impl Journal {
             }
             return Err(JournalError::Conflict);
         }
+        if tx
+            .query_row(
+                "SELECT 1 FROM operations WHERE state = 'blocked_uncertain' LIMIT 1",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()?
+            .is_some()
+        {
+            return Err(JournalError::Uncertain);
+        }
         tx.execute(
             "INSERT INTO operations(request_id, operation_id, digest, state) VALUES (?1, ?2, ?3, 'active')",
             params![request_id, operation_id, digest],
@@ -144,6 +156,10 @@ impl Journal {
             operation_id: operation_id.to_owned(),
             state: "active".into(),
         })
+    }
+
+    pub fn block_uncertain(&mut self, operation_id: &str) -> Result<(), JournalError> {
+        self.finish(operation_id, "blocked_uncertain")
     }
 
     pub fn finish(&mut self, operation_id: &str, state: &str) -> Result<(), JournalError> {

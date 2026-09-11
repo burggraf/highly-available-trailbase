@@ -1,12 +1,4 @@
-pub mod auth;
-pub mod config;
-pub mod controller;
-pub mod journal;
-pub mod node;
-pub mod proxy;
-pub mod replication;
-pub mod routing;
-
+use hat::{config, controller, proxy};
 use std::io::{self, Read};
 use std::net::SocketAddr;
 use std::process::ExitCode;

@@ -77,3 +77,11 @@ The local controller now has a bundled SQLite journal with `foreign_keys=ON`, `s
 This local slice is accepted against T5-AC1 through T5-AC5. It is not public HTTPS, production TLS, a deployment, a fencing/controller action system, a native restart workflow, or a VPS qualification. No actual VPS or external service has been used.
 
 This is not a controller deployment, failover, or native qualification claim. Python `hat/`, historical deployment files, and private evidence remain untouched.
+
+## Local restore/fence boundary (Task 6, accepted locally)
+
+`restore` validates a bounded local fixture manifest and payload against exact cluster/database/history/position/schema/config/key identities, SHA-256 content, and explicit application/auth fixture checks. It copies only after validation into a fresh workspace, refuses source symlinks and destination reuse, and fsyncs the copied files. It does not open TrailBase/SQLite application databases or claim native restore validation.
+
+`fence` defines a bounded executable adapter contract with exact operation/action/target/incarnation/evidence bindings, protected credential references outside argv/results, bounded JSON input/output, process-group cleanup on every post-spawn failure, and typed refusal for stale, uncertain, malformed, delayed, or lost responses. Unknown results mark a journal operation `blocked_uncertain`, which blocks new mutations until a later reconciliation stage. The default tests use disposable local fake executables only; no provider action, deployment, VPS, or live fencing is performed.
+
+This local slice is accepted against T6-AC1 through T6-AC4. Its application/auth checks are fixture JSON validators, not TrailBase validation; filesystem checks are not a complete descriptor-relative anti-TOCTOU implementation.

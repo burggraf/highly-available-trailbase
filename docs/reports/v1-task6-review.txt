@@ -1,0 +1,16 @@
+Task 6 fresh review disposition
+
+Reviewer: fresh read-only spec-reviewer subagent
+Scope: current local-only diff against T6-AC1..T6-AC4.
+
+Final disposition: pass for the approved local contract.
+
+Covered:
+- Restore manifest identity, history/position/schema/config/key checks, bounded payload size/hash, duplicate-key rejection, explicit application/auth fixture checks, fresh destination, fsync and symlink refusal.
+- Fence request/result schema, cluster/operation/action/target/incarnation/evidence-nonce binding, bounded JSON input/output, protected credential reference outside argv/result, bounded deadline, process-group cleanup and delayed stdout handling.
+- Typed unknown outcomes and response loss are journaled as `blocked_uncertain`; new mutations are refused until a later reconciliation stage.
+
+Residual risks (explicitly out of scope):
+- Source filesystem checks are not a complete descriptor-relative anti-TOCTOU implementation.
+- The application/auth checks are local fixture validators, not TrailBase or real database validation.
+- Provider late effects, external fencing settlement, native restore, deployment, VPS and disruptive qualification remain unimplemented and unauthorized.

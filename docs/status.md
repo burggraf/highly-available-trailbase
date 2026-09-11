@@ -1,13 +1,13 @@
 # HAT delivery status
 
-## Current development — Rust V1, Task 4 accepted
+## Current development — Rust V1, Task 6 local boundary accepted
 
 The [active plan's execution state and acceptance](plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance) is the authoritative tracker and restart handoff. Follow [AGENTS.md](../AGENTS.md); [rust/README.md](../rust/README.md) describes actual executable behavior.
 
 - **Scope:** single controller, all traffic to the primary, manual failover; no Raft or qualified replica reads.
-- **Current branch/worktree:** `main` at `f8e217b`; Task 2 is merged and Task 3 is authorized for local-only implementation directly on `main`.
+- **Current branch/worktree:** `main` at the local Task 6 checkpoint, clean and one commit ahead of `origin/main`; Task 6 is accepted only for local fixture behavior.
 - **Task 2 accepted:** the Rust binary validates bounded configuration via `hat config check` and selects primary-only routes from a strict inventory-bound route record. Local evidence is in `docs/reports/v1-task2-red.txt` and `docs/reports/v1-task2-gates.txt`; the fresh read-only review found no implementation security defects after the documented test-coverage correction. Task 3 now covers local real-boundary streaming proxy tests and a bounded private-peer boundary; it does not authorize deployment or native qualification.
-- **Not implemented:** TrailBase/Litestream execution, native restore, systemd/deployment, failover, TLS peer identity qualification, public HTTPS, and native qualification. Task 4 and the local-only Task 5 controller/journal/auth/dashboard/restart slice are accepted. Actual VPS testing remains separately gated.
+- **Not implemented:** TrailBase/Litestream execution, native restore, systemd/deployment, failover, TLS peer identity qualification, public HTTPS, and native qualification. Task 4, the local-only Task 5 controller/journal/auth/dashboard/restart slice, and the local Task 6 restore/fence boundary are accepted. Actual VPS testing remains separately gated.
 - **Autonomy:** owner approved local test/fix/review iterations through one authorized stage and local checkpoint commits; merge/push and all external effects remain separately gated.
 
 All Python/deployment checkpoints below are **historical evidence**, not current Rust capability or permission to resume prior operations. The former planning-only update is retained below as history.

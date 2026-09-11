@@ -25,7 +25,7 @@ This section is the authoritative restart tracker. Follow [AGENTS.md](../../AGEN
 | Task 3 — proxy/peer transport | accepted | Local-only criteria T3-AC1 through T3-AC5 passed on `main`; production TLS/peer identity, deployment, controller integration, and native qualification remain deferred. |
 | Task 4 — lifecycle/replication | accepted | Local fixture-only criteria T4-AC1 through T4-AC5 passed on `main`; native TrailBase/Litestream, systemd, deployment, and live effects remain deferred. |
 | Task 5 — controller/dashboard/restart | accepted | Local-only criteria T5-AC1 through T5-AC5 passed on `main`; VPS/deployment/native/public HTTPS qualification remains separately gated. |
-| Task 6 — restore/fence boundary | pending | Not authorized; fake adapters do not authorize live fencing. |
+| Task 6 — restore/fence boundary | accepted | Local-only criteria T6-AC1 through T6-AC4 passed on `main`; fake adapters do not authorize live fencing, native execution, deployment, or VPS effects. |
 | Task 7 — planned switchover | pending | Not authorized; Task 5/6 and fixture approval required. |
 | Task 8 — failover/rejoin | pending | Not authorized; accepted Task 7 required. |
 | Task 9 — deployment/native acceptance | pending | Not authorized; explicit disposable infrastructure and deployment approvals required. |
@@ -381,6 +381,18 @@ Approved scope reference: owner authorization in this session. This local slice 
 - **Residual scope:** restart guard and journal receipts do not dispatch native node actions; TrailBase/Litestream, systemd, provider fencing, public HTTPS, deployment, and disruptive/native tests remain later authorized stages.
 - **Next safe action:** obtain authorization before Task 6 restore/fence implementation or any actual VPS/disruptive/native test. No active processes remain.
 
+### Task 6 completion contract — approved for local-only implementation
+
+Scope: isolated fixture restore validation and a bounded executable fence-adapter contract. No real database restore, TrailBase/Litestream process, provider action, deployment, native qualification, VPS, or disruptive effect is authorized.
+
+| ID | Observable acceptance requirement | Required evidence | Result |
+| --- | --- | --- | --- |
+| T6-AC1 | Missing source, wrong history/position, schema/config/key mismatch, corrupt/truncated input, and failed application/auth fixture validation refuse before destination publication. | `rust/tests/recovery_boundaries.rs`; `docs/reports/v1-task6-gates.txt` | pass — all listed refusals covered |
+| T6-AC2 | A valid finite fixture is validated by exact manifest identity, bounded SHA-256 payload, explicit local application/auth checks, and copied only into a fresh isolated workspace with no source symlink traversal. | restore module and recovery-boundaries tests; review report | pass — validation precedes fresh copy, fsync and reuse/symlink refusals |
+| T6-AC3 | The fence adapter accepts only a bounded typed request, invokes one protected-config executable with a credential reference outside argv/result, bounds input/output and deadline, and verifies exact response bindings. | fence module and recovery-boundaries tests | pass — bounded adapter, process-group timeout, exact bindings and evidence nonce |
+| T6-AC4 | Wrong target/incarnation, stale/uncertain evidence, timeout, response loss, and delayed-result cases refuse; unknown fence outcomes durably mark the operation `blocked_uncertain` and block new mutation until reconciliation. | fence+journal integration test; Task 6 gates | pass — typed refusal paths and durable uncertainty blocking |
+
+
 ### Task 6 — Restore validation and fencing boundary
 
 **Files:** create `rust/src/restore.rs`, `rust/src/fence.rs`, `rust/tests/recovery_boundaries.rs`.
@@ -393,6 +405,15 @@ Approved scope reference: owner authorization in this session. This local slice 
 **Check:** `cargo test --manifest-path rust/Cargo.toml --test recovery_boundaries`.
 
 **Exit:** restore/fence refusals are executable. Live qualification remains blocked unless the actual provider contract and deployment authorization are available.
+
+### Restart handoff — Task 6 local acceptance checkpoint
+
+- **State:** accepted locally; T6-AC1 through T6-AC4 passed. This is not live fencing, native restore, deployment, VPS acceptance, or production qualification.
+- **Source:** current `main` checkpoint recorded by `git rev-parse HEAD`; no active processes remain and the working tree is clean at handoff.
+- **Implemented:** `rust/src/restore.rs` finite fixture validation/copy boundary, `rust/src/fence.rs` bounded fake executable adapter with exact evidence bindings and process-group cleanup, journal uncertainty blocking, and `rust/tests/recovery_boundaries.rs` integration coverage.
+- **Evidence:** `docs/reports/v1-task6-red.txt`, `docs/reports/v1-task6-gates.txt`, and `docs/reports/v1-task6-review.txt`; final fmt, locked tests, clippy, locked release build, and diff checks exited 0.
+- **Residual scope:** application/auth validation is fixture JSON only; filesystem checks are not a full descriptor-relative anti-TOCTOU implementation; provider late effects/settlement, native restore and real fencing remain unqualified.
+- **Next safe action:** Task 7 planned switchover requires separate authorization and a new acceptance contract. Do not run the fake adapter against real provider credentials or targets.
 
 ### Task 7 — Planned switchover, one vertical path
 
