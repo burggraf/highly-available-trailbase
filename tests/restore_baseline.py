@@ -18,9 +18,9 @@ import urllib.request
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'hat'))
 import descriptor
 import recovery
+import transition
 from client import read_closed_ledger
 from recovery import classify_fault
-from transition import logical_signature
 
 
 def _stat_identity(st):
@@ -106,25 +106,13 @@ def _verify_restore_position(raw, expected):
         raise ValueError('restore position differs')
 
 
-def _logical_signature_from_authorities(authorities):
-    result = {}
-    for name, authority in zip(('main', 'session', 'aux'), authorities):
-        db = sqlite3.connect(':memory:', check_same_thread=False)
-        try:
-            db.deserialize(authority.read())
-            db.execute('PRAGMA ignore_check_constraints=ON')
-            if db.execute('PRAGMA integrity_check').fetchone() != ('ok',) or db.execute('PRAGMA foreign_key_check').fetchall():
-                raise ValueError('database integrity failure')
-            schema = db.execute('SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name').fetchall()
-            digest = hashlib.sha256(repr(schema).encode())
-            for table, in db.execute("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name"):
-                digest.update(table.encode())
-                for row in sorted(repr(row) for row in db.execute('SELECT * FROM "'+table.replace('"','""')+'"')):
-                    digest.update(row.encode() + b'\\n')
-            result[name] = digest.hexdigest()
-        finally:
-            db.close()
-    return result
+def _signature_for_data(data_root, authorities):
+    for authority in authorities:
+        authority.recheck()
+    signature = transition.logical_signature(data_root)
+    for authority in authorities:
+        authority.recheck()
+    return signature
 
 
 def _validate_fixed_files(root, names, uid, gid, modes):
@@ -298,7 +286,7 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
             restored = restored_authority.read()
             evidence['databases'][name] = {'position': position, 'sha256': restored_authority.sha256, 'integrity':'PASS', 'foreign_keys':'PASS'}
         for authority in support_authorities + binary_authorities + database_authorities: authority.recheck()
-        evidence['signature'] = _logical_signature_from_authorities(database_authorities)
+        evidence['signature'] = _signature_for_data(data, database_authorities)
         with socket.socket() as sock:
             sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
         base = f'http://127.0.0.1:{port}'
@@ -344,17 +332,26 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
         descriptor.close_all(support_authorities + binary_authorities + database_authorities)
 
 
-if __name__ == '__main__':
-    p = argparse.ArgumentParser()
-    p.add_argument('--root', type=Path, required=True)
-    p.add_argument('--acceptance-request', type=Path, required=True)
-    p.add_argument('--config', type=Path, required=True)
-    p.add_argument('--ledger', type=Path, required=True)
-    p.add_argument('--support', type=Path, required=True)
-    p.add_argument('--binaries', type=Path, required=True)
-    p.add_argument('--fault-ledger', type=Path)
-    p.add_argument('--result', type=Path, required=True)
-    a = p.parse_args()
+class _ArgumentParser(argparse.ArgumentParser):
+    def error(self, message):
+        raise ValueError('invalid restore arguments')
+
+
+def _parser():
+    parser = _ArgumentParser(add_help=False)
+    parser.add_argument('--root', type=Path, required=True)
+    parser.add_argument('--acceptance-request', type=Path, required=True)
+    parser.add_argument('--config', type=Path, required=True)
+    parser.add_argument('--ledger', type=Path, required=True)
+    parser.add_argument('--support', type=Path, required=True)
+    parser.add_argument('--binaries', type=Path, required=True)
+    parser.add_argument('--fault-ledger', type=Path)
+    parser.add_argument('--result', type=Path, required=True)
+    return parser
+
+
+def _main(argv):
+    a = _parser().parse_args(argv)
     value = restore(a.root, a.acceptance_request, a.config, a.ledger, a.support, a.binaries, a.fault_ledger)
     raw = recovery.canonical_json(value)
     parent = descriptor.DescriptorAuthority.open_directory(
@@ -372,7 +369,21 @@ if __name__ == '__main__':
             expected_sha256=hashlib.sha256(raw).hexdigest(), limit=1 << 20)
         published.append(result_authority)
         result_authority.recheck()
-        if result_authority.read() != raw: raise ValueError('result changed after write')
+        if result_authority.read() != raw:
+            raise ValueError('result changed after write')
     finally:
         descriptor.close_all(published)
-    print('PASS: independent finite restore acceptance')
+    sys.stdout.write('PASS\\n')
+    return 0
+
+
+def main(argv=None):
+    try:
+        return _main(sys.argv[1:] if argv is None else argv)
+    except Exception:
+        sys.stderr.write('FAIL: restore baseline failed\\n')
+        return 1
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
