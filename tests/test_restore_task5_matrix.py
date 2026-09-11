@@ -696,9 +696,14 @@ class RestoreTask5Matrix(unittest.TestCase):
                                 replacement = fixture.area / relative
                                 preserved.extend((old_area / relative, replacement))
                         fixture.io._before_command_spawn = mutate
-                        with fixture.popen(), self.assertRaises(ValueError):
+                        expected_error = (control.CommandCleanupUncertain
+                                          if (artifact, mutation) == ('request', 'content-hash')
+                                          else ValueError)
+                        with fixture.popen(), self.assertRaises(expected_error):
                             fixture.invoke()
                         fixture.assert_pending()
+                        cleanup = list(fixture.work.glob('*.cleanup-uncertain.json'))
+                        self.assertEqual(len(cleanup), 1 if expected_error is control.CommandCleanupUncertain else 0)
                         self.assertFalse((fixture.work / 'compare-acceptance-result.json').exists())
                         self.assertTrue(all(path.exists() for path in preserved))
                         self.assertTrue(fixture.ledger.exists())
