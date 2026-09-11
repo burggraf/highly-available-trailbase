@@ -10,7 +10,7 @@ exactly these fields::
   candidate_epoch/candidate_boot: quarantined cold A's configured epoch and boot
   protected_ledger: absolute protected history path below /var/lib/hat-control
   protected_baseline: absolute report path below that root; source epoch, valid
-                      three-DB positions/signatures, and auth_and_records=PASS
+                      three-DB positions/signatures and canonical checks=PASS
   fault_ledger: absolute closed generated D3 ledger path below that root
   producer_unit: hat-d3-client-<32 lowercase hex>.service
   producer_cgroup: /sys/fs/cgroup/system.slice/<producer_unit>
@@ -465,16 +465,15 @@ def _write_json(path, value):
 
 
 def _cut_report(value, epoch=None):
+    """Validate the canonical acceptance result; epoch comes from result.request."""
     from transition import validate_cut
-    if not isinstance(value, dict): raise ValueError('restore report is not an object')
-    try: positions, signature = value['positions'], value['signature']
-    except KeyError as exc: raise ValueError('restore report is incomplete') from exc
-    validate_cut(positions)
-    if (not isinstance(signature, dict) or set(signature) != set(node.DBS)
-            or any(not isinstance(v, str) or not re.fullmatch('[0-9a-f]{64}', v) for v in signature.values())
-            or value.get('auth_and_records') != 'PASS'
-            or (epoch is not None and value.get('epoch') != epoch)):
-        raise ValueError('restore report signature, auth, or epoch differs')
+    if not isinstance(value, dict) or set(value) != {'schema','request','request_sha256','databases','signature','checks'}:
+        raise ValueError('restore report is not canonical')
+    request = value['request']; positions = request['positions']; validate_cut(positions)
+    if (not isinstance(value['signature'], dict) or set(value['signature']) != set(node.DBS)
+            or value['checks'] != {'records':'PASS','authentication':'PASS'}
+            or (epoch is not None and request.get('epoch') != epoch)):
+        raise ValueError('restore report signature, checks, or epoch differs')
     return value
 
 
@@ -864,7 +863,7 @@ def recover(config, *, control_module=None, io_factory=None,
                                  Path(input_value['protected_ledger']), fault_ledger=sealed_fault,
                                  source_epoch=operation['source_epoch'])
             _cut_report(compared)
-            if compared['positions'] != state['cut'] or compared['signature'] != state['restore']['signature']:
+            if compared['request']['positions'] != state['cut'] or compared['signature'] != state['restore']['signature']:
                 raise RuntimeError('candidate and independent restored images differ')
             _fault_outcomes(compared.get('fault_outcomes'), state['events'])
             state['comparison'] = compared
@@ -897,9 +896,8 @@ def recover(config, *, control_module=None, io_factory=None,
             status = state['new']['status']
             report = io.oracle('baseline', state['new']['replica_config'], status['positions'],
                                Path(input_value['protected_ledger']))
-            report = dict(report, epoch=operation['new_epoch'])
             _cut_report(report, operation['new_epoch'])
-            if report['positions'] != status['positions']:
+            if report['request']['positions'] != status['positions']:
                 raise RuntimeError('new-epoch baseline positions differ')
             state['baseline'] = report
             return report
@@ -938,7 +936,7 @@ def recover(config, *, control_module=None, io_factory=None,
                 time.sleep(1)
             report = io.oracle('new-writes', writer['replica_config'], positions, fresh)
             _cut_report(report)
-            if report['positions'] != positions: raise RuntimeError('fresh-write restore positions differ')
+            if report['request']['positions'] != positions: raise RuntimeError('fresh-write restore positions differ')
             return {'writer': 'A', 'epoch': operation['new_epoch'],
                     'positions': positions, 'new_writes': report}
 

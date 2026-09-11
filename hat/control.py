@@ -389,7 +389,8 @@ class Journal:
         validate_cut(result.get('positions'))
         proof=result.get('new_writes',{})
         if (result.get('writer')!='B' or result.get('epoch')!=operation['new_epoch']
-                or proof.get('positions')!=result['positions'] or proof.get('auth_and_records')!='PASS'
+                or proof.get('request',{}).get('positions')!=result['positions']
+                or proof.get('checks',{}).get('records')!='PASS' or proof.get('checks',{}).get('authentication')!='PASS'
                 or any(result['positions'][db]<=pos for db,pos in previous['baseline']['positions'].items())):
             raise ValueError('verification lacks fresh-epoch new-write restore proof')
         with self.db:
@@ -399,8 +400,8 @@ class Journal:
     def accept_comparison(self, ident, result):
         operation,previous=self.comparison_boundary(ident)
         frozen=previous['freeze']
-        if (result.get('positions')!=frozen['cut'] or result.get('signature')!=frozen['signature']
-                or result.get('auth_and_records')!='PASS'):
+        if (result.get('request',{}).get('positions')!=frozen['cut'] or result.get('signature')!=frozen['signature']
+                or result.get('checks',{}).get('records')!='PASS' or result.get('checks',{}).get('authentication')!='PASS'):
             raise ValueError('reconciled comparison does not match frozen cut')
         with self.db:
             self.db.execute('INSERT INTO steps VALUES(?,?,?,?,?)',(ident,5,'compare','done',json.dumps(result,allow_nan=False)))
@@ -446,13 +447,17 @@ def _validate_d3_proof(operation, evidence, verified=True):
         selected=evidence['select_cut']['positions'];validate_cut(selected)
 
         def report(value, auth_required=True, position_key='positions'):
-            if not isinstance(value,dict): raise ValueError('invalid D3 restore report')
-            positions=value[position_key];signature=value['signature'];validate_cut(positions)
-            if (not isinstance(signature,dict) or set(signature)!=set(positions)
-                    or any(not isinstance(v,str) or not re.fullmatch('[0-9a-f]{64}',v) for v in signature.values())
-                    or (auth_required and value.get('auth_and_records')!='PASS')):
+            if position_key == 'cut':
+                if not isinstance(value,dict): raise ValueError('invalid D3 restore report')
+                positions=value['cut']; signature=value['signature']; validate_cut(positions)
+                return value
+            if not isinstance(value,dict) or set(value) != {'schema','request','request_sha256','databases','signature','checks'}:
                 raise ValueError('invalid D3 restore report')
-            return value
+            positions=value['request']['positions']; signature=value['signature']; validate_cut(positions)
+            if (not isinstance(signature,dict) or set(signature)!=set(positions)
+                    or (auth_required and value['checks'] != {'records':'PASS','authentication':'PASS'})):
+                raise ValueError('invalid D3 restore report')
+            return {'positions': positions, 'signature': signature, 'request': value['request'], 'checks': value['checks']}
 
         restored=report(evidence['restore'],auth_required=False,position_key='cut');compared=report(evidence['compare']);baseline=report(evidence['baseline'])
         if (restored['cut']!=selected or compared['positions']!=selected
@@ -1278,7 +1283,7 @@ def switchover(config, reconcile=None, verification_only=False):
                 state['baseline']=previous['baseline']
                 route_proof=previous['route'];digest=hashlib.sha256(ingress.read_bytes()).hexdigest()
                 if (route_proof['writer']!='B' or route_proof['epoch']!=operation['new_epoch'] or route_proof['config_sha']!=digest
-                        or previous['baseline']['auth_and_records']!='PASS'):raise RuntimeError('recorded route/baseline changed')
+                        or previous['baseline'].get('checks') != {'records':'PASS','authentication':'PASS'}):raise RuntimeError('recorded route/baseline changed')
                 node.validate_support(Path('/var/lib/hat-oracle/support'),current['config']['support'])
                 for binary,expected in current['config']['binaries'].items():
                     if hashlib.sha256((Path('/opt/hat-oracle/bin')/binary).read_bytes()).hexdigest()!=expected:raise RuntimeError('oracle release changed')
