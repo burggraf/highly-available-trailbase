@@ -763,6 +763,61 @@ def oracle_directory(area):
     area.chmod(0o750)  # mkdir's mode is otherwise reduced to 0700 by the controller umask.
 
 
+def _copy_bound_input(source, destination, mode, uid, gid, expected_sha, expected_identity=None, limit=4 * 1024 * 1024, private=True):
+    """Copy immutable raw bytes while refusing replacement, links, and unsafe ancestry."""
+    source, destination = Path(source).absolute(), Path(destination).absolute()
+    if '..' in source.parts or '..' in destination.parts:
+        raise ValueError('artifact path traversal is forbidden')
+    for path in (source.parent, destination.parent):
+        current = path
+        while True:
+            info = current.lstat()
+            if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_mode & 0o022:
+                raise ValueError('artifact ancestry is unsafe')
+            if current.parent == current: break
+            current = current.parent
+    try:
+        fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise ValueError('source is not a regular file') from exc
+    try:
+        before = os.fstat(fd)
+        identity_of = lambda value: (value.st_dev, value.st_ino, stat.S_IMODE(value.st_mode), value.st_uid, value.st_nlink, value.st_size)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid != uid or before.st_nlink != 1
+                or (private and before.st_mode & 0o077) or before.st_size <= 0 or before.st_size > limit
+                or (expected_identity is not None and identity_of(before) != expected_identity)):
+            raise ValueError('source identity is not trusted')
+        digest = hashlib.sha256(); chunks=[]
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk: break
+            chunks.append(chunk); digest.update(chunk)
+            if sum(map(len, chunks)) > limit: raise ValueError('source is oversized')
+        raw = b''.join(chunks)
+        after = os.fstat(fd)
+        identity = identity_of(after)
+        if before.st_size != len(raw) or identity != identity_of(before) or digest.hexdigest() != expected_sha:
+            raise ValueError('source changed during copy')
+    finally:
+        os.close(fd)
+    out = os.open(destination, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
+    try:
+        view = memoryview(raw)
+        while view:
+            count = os.write(out, view); view = view[count:]
+        os.fchmod(out, mode); os.fchown(out, uid, gid); os.fsync(out)
+        check = os.fstat(out)
+        if (check.st_size != len(raw) or check.st_mode & 0o777 != mode
+                or hashlib.sha256(os.pread(out, len(raw), 0)).hexdigest() != expected_sha):
+            raise ValueError('destination copy differs')
+    finally:
+        os.close(out)
+    directory = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try: os.fsync(directory)
+    finally: os.close(directory)
+    return identity
+
+
 class ControlIO:
     """Shared command, node RPC, fence, ingress, and oracle I/O for a transition."""
     SSH_FLAGS = ('-i', '/etc/hat-control/id_ed25519', '-o', 'IdentitiesOnly=yes',
@@ -983,36 +1038,63 @@ class ControlIO:
         """
         import recovery
         import node
+        self.journal.check_authority()
         if acceptance_request is None:
             raise ValueError('canonical acceptance request is required')
         request_bytes = acceptance_request if isinstance(acceptance_request, bytes) else recovery.canonical_json(acceptance_request)
         request = recovery.parse_acceptance_request(request_bytes, self.operation)
         if request['phase'] != phase or request['positions'] != positions:
             raise ValueError('restore request does not match locked phase')
+        if (request['profile'] == 'recovery-comparison') != (fault_ledger is not None):
+            raise ValueError('fault ledger does not match restore profile')
+        config_raw = replica_config.encode() if isinstance(replica_config, str) else bytes(replica_config)
+        if hashlib.sha256(config_raw).hexdigest() != request['inputs']['replica_config_sha256']:
+            raise ValueError('replica configuration changed')
+        authority = request['inputs']['ledger_authority']
+        ledger_path = Path(authority['ledger']['path'])
+        if ledger_path.absolute() != Path(selected_ledger).absolute():
+            raise ValueError('selected ledger differs from authority')
+        identity = tuple(authority['ledger'][key] for key in ('device','inode','mode','uid','links','bytes'))
+        if not (ledger_path.is_absolute() and ledger_path.exists()):
+            raise ValueError('authorized ledger is unavailable')
+        if request['profile'] != 'fresh-writes':
+            recovery._protected_ledger(ledger_path.read_bytes())
         account = pwd.getpwnam('hat-oracle')
         prefix = 'd2' if (self.operation['source'], self.operation['target']) == ('A', 'B') else 'd3'
         area = Path('/var/lib/hat-oracle') / (prefix + '-' + self.operation['id'] + '-' + phase)
         oracle_directory(area); os.chown(area, 0, account.pw_gid)
         output = area / 'work'; output.mkdir(mode=0o700); os.chown(output, account.pw_uid, account.pw_gid)
-
-        def copy_raw(destination, raw, mode=0o640, owner=(0, account.pw_gid)):
-            fd = os.open(destination, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, mode)
+        support_root = area / 'support'; support_root.mkdir(mode=0o750); os.chown(support_root, 0, account.pw_gid)
+        binary_root = area / 'bin'; binary_root.mkdir(mode=0o750); os.chown(binary_root, 0, account.pw_gid)
+        support_paths = {
+            'config.textproto': Path('/var/lib/hat-oracle/support/config.textproto'),
+            'migrations/main/U100__hat_ops.sql': Path('/var/lib/hat-oracle/support/migrations/main/U100__hat_ops.sql'),
+            'migrations/aux/U100__hat_ops.sql': Path('/var/lib/hat-oracle/support/migrations/aux/U100__hat_ops.sql'),
+            'secrets/keys/private_key.pem': Path('/var/lib/hat-oracle/support/secrets/keys/private_key.pem'),
+            'secrets/keys/public_key.pem': Path('/var/lib/hat-oracle/support/secrets/keys/public_key.pem')}
+        for key, source in support_paths.items():
+            digest = request['inputs']['support'][key]
+            destination = support_root / key; destination.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
+            _copy_bound_input(source, destination, 0o640, 0, account.pw_gid, digest)
+        for name in ('trail','litestream'):
+            _copy_bound_input(Path('/opt/hat-oracle/bin') / name, binary_root / name, 0o755, 0, account.pw_gid, request['inputs']['binaries'][name], private=False)
+        _copy_bound_input(ledger_path, area / 'ledger.jsonl', 0o640, 0, account.pw_gid, authority['ledger']['sha256'], identity)
+        # The config is already an authorized raw byte value; write it only after all preflight checks.
+        if not (area / 'replica.yml').exists():
+            fd = os.open(area / 'replica.yml', os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o640)
             try:
-                view = memoryview(raw)
-                while view:
-                    n = os.write(fd, view); view = view[n:]
-                os.fsync(fd); os.fchmod(fd, mode); os.fchown(fd, *owner)
+                os.write(fd, config_raw); os.fchmod(fd, 0o640); os.fchown(fd, 0, account.pw_gid); os.fsync(fd)
             finally: os.close(fd)
-        copy_raw(area / 'replica.yml', replica_config.encode() if isinstance(replica_config, str) else bytes(replica_config))
-        copy_raw(area / 'ledger.jsonl', selected_ledger.read_bytes())
         request_path = self.work / 'acceptance-request.json'
-        copy_raw(request_path, request_bytes, 0o600, (os.geteuid(), os.getegid()))
-        copy_raw(area / 'acceptance-request.json', request_bytes)
+        fd = os.open(request_path, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600)
+        try: os.write(fd, request_bytes); os.fsync(fd)
+        finally: os.close(fd)
+        _copy_bound_input(request_path, area / 'acceptance-request.json', 0o640, 0, account.pw_gid, hashlib.sha256(request_bytes).hexdigest())
         oracle_fault = None
         if fault_ledger is not None:
             oracle_fault = output / 'fault-ledger.jsonl'
-            copy_raw(oracle_fault, fault_ledger.read_bytes(), 0o600, (account.pw_uid, account.pw_gid))
-        for directory in (area, output, self.work):
+            _copy_bound_input(fault_ledger, oracle_fault, 0o600, os.geteuid(), account.pw_gid, request['inputs']['fault_ledger_sha256'])
+        for directory in (area, output, support_root, binary_root, self.work):
             fd=os.open(directory, os.O_RDONLY|os.O_DIRECTORY)
             try: os.fsync(fd)
             finally: os.close(fd)
@@ -1027,10 +1109,23 @@ class ControlIO:
                 '--binaries', '/opt/hat-oracle/bin', '--result', str(result)]
         if oracle_fault is not None: argv += ['--fault-ledger', str(oracle_fault)]
         self.command(argv, timeout=270)
-        result_raw = result.read_bytes()
+        result_fd = os.open(result, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            result_stat = os.fstat(result_fd)
+            if (result_stat.st_uid != account.pw_uid or result_stat.st_nlink != 1
+                    or stat.S_IMODE(result_stat.st_mode) != 0o600 or result_stat.st_size <= 0 or result_stat.st_size > 4 * 1024 * 1024):
+                raise ValueError('oracle result identity is unsafe')
+            result_raw = b''
+            while len(result_raw) <= 4 * 1024 * 1024:
+                chunk = os.read(result_fd, 65536)
+                if not chunk: break
+                result_raw += chunk
+            if len(result_raw) > 4 * 1024 * 1024: raise ValueError('oracle result is oversized')
+        finally:
+            os.close(result_fd)
         value = recovery.parse_acceptance_result(result_raw, request, self.operation)
         retained = self.work / (phase + '-acceptance-result.json')
-        copy_raw(retained, result_raw, 0o600, (os.geteuid(), os.getegid()))
+        _copy_bound_input(result, retained, 0o600, account.pw_uid, os.getegid(), hashlib.sha256(result_raw).hexdigest())
         return value
 
     def verify_url(self, ledger):

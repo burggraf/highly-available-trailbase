@@ -9,7 +9,7 @@ import control
 
 class ControllerBoundaryTests(unittest.TestCase):
     def test_copy_bound_input_rejects_symlink_and_preserves_bytes_mode(self):
-        root = Path(tempfile.mkdtemp())
+        root = Path(tempfile.mkdtemp(dir=Path.cwd()))
         source = root / 'source'; source.write_bytes(b'raw\x00\xff\n')
         os.chmod(source, 0o600)
         dest = root / 'dest'
