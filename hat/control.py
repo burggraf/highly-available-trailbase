@@ -793,6 +793,22 @@ def _copy_bound_input(source, destination, mode, uid, gid, expected_sha, expecte
         return (identity[0], identity[1], stat.S_IMODE(identity[2]), *identity[3:])
 
 
+def _open_held_inputs(expected, trusted_uids=None):
+    held = []
+    trusted_uids = {0, os.geteuid()} if trusted_uids is None else trusted_uids
+    try:
+        for path, uid, gid, mode, limit in expected:
+            held.append(descriptor.DescriptorAuthority.open_file(
+                path, trusted_root='/', trusted_uids=trusted_uids,
+                expected_uid=uid, expected_gid=gid, expected_mode=mode,
+                expected_nlink=1, limit=limit))
+        return held
+    except BaseException:
+        for item in reversed(held):
+            item.close()
+        raise
+
+
 class ControlIO:
     """Shared command, node RPC, fence, ingress, and oracle I/O for a transition."""
     SSH_FLAGS = ('-i', '/etc/hat-control/id_ed25519', '-o', 'IdentitiesOnly=yes',
@@ -1094,11 +1110,11 @@ class ControlIO:
         expected_children = {relative: set() for relative in directories}
         for relative in expected_files:
             parent, name = str(Path(relative).parent), Path(relative).name
-            expected_children[parent].add(name)
+            expected_children['' if parent == '.' else parent].add(name)
         for relative in expected_dirs:
             if relative != '.':
                 parent, name = str(Path(relative).parent), Path(relative).name
-                expected_children[parent].add(name)
+                expected_children['' if parent == '.' else parent].add(name)
         for relative, authority in directories.items():
             if set(os.listdir(authority.directory_fd)) != expected_children[relative]:
                 raise ValueError('installed tree namespace changed')
@@ -1128,49 +1144,53 @@ class ControlIO:
             raise ValueError('authorized writer release identity is unavailable')
         support, binaries = manifests[0]
         installed_holds = []
-        support_result = self._installed_manifest(
+        try:
+            support_result = self._installed_manifest(
             Path('/var/lib/hat-oracle/support'), support_names, 0, account.pw_gid,
             {name: 0o640 for name in support_names}, hold=hold_installed)
-        if hold_installed:
-            support_manifest, support_holds = support_result
-            installed_holds.extend(support_holds)
-        else:
-            support_manifest = support_result
-        if support_manifest != support:
-            for item in reversed(installed_holds): item.close()
-            raise ValueError('installed oracle support differs')
-        binary_result = self._installed_manifest(
-            Path('/opt/hat-oracle/bin'), ('trail','litestream'), 0, 0, 0o755,
-            hold=hold_installed)
-        if hold_installed:
-            binary_manifest, binary_holds = binary_result
-            installed_holds.extend(binary_holds)
-        else:
-            binary_manifest = binary_result
-        if binary_manifest != binaries:
-            for item in reversed(installed_holds): item.close()
-            raise ValueError('installed oracle binaries differ')
-        with descriptor.DescriptorAuthority.open_file(
-                ledger, trusted_root='/', trusted_uids={0, os.geteuid()}, expected_uid=os.geteuid(),
-                expected_mode=0o600, expected_nlink=1, limit=4 << 20) as selected:
-            identity = selected.identity
-            authority = {'schema': recovery._AUTHORITY_SCHEMA, 'operation': self.operation['id'], 'origin': ('current-verify-exclusive' if profile == 'fresh-writes' else ('d3-recovery-input' if self.operation['source'] == 'B' else 'd2-preflight')), 'ledger': {'path': str(ledger), 'device': identity[0], 'inode': identity[1], 'mode': stat.S_IMODE(identity[2]), 'uid': identity[3], 'gid': identity[4], 'links': identity[5], 'bytes': identity[6], 'sha256': selected.sha256}, 'support': support, 'binaries': binaries}
-        inputs = {'replica_config_sha256': hashlib.sha256(replica_config.encode() if isinstance(replica_config,str) else bytes(replica_config)).hexdigest(), 'ledger_sha256': authority['ledger']['sha256'], 'ledger_authority': authority, 'restore_points': {db: {'source':'/var/lib/hat-demo/depot/data/'+db+'.db', 'position': positions[db]} for db in positions}, 'support': support, 'binaries': binaries}
-        if profile == 'recovery-comparison':
-            from client import read_closed_ledger
-            events = read_closed_ledger(fault_ledger, self.operation['source_epoch'])
-            operations = recovery.fault_operations(events)
+            if hold_installed:
+                support_manifest, support_holds = support_result
+                installed_holds.extend(support_holds)
+            else:
+                support_manifest = support_result
+            if support_manifest != support:
+                raise ValueError('installed oracle support differs')
+            binary_result = self._installed_manifest(
+                Path('/opt/hat-oracle/bin'), ('trail','litestream'), 0, 0, 0o755,
+                hold=hold_installed)
+            if hold_installed:
+                binary_manifest, binary_holds = binary_result
+                installed_holds.extend(binary_holds)
+            else:
+                binary_manifest = binary_result
+            if binary_manifest != binaries:
+                raise ValueError('installed oracle binaries differ')
             with descriptor.DescriptorAuthority.open_file(
-                    fault_ledger, trusted_root='/', trusted_uids={0, os.geteuid()},
-                    expected_uid=os.geteuid(), expected_mode=0o600, expected_nlink=1,
-                    limit=4 << 20) as fault:
-                inputs.update(fault_ledger_sha256=fault.sha256, fault_operations=operations,
-                              fault_operation_count=len(operations),
-                              fault_operations_sha256=hashlib.sha256(recovery.canonical_json(operations)).hexdigest())
-        request = {'schema': recovery._ACCEPTANCE_SCHEMA, 'operation': self.operation['id'], 'phase': phase, 'source': self.operation['source'], 'target': self.operation['target'], 'epoch': epoch, 'positions': positions, 'profile': profile, 'inputs': inputs}
-        validated = recovery.validate_acceptance_request(request, self.operation)
-        result = validated, recovery.canonical_json(request)
-        return (*result, installed_holds) if hold_installed else result
+                    ledger, trusted_root='/', trusted_uids={0, os.geteuid()}, expected_uid=os.geteuid(),
+                    expected_mode=0o600, expected_nlink=1, limit=4 << 20) as selected:
+                identity = selected.identity
+                authority = {'schema': recovery._AUTHORITY_SCHEMA, 'operation': self.operation['id'], 'origin': ('current-verify-exclusive' if profile == 'fresh-writes' else ('d3-recovery-input' if self.operation['source'] == 'B' else 'd2-preflight')), 'ledger': {'path': str(ledger), 'device': identity[0], 'inode': identity[1], 'mode': stat.S_IMODE(identity[2]), 'uid': identity[3], 'gid': identity[4], 'links': identity[5], 'bytes': identity[6], 'sha256': selected.sha256}, 'support': support, 'binaries': binaries}
+            inputs = {'replica_config_sha256': hashlib.sha256(replica_config.encode() if isinstance(replica_config,str) else bytes(replica_config)).hexdigest(), 'ledger_sha256': authority['ledger']['sha256'], 'ledger_authority': authority, 'restore_points': {db: {'source':'/var/lib/hat-demo/depot/data/'+db+'.db','position': positions[db]} for db in positions}, 'support': support, 'binaries': binaries}
+            if profile == 'recovery-comparison':
+                from client import read_closed_ledger
+                events = read_closed_ledger(fault_ledger, self.operation['source_epoch'])
+                operations = recovery.fault_operations(events)
+                with descriptor.DescriptorAuthority.open_file(
+                        fault_ledger, trusted_root='/', trusted_uids={0, os.geteuid()},
+                        expected_uid=os.geteuid(), expected_mode=0o600, expected_nlink=1,
+                        limit=4 << 20) as fault:
+                    inputs.update(fault_ledger_sha256=fault.sha256, fault_operations=operations,
+                                  fault_operation_count=len(operations),
+                                  fault_operations_sha256=hashlib.sha256(recovery.canonical_json(operations)).hexdigest())
+            request = {'schema': recovery._ACCEPTANCE_SCHEMA, 'operation': self.operation['id'], 'phase': phase, 'source': self.operation['source'], 'target': self.operation['target'], 'epoch': epoch, 'positions': positions, 'profile': profile, 'inputs': inputs}
+            validated = recovery.validate_acceptance_request(request, self.operation)
+            result = validated, recovery.canonical_json(request)
+            return (*result, installed_holds) if hold_installed else result
+        except BaseException:
+            if hold_installed:
+                for item in reversed(installed_holds):
+                    item.close()
+            raise
 
     def oracle(self, phase, replica_config, positions, selected_ledger, fault_ledger=None):
         """Run the independent oracle from a request derived after journal intent."""
@@ -1179,76 +1199,73 @@ class ControlIO:
         self.journal.check_authority()
         request, request_bytes, installed_holds = self._acceptance_request(
             phase, replica_config, positions, selected_ledger, fault_ledger, hold_installed=True)
-        if request['phase'] != phase or request['positions'] != positions:
-            raise ValueError('restore request does not match locked phase')
-        if (request['profile'] == 'recovery-comparison') != (fault_ledger is not None):
-            raise ValueError('fault ledger does not match restore profile')
-        config_raw = replica_config.encode() if isinstance(replica_config, str) else bytes(replica_config)
-        if hashlib.sha256(config_raw).hexdigest() != request['inputs']['replica_config_sha256']:
-            raise ValueError('replica configuration changed')
-        authority = request['inputs']['ledger_authority']
-        support_names = tuple(request['inputs']['support'])
-        binary_names = tuple(request['inputs']['binaries'])
-        ledger_path = Path(authority['ledger']['path'])
-        if ledger_path.absolute() != Path(selected_ledger).absolute():
-            raise ValueError('selected ledger differs from authority')
-        identity = tuple(authority['ledger'][key] for key in ('device','inode','mode','uid','gid','links','bytes'))
-        if not ledger_path.is_absolute():
-            raise ValueError('authorized ledger is unavailable')
-        with descriptor.DescriptorAuthority.open_file(
-                ledger_path, trusted_root='/', trusted_uids={0, os.geteuid()},
-                expected_uid=authority['ledger']['uid'], expected_gid=authority['ledger']['gid'],
-                expected_mode=authority['ledger']['mode'], expected_nlink=authority['ledger']['links'],
-                expected_size=authority['ledger']['bytes'], expected_sha256=authority['ledger']['sha256'],
-                limit=4 << 20) as authorized_ledger:
-            if request['profile'] != 'fresh-writes':
-                recovery._protected_ledger(authorized_ledger.read())
-        account = pwd.getpwnam('hat-oracle')
-        prefix = 'd2' if (self.operation['source'], self.operation['target']) == ('A', 'B') else 'd3'
-        area = Path('/var/lib/hat-oracle') / (prefix + '-' + self.operation['id'] + '-' + phase)
-        oracle_directory(area); os.chown(area, 0, account.pw_gid)
-        output = area / 'work'; output.mkdir(mode=0o700); os.chown(output, account.pw_uid, account.pw_gid)
-        # Support and binaries are fixed installed inputs; copying them would widen the trust boundary.
-        _copy_bound_input(ledger_path, area / 'ledger.jsonl', 0o600, 0, account.pw_gid, authority['ledger']['sha256'], identity)
-        # The config is already an authorized raw byte value; write it only after all preflight checks.
-        if not (area / 'replica.yml').exists():
-            fd = os.open(area / 'replica.yml', os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o640)
-            try:
-                os.write(fd, config_raw); os.fchmod(fd, 0o640); os.fchown(fd, 0, account.pw_gid); os.fsync(fd)
-            finally: os.close(fd)
-        request_path = self.work / (phase + '-acceptance-request.json')
-        fd = os.open(request_path, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600)
-        try: os.write(fd, request_bytes); os.fsync(fd)
-        finally: os.close(fd)
-        _copy_bound_input(request_path, area / 'acceptance-request.json', 0o640, 0, account.pw_gid, hashlib.sha256(request_bytes).hexdigest())
-        oracle_fault = None
-        if fault_ledger is not None:
-            oracle_fault = output / 'fault-ledger.jsonl'
-            _copy_bound_input(fault_ledger, oracle_fault, 0o600, os.geteuid(), account.pw_gid, request['inputs']['fault_ledger_sha256'])
-        for directory in (area, output, self.work):
-            fd=os.open(directory, os.O_RDONLY|os.O_DIRECTORY)
-            try: os.fsync(fd)
-            finally: os.close(fd)
-        result = output / 'result.json'
-        unit = 'hat-' + prefix + '-' + self.operation['id'] + '-' + phase
-        argv = ['systemd-run', '--unit='+unit, '--wait', '--collect', '--pipe',
-                '--property=User=hat-oracle', '--property=EnvironmentFile=/etc/hat-oracle/backup.env',
-                '--property=NoNewPrivileges=yes', '--property=RuntimeMaxSec=240', '--property=KillMode=control-group',
-                'python3', '/opt/hat-oracle/restore_baseline.py', '--root', str(output),
-                '--acceptance-request', str(area/'acceptance-request.json'), '--config', str(area/'replica.yml'),
-                '--ledger', str(area/'ledger.jsonl'), '--support', '/var/lib/hat-oracle/support',
-                '--binaries', '/opt/hat-oracle/bin', '--result', str(result)]
-        if oracle_fault is not None: argv += ['--fault-ledger', str(oracle_fault)]
-        expected = [(ledger_path, 0, account.pw_gid, 0o600, 4 << 20),
-                    (area/'replica.yml', 0, account.pw_gid, 0o640, 1 << 20),
-                    (area/'acceptance-request.json', 0, account.pw_gid, 0o640, 1 << 20)]
-        if oracle_fault is not None: expected.append((oracle_fault, os.geteuid(), account.pw_gid, 0o600, 4 << 20))
-        held = [descriptor.DescriptorAuthority.open_file(
-                    path, trusted_root='/', trusted_uids={0, os.geteuid(), account.pw_uid},
-                    expected_uid=uid, expected_gid=gid, expected_mode=mode,
-                    expected_nlink=1, limit=limit)
-                for path, uid, gid, mode, limit in expected]
+        held = []
         try:
+            if request['phase'] != phase or request['positions'] != positions:
+                raise ValueError('restore request does not match locked phase')
+            if (request['profile'] == 'recovery-comparison') != (fault_ledger is not None):
+                raise ValueError('fault ledger does not match restore profile')
+            config_raw = replica_config.encode() if isinstance(replica_config, str) else bytes(replica_config)
+            if hashlib.sha256(config_raw).hexdigest() != request['inputs']['replica_config_sha256']:
+                raise ValueError('replica configuration changed')
+            authority = request['inputs']['ledger_authority']
+            support_names = tuple(request['inputs']['support'])
+            binary_names = tuple(request['inputs']['binaries'])
+            ledger_path = Path(authority['ledger']['path'])
+            if ledger_path.absolute() != Path(selected_ledger).absolute():
+                raise ValueError('selected ledger differs from authority')
+            identity = tuple(authority['ledger'][key] for key in ('device','inode','mode','uid','gid','links','bytes'))
+            if not ledger_path.is_absolute():
+                raise ValueError('authorized ledger is unavailable')
+            with descriptor.DescriptorAuthority.open_file(
+                    ledger_path, trusted_root='/', trusted_uids={0, os.geteuid()},
+                    expected_uid=authority['ledger']['uid'], expected_gid=authority['ledger']['gid'],
+                    expected_mode=authority['ledger']['mode'], expected_nlink=authority['ledger']['links'],
+                    expected_size=authority['ledger']['bytes'], expected_sha256=authority['ledger']['sha256'],
+                    limit=4 << 20) as authorized_ledger:
+                if request['profile'] != 'fresh-writes':
+                    recovery._protected_ledger(authorized_ledger.read())
+            account = pwd.getpwnam('hat-oracle')
+            prefix = 'd2' if (self.operation['source'], self.operation['target']) == ('A', 'B') else 'd3'
+            area = Path('/var/lib/hat-oracle') / (prefix + '-' + self.operation['id'] + '-' + phase)
+            oracle_directory(area); os.chown(area, 0, account.pw_gid)
+            output = area / 'work'; output.mkdir(mode=0o700); os.chown(output, account.pw_uid, account.pw_gid)
+            # Support and binaries are fixed installed inputs; copying them would widen the trust boundary.
+            _copy_bound_input(ledger_path, area / 'ledger.jsonl', 0o600, 0, account.pw_gid, authority['ledger']['sha256'], identity)
+            # The config is already an authorized raw byte value; write it only after all preflight checks.
+            if not (area / 'replica.yml').exists():
+                fd = os.open(area / 'replica.yml', os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o640)
+                try:
+                    os.write(fd, config_raw); os.fchmod(fd, 0o640); os.fchown(fd, 0, account.pw_gid); os.fsync(fd)
+                finally: os.close(fd)
+            request_path = self.work / (phase + '-acceptance-request.json')
+            fd = os.open(request_path, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600)
+            try: os.write(fd, request_bytes); os.fsync(fd)
+            finally: os.close(fd)
+            _copy_bound_input(request_path, area / 'acceptance-request.json', 0o640, 0, account.pw_gid, hashlib.sha256(request_bytes).hexdigest())
+            oracle_fault = None
+            if fault_ledger is not None:
+                oracle_fault = output / 'fault-ledger.jsonl'
+                _copy_bound_input(fault_ledger, oracle_fault, 0o600, os.geteuid(), account.pw_gid, request['inputs']['fault_ledger_sha256'])
+            for directory in (area, output, self.work):
+                fd=os.open(directory, os.O_RDONLY|os.O_DIRECTORY)
+                try: os.fsync(fd)
+                finally: os.close(fd)
+            result = output / 'result.json'
+            unit = 'hat-' + prefix + '-' + self.operation['id'] + '-' + phase
+            argv = ['systemd-run', '--unit='+unit, '--wait', '--collect', '--pipe',
+                    '--property=User=hat-oracle', '--property=EnvironmentFile=/etc/hat-oracle/backup.env',
+                    '--property=NoNewPrivileges=yes', '--property=RuntimeMaxSec=240', '--property=KillMode=control-group',
+                    'python3', '/opt/hat-oracle/restore_baseline.py', '--root', str(output),
+                    '--acceptance-request', str(area/'acceptance-request.json'), '--config', str(area/'replica.yml'),
+                    '--ledger', str(area/'ledger.jsonl'), '--support', '/var/lib/hat-oracle/support',
+                    '--binaries', '/opt/hat-oracle/bin', '--result', str(result)]
+            if oracle_fault is not None: argv += ['--fault-ledger', str(oracle_fault)]
+            expected = [(ledger_path, 0, account.pw_gid, 0o600, 4 << 20),
+                        (area/'replica.yml', 0, account.pw_gid, 0o640, 1 << 20),
+                        (area/'acceptance-request.json', 0, account.pw_gid, 0o640, 1 << 20)]
+            if oracle_fault is not None: expected.append((oracle_fault, os.geteuid(), account.pw_gid, 0o600, 4 << 20))
+            held = _open_held_inputs(expected, {0, os.geteuid(), account.pw_uid})
             self.command(argv, timeout=270)
             self._recheck_installed_manifest(
                 Path('/var/lib/hat-oracle/support'), support_names, installed_holds)
@@ -1270,9 +1287,12 @@ class ControlIO:
             self._recheck_installed_manifest(
                 Path('/opt/hat-oracle/bin'), binary_names, installed_holds)
             return value
+
         finally:
-            for item in reversed(held): item.close()
-            for item in reversed(installed_holds): item.close()
+            for item in reversed(held):
+                item.close()
+            for item in reversed(installed_holds):
+                item.close()
 
     def verify_url(self, ledger):
         from demo_smoke import verify_restore
