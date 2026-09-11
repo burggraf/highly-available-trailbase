@@ -887,7 +887,7 @@ def recover(config, *, control_module=None, io_factory=None,
             _cut_report(compared)
             if compared['request']['positions'] != state['cut'] or compared['signature'] != state['restore']['signature']:
                 raise RuntimeError('candidate and independent restored images differ')
-            _fault_outcomes(compared.get('fault_outcomes'), state['events'])
+            _fault_outcomes(compared['checks'].get('fault_outcomes'), state['events'])
             state['comparison'] = compared
             return compared
 
