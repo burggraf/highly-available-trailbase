@@ -1804,6 +1804,7 @@ class ControlIO:
 
 
 def _validate_verification_baseline_recheck(previous, actual, operation):
+    import recovery
     # The recheck is the original baseline request with only its mandated
     # phase transition.  Comparing the complete request prevents swapping
     # input identities while preserving positions/signatures.
