@@ -15,10 +15,11 @@ def canonical_json(value):
 def acceptance_result(operation, phase, positions, signature=None, checks=None):
     recovery_compare = phase == 'compare' and operation['source'] == 'B'
     profile = 'recovery-comparison' if recovery_compare else {
-        'compare': 'comparison', 'baseline': 'baseline',
+        'compare': 'comparison', 'reconciled-compare': 'comparison',
+        'baseline': 'baseline', 'verification-baseline': 'baseline',
         'new-writes': 'fresh-writes',
     }[phase]
-    epoch = operation['source_epoch'] if phase == 'compare' else operation['new_epoch']
+    epoch = operation['source_epoch'] if phase in ('compare', 'reconciled-compare') else operation['new_epoch']
     origin = ('current-verify-exclusive' if phase == 'new-writes' else
               'd3-recovery-input' if operation['source'] == 'B' else 'd2-preflight')
     support = {name: 'b' * 64 for name in SUPPORT}

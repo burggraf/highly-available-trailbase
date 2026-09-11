@@ -117,13 +117,18 @@ class TransitionTests(unittest.TestCase):
             root=Path(tmp).resolve();cut=dict(main=1,session=1,aux=1);newcut=dict(main=2,session=2,aux=2)
             with m.Journal(root) as j:
                 op=j.begin('A','B','d1-old')
-                for phase in m.PHASES[:9]:j.step(phase,lambda:{'positions':cut})
+                baseline = acceptance_result(op, 'baseline', cut)
+                for phase in m.PHASES[:9]:
+                    evidence = baseline if phase == 'baseline' else {'positions':cut}
+                    j.step(phase, lambda evidence=evidence: evidence)
                 def fail():raise RuntimeError('listener not ready')
                 with self.assertRaises(RuntimeError):j.step('verify',fail)
                 before=j.db.execute('SELECT * FROM steps ORDER BY rowid').fetchall()
             with m.Journal(root) as j:
                 with self.assertRaises(RuntimeError):j.comparison_boundary(op['id'])
                 result=dict(writer='B',epoch=op['new_epoch'],positions=newcut,
+                            baseline_recheck=acceptance_result(
+                                op, 'verification-baseline', cut, signature=baseline['signature']),
                             new_writes=acceptance_result(op,'new-writes',newcut))
                 for patch in ({'epoch':'d1-wrong'},{'positions':cut},{'new_writes':{'auth_and_records':'FAIL'}}):
                     with self.assertRaises(ValueError):j.accept_verification(op['id'],result|patch)
