@@ -1229,23 +1229,22 @@ class ControlIO:
             area = Path('/var/lib/hat-oracle') / (prefix + '-' + self.operation['id'] + '-' + phase)
             oracle_directory(area); os.chown(area, 0, account.pw_gid)
             output = area / 'work'; output.mkdir(mode=0o700); os.chown(output, account.pw_uid, account.pw_gid)
+            # The config is already an authorized raw byte value; write it only after all preflight checks.
+            fd = os.open(area / 'replica.yml', os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o640)
+            try:
+                os.write(fd, config_raw); os.fchmod(fd, 0o640); os.fchown(fd, 0, account.pw_gid); os.fsync(fd)
+            finally: os.close(fd)
             # Support and binaries are fixed installed inputs; copying them would widen the trust boundary.
             _copy_bound_input(ledger_path, area / 'ledger.jsonl', 0o600, 0, account.pw_gid, authority['ledger']['sha256'], identity)
-            # The config is already an authorized raw byte value; write it only after all preflight checks.
-            if not (area / 'replica.yml').exists():
-                fd = os.open(area / 'replica.yml', os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o640)
-                try:
-                    os.write(fd, config_raw); os.fchmod(fd, 0o640); os.fchown(fd, 0, account.pw_gid); os.fsync(fd)
-                finally: os.close(fd)
+            oracle_fault = None
+            if fault_ledger is not None:
+                oracle_fault = area / 'fault-ledger.jsonl'
+                _copy_bound_input(fault_ledger, oracle_fault, 0o600, os.geteuid(), account.pw_gid, request['inputs']['fault_ledger_sha256'])
             request_path = self.work / (phase + '-acceptance-request.json')
             fd = os.open(request_path, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600)
             try: os.write(fd, request_bytes); os.fsync(fd)
             finally: os.close(fd)
             _copy_bound_input(request_path, area / 'acceptance-request.json', 0o640, 0, account.pw_gid, hashlib.sha256(request_bytes).hexdigest())
-            oracle_fault = None
-            if fault_ledger is not None:
-                oracle_fault = output / 'fault-ledger.jsonl'
-                _copy_bound_input(fault_ledger, oracle_fault, 0o600, os.geteuid(), account.pw_gid, request['inputs']['fault_ledger_sha256'])
             for directory in (area, output, self.work):
                 fd=os.open(directory, os.O_RDONLY|os.O_DIRECTORY)
                 try: os.fsync(fd)

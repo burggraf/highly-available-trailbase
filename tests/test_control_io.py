@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'hat'))
 import control
+import recovery
 
 
 class JournalStub:
@@ -161,7 +162,7 @@ class ControlIOTests(unittest.TestCase):
                 with patch.object(io, 'command', side_effect=RuntimeError('stop')) as command, \
                      patch.object(control.pwd, 'getpwnam', return_value=type('Account', (), {'pw_uid': os.geteuid(), 'pw_gid': os.getegid()})()), \
                      patch.object(control.descriptor.DescriptorAuthority, 'open_file', return_value=authorized), \
-                     patch.object(control.recovery, '_protected_ledger'), \
+                     patch.object(recovery, '_protected_ledger'), \
                      patch.object(control, 'oracle_directory'), patch.object(Path, 'mkdir'), \
                      patch.object(control.os, 'chown'), patch.object(control.os, 'open', side_effect=opened), \
                      patch.object(control.os, 'write'), patch.object(control.os, 'fchmod'), patch.object(control.os, 'fchown'), \
@@ -183,7 +184,7 @@ class ControlIOTests(unittest.TestCase):
         with patch.object(io, 'command') as command, \
              patch.object(control.pwd, 'getpwnam', return_value=type('Account', (), {'pw_uid': os.geteuid(), 'pw_gid': os.getegid()})()), \
              patch.object(control.descriptor.DescriptorAuthority, 'open_file', return_value=authorized), \
-             patch.object(control.recovery, '_protected_ledger'), patch.object(control, 'oracle_directory'), \
+             patch.object(recovery, '_protected_ledger'), patch.object(control, 'oracle_directory'), \
              patch.object(Path, 'mkdir'), patch.object(Path, 'exists', return_value=True), \
              patch.object(control.os, 'chown'), patch.object(control.os, 'open', side_effect=FileExistsError), \
              patch.object(control, '_copy_bound_input') as copied:
