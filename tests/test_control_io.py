@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -67,6 +68,31 @@ class ControlIOTests(unittest.TestCase):
         self.assertEqual(list(root.glob('*.stdout')), [])
         self.assertEqual(list(root.glob('*.stderr')), [])
         self.assertEqual(list(root.glob('*.outcome.json')), [])
+
+    def test_restore_fsync_boundary_failure_preserves_created_request(self):
+        io, root, _ = self.make_io()
+        seen = []
+        def fail(label, path):
+            seen.append((label, Path(path).name))
+            if label == 'acceptance-request.file':
+                raise RuntimeError('fsync boundary')
+        io._before_fsync = lambda label, path: seen.append(('before', label))
+        io._after_fsync = fail
+        with self.assertRaisesRegex(RuntimeError, 'fsync boundary'):
+            io._durable_bytes(root / 'acceptance-request.json', b'{}', label='acceptance-request')
+        self.assertEqual((root / 'acceptance-request.json').read_bytes(), b'{}')
+        self.assertEqual(seen[0], ('before', 'acceptance-request.file'))
+
+    def test_restore_copy_boundary_hook_is_private_and_preserves_source(self):
+        io, root, _ = self.make_io()
+        source = root / 'source.json'; source.write_bytes(b'copy'); source.chmod(0o600)
+        destination = root / 'destination.json'
+        io._before_fsync = lambda label, path: (_ for _ in ()).throw(RuntimeError('copy fsync')) \
+            if label == 'copy.file' else None
+        with self.assertRaisesRegex(RuntimeError, 'copy fsync'):
+            io._copy_bound(source, destination, 0o600, os.geteuid(), os.getegid(), hashlib.sha256(b'copy').hexdigest())
+        self.assertEqual(source.read_bytes(), b'copy')
+        self.assertTrue(destination.exists())
 
     def test_command_runs_only_safe_local_subprocess_integration(self):
         io, _, _ = self.make_io()
