@@ -4,6 +4,7 @@ import argparse
 from contextlib import closing
 import datetime
 import descriptor
+import client
 import fcntl
 import hashlib
 import json
@@ -385,15 +386,33 @@ class Journal:
         return dict(operation),previous
 
     def accept_verification(self, ident, result):
+        import recovery
         from transition import validate_cut
         operation,previous=self.verification_boundary(ident)
-        validate_cut(result.get('positions'))
-        proof=result.get('new_writes',{})
-        if (result.get('writer')!='B' or result.get('epoch')!=operation['new_epoch']
-                or proof.get('request',{}).get('positions')!=result['positions']
-                or proof.get('checks',{}).get('records')!='PASS' or proof.get('checks',{}).get('authentication')!='PASS'
-                or any(result['positions'][db]<=pos for db,pos in previous['baseline']['positions'].items())):
-            raise ValueError('verification lacks fresh-epoch new-write restore proof')
+        if not isinstance(result, dict) or set(result) != {'writer','epoch','positions','baseline_recheck','new_writes'}:
+            raise ValueError('verification evidence shape differs')
+        validate_cut(result['positions'])
+        baseline = result['baseline_recheck']
+        fresh = result['new_writes']
+        recovery.validate_acceptance_result(baseline, baseline['request'], operation)
+        recovery.validate_acceptance_result(fresh, fresh['request'], operation)
+        expected = previous['baseline']
+        if (result['writer']!='B' or result['epoch']!=operation['new_epoch']
+                or baseline['request'].get('phase')!='verification-baseline'
+                or baseline['request'].get('source')!=operation['source']
+                or baseline['request'].get('target')!=operation['target']
+                or baseline['request'].get('profile')!='baseline'
+                or baseline['request'].get('epoch')!=operation['new_epoch']
+                or baseline['request'].get('positions')!=expected['positions']
+                or baseline.get('signature')!=expected['signature']
+                or fresh['request'].get('phase')!='new-writes'
+                or fresh['request'].get('source')!=operation['source']
+                or fresh['request'].get('target')!=operation['target']
+                or fresh['request'].get('profile')!='fresh-writes'
+                or fresh['request'].get('epoch')!=operation['new_epoch']
+                or fresh['request'].get('positions')!=result['positions']
+                or any(result['positions'][db]<=pos for db,pos in expected['positions'].items())):
+            raise ValueError('verification evidence does not reconcile baseline and fresh writes')
         with self.db:
             self.db.execute('INSERT INTO steps VALUES(?,?,?,?,?)',(ident,9,'verify','done',json.dumps(result,allow_nan=False)))
         self.operation=operation;self.next=10;self.pending=False
@@ -1340,7 +1359,13 @@ class ControlIO:
                     expected_uid=account.pw_uid, expected_gid=account.pw_gid,
                     expected_mode=0o600, expected_nlink=1, limit=4 << 20) as result_authority:
                 result_raw = result_authority.read()
+                events = None
+                if request['profile'] == 'recovery-comparison':
+                    # Reparse the controller-held sealed ledger independently of oracle output.
+                    events = client.read_closed_ledger(fault_ledger, self.operation['source_epoch'])
                 value = recovery.parse_acceptance_result(result_raw, request, self.operation)
+                if events is not None:
+                    recovery.validate_fault_outcomes(value['checks']['fault_outcomes'], events)
                 retained = self.work / (phase + '-acceptance-result.json')
                 _copy_bound_input(result, retained, 0o600, account.pw_uid, os.getegid(), result_authority.sha256)
                 result_authority.recheck()
@@ -1507,13 +1532,20 @@ def switchover(config, reconcile=None, verification_only=False):
                 node.validate_support(Path('/var/lib/hat-oracle/support'),current['config']['support'])
                 for binary,expected in current['config']['binaries'].items():
                     if hashlib.sha256((Path('/opt/hat-oracle/bin')/binary).read_bytes()).hexdigest()!=expected:raise RuntimeError('oracle release changed')
-                oracle('verification-baseline',current['replica_config'],previous['baseline']['positions'],ledger)
+                baseline_recheck=oracle('verification-baseline',current['replica_config'],previous['baseline']['positions'],ledger)
+                if (baseline_recheck['request']['phase'] != 'verification-baseline'
+                        or baseline_recheck['request']['profile'] != 'baseline'
+                        or baseline_recheck['request']['epoch'] != operation['new_epoch']
+                        or baseline_recheck['request']['positions'] != previous['baseline']['positions']
+                        or baseline_recheck['signature'] != previous['baseline']['signature']):
+                    raise RuntimeError('verification baseline recheck differs')
                 archived=work/'failure.before-verification.json'
                 if archived.exists():raise RuntimeError('verification failure archive exists')
                 failure.rename(archived)
                 fd=os.open(work,os.O_RDONLY|os.O_DIRECTORY);os.fsync(fd);os.close(fd)
                 start_ingress(digest)
                 value=verify();value['reconciliation_fence']=fresh_fence
+                value['baseline_recheck'] = baseline_recheck
                 journal.accept_verification(reconcile,value)
             elif reconcile:
                 private_file(maintenance)

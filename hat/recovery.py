@@ -117,7 +117,9 @@ def classify_fault(events, data):
                     category='rejected'
                 else:category='unacknowledged_recovered' if found else 'ambiguous'
                 result[category].append('/'.join(key))
-    return {name:sorted(values) for name,values in result.items()}
+    result = {name: sorted(values) for name, values in result.items()}
+    validate_fault_outcomes(result, events)
+    return result
 
 
 INPUT_FIELDS = {
@@ -363,7 +365,7 @@ def validate_fault_outcomes(value, events):
     except (KeyError,TypeError,AttributeError) as exc: raise ValueError('invalid fault outcomes') from exc
 
 
-def _validate_acceptance_result(result, request, operation):
+def _validate_acceptance_result(result, request, operation, events=None):
     validate_acceptance_request(request, operation)
     if not isinstance(result,dict) or set(result) != {'schema','request','request_sha256','databases','signature','checks'} or result['schema'] != _ACCEPTANCE_SCHEMA or result['request'] != request or result['request_sha256'] != hashlib.sha256(canonical_json(request)).hexdigest():
         raise ValueError('invalid restore acceptance result')
@@ -385,14 +387,16 @@ def _validate_acceptance_result(result, request, operation):
         expected=set(request['inputs']['fault_operations']); flattened=[v for k in categories for v in outcomes[k]]
         if len(flattened) != len(set(flattened)) or set(flattened) != expected or outcomes['lost']:
             raise ValueError('invalid recovery fault outcome binding')
+        if events is not None:
+            validate_fault_outcomes(outcomes, events)
         if result['checks']['records'] != 'PASS' or result['checks']['authentication'] != 'PASS': raise ValueError('invalid restore checks')
     elif result['checks'] != {'records':'PASS','authentication':'PASS'}:
         raise ValueError('invalid restore checks')
     return result
 
 
-def validate_acceptance_result(result, request, operation):
-    try: return _validate_acceptance_result(result, request, operation)
+def validate_acceptance_result(result, request, operation, events=None):
+    try: return _validate_acceptance_result(result, request, operation, events)
     except ValueError: raise
     except (KeyError,TypeError,AttributeError,OverflowError) as exc:
         raise ValueError('invalid restore acceptance result') from exc
