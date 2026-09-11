@@ -228,6 +228,8 @@ class RecoveryTests(unittest.TestCase):
                         'signature':{db:'b'*64 for db in ('main','session','aux')},'checks':checks}
                 self.assertEqual(m.validate_acceptance_result(result,request,operation),result)
                 self.assertEqual(m.parse_acceptance_result(m.canonical_json(result),request,operation),result)
+                with self.assertRaises(ValueError):
+                    m.validate_acceptance_result(result | {'databases': result['databases'] | {'main': result['databases']['main'] | {'position': True}}}, request, operation)
 
     def test_acceptance_result_rejects_legacy_and_mismatch(self):
         m=self.module(); operation={'id':'a'*32,'source':'A','target':'B','source_epoch':'d1-source','new_epoch':'d1-'+'a'*32}

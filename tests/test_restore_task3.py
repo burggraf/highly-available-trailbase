@@ -107,6 +107,8 @@ class RestoreTask3Tests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'restore position differs'):
             restore_baseline._verify_restore_position(b'{"txid":"0000000000000002"}', 1)
         restore_baseline._verify_restore_position(b'{"txid":"0000000000000001"}', 1)
+        with self.assertRaisesRegex(ValueError, 'restore position differs'):
+            restore_baseline._verify_restore_position(b'completed successfully', 1)
 
     def test_result_signature_uses_normative_function_with_held_database_descriptors(self):
         import restore_baseline
