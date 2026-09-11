@@ -121,16 +121,26 @@ def run(args, work, timeout=90, env=None):
 
 
 def validate_restore_evidence(output, cut):
-    """Require bounded, explicitly labeled evidence for every requested position."""
+    """Require one bounded, coherent labeled record per requested position."""
     try:
         text = bytes(output).decode('ascii')
-        found = re.findall(
-            r'\btxid\s*[:=]\s*([0-9a-fA-F]+)\b[\s\S]*?\bto_txid\s*[:=]\s*([0-9a-fA-F]+)\b'
-            r'[\s\S]*?\bposition\s*[:=]\s*(0x[0-9a-fA-F]+|[0-9]+)\b', text, re.IGNORECASE)
+        records = []
+        pattern = re.compile(
+            r'^\s*txid\s*[:=]\s*([0-9a-fA-F]+)\s+'
+            r'to_txid\s*[:=]\s*([0-9a-fA-F]+)\s+'
+            r'position\s*[:=]\s*(0x[0-9a-fA-F]+|[0-9]+)\s*$', re.IGNORECASE)
+        for line in text.splitlines():
+            if not line.strip():
+                continue
+            match = pattern.fullmatch(line)
+            if not match:
+                raise ValueError
+            txid, to_txid, position = match.groups()
+            records.append((int(txid, 16), int(to_txid, 16), int(position, 0)))
         expected = sorted(cut.values())
-        actual = sorted((int(txid, 16), int(to_txid, 16), int(position, 0))
-                        for txid, to_txid, position in found)
-        if len(actual) != len(expected) or sorted((txid, txid, position) for txid, position in zip(expected, expected)) != actual:
+        if len(records) != len(expected) or len({row[2] for row in records}) != len(records):
+            raise ValueError
+        if sorted(records) != sorted((position, position, position) for position in expected):
             raise ValueError
     except (TypeError, ValueError, UnicodeError):
         raise RuntimeError('restore cut evidence unavailable') from None

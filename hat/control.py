@@ -1916,8 +1916,12 @@ def switchover(config, reconcile=None, verification_only=False):
                 if all(value['status']['positions'][db] > pos for db,pos in state['baseline']['request']['positions'].items()): break
                 if time.monotonic()>deadline: raise RuntimeError('new writes not confirmed published')
                 time.sleep(1)
+            baseline_recheck = oracle('verification-baseline', state['new']['replica_config'],
+                                      state['baseline']['request']['positions'], ledger)
+            _validate_verification_baseline_recheck(state['baseline'], baseline_recheck, operation)
             evidence=oracle('new-writes',value['replica_config'],value['status']['positions'],fresh)
-            return dict(writer='B',positions=value['status']['positions'],new_writes=evidence)
+            return dict(writer='B', epoch=operation['new_epoch'], positions=value['status']['positions'],
+                        baseline_recheck=baseline_recheck, new_writes=evidence)
         actions=(preflight,close_ingress,quiesce,power_off,freeze,compare,activate,baseline,route,verify)
         try:
             if verification_only:
