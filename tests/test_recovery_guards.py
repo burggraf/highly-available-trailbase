@@ -308,6 +308,25 @@ class RecoveryGuardTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):self.m.reconcile_existing(journal,maintenance,lambda:stopped.append(True),ingress)
             self.assertEqual(stopped,[True]);self.assertTrue(maintenance.exists())
 
+    def test_ingress_finalizer_rejects_d3_marker_permit_failure_and_ingress_interleavings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve(); journal,operation,ingress=self._d3(root,count=8)
+            maintenance=self._maintenance(root,operation); permit=root/'permit'
+            value={'operation':operation['id'],'boot_id':'boot','pid':os.getpid(),
+                   'birth':'live-birth','config_sha':hashlib.sha256(ingress.read_bytes()).hexdigest()}
+            permit.write_text(json.dumps(value)); permit.chmod(0o600); journal.__exit__(None,None,None)
+            args=(root,maintenance,permit,ingress,'boot')
+            with mock.patch.object(self.m,'process_identity',side_effect=lambda pid:'live-birth' if pid==os.getpid() else None):
+                self.assertTrue(self.m.ingress_allowed(*args))
+                mutations=(lambda: permit.write_bytes(permit.read_bytes()+b'x'),
+                           lambda: maintenance.unlink(),
+                           lambda: (root/operation['id']/'failure.json').write_bytes(b'x'),
+                           lambda: ingress.write_bytes(ingress.read_bytes()+b'x'))
+                for mutate in mutations:
+                    self.m._INGRESS_PRE_FINALIZE_HOOK=mutate
+                    try: self.assertFalse(self.m.ingress_allowed(*args))
+                    finally: self.m._INGRESS_PRE_FINALIZE_HOOK=None
+
     def test_d3_bootstrap_requires_exact_boundary_and_live_private_permit(self):
         for boundary in ('route-intent','verify-intent'):
             with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as tmp:

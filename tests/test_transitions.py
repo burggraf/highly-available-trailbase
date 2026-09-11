@@ -297,6 +297,35 @@ class TransitionTests(unittest.TestCase):
             with self.assertRaises((ValueError,RuntimeError)):
                 with m.Journal(root): pass
 
+    def test_ingress_snapshot_finalizer_rejects_interleaving_for_empty_and_completed(self):
+        m=self.module()
+        cases=('no-journal','empty','completed')
+        for case in cases:
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp).resolve(); ingress=root/'proxy.cfg'; ingress.write_text('route B\\n')
+                maintenance=root/'maintenance'; permit=root/'permit'
+                if case == 'empty':
+                    with m.Journal(root): pass
+                elif case == 'completed':
+                    digest=hashlib.sha256(ingress.read_bytes()).hexdigest()
+                    with m.Journal(root) as journal:
+                        operation=journal.begin('A','B','d1-old')
+                        for phase in m.PHASES:
+                            evidence={'writer':'B','epoch':operation['new_epoch'],'config_sha':digest} if phase=='route' else {}
+                            journal.step(phase,lambda evidence=evidence:evidence)
+                        journal.finish()
+                args=(root,maintenance,permit,ingress,'boot')
+                self.assertTrue(m.ingress_allowed(*args))
+                for suffix in ('-wal','-shm','-journal'):
+                    def mutate(suffix=suffix): (root/('journal.db'+suffix)).write_bytes(b'x')
+                    m._INGRESS_PRE_FINALIZE_HOOK=mutate
+                    try: self.assertFalse(m.ingress_allowed(*args),suffix)
+                    finally: m._INGRESS_PRE_FINALIZE_HOOK=None
+                def mutate_ingress(): ingress.write_bytes(ingress.read_bytes()+b'x')
+                m._INGRESS_PRE_FINALIZE_HOOK=mutate_ingress
+                try: self.assertFalse(m.ingress_allowed(*args))
+                finally: m._INGRESS_PRE_FINALIZE_HOOK=None
+
     def test_ingress_allowed_rejects_journal_or_config_replacement_during_read(self):
         m=self.module()
         with tempfile.TemporaryDirectory() as tmp:
