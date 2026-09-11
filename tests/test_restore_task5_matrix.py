@@ -107,6 +107,7 @@ class RealOracleFixture:
         self.stack.enter_context(patch.object(control, 'ORACLE_ROOT', self.oracle_root, create=True))
         self.stack.enter_context(patch.object(control, 'ORACLE_BIN_ROOT', self.binary_root, create=True))
         self.stack.enter_context(patch.object(control, 'ROOT_UID', os.geteuid(), create=True))
+        self.stack.enter_context(patch.object(control, 'ROOT_GID', os.getegid(), create=True))
         self.stack.enter_context(patch.object(recovery, 'CONTROLLER_ROOT', self.root, create=True))
         account = type('Account', (), {'pw_uid': os.geteuid(), 'pw_gid': os.getegid()})()
         self.stack.enter_context(patch.object(control.pwd, 'getpwnam', return_value=account))
@@ -169,7 +170,14 @@ class RealOracleFixture:
             ledger = previous / 'ledger.jsonl'
         else:
             ledger = self.work / 'ledger.jsonl'
-        ledger.write_bytes(b'protected-ledger\n')
+        rows = [{'auth_token': 'token', 'retained_refresh': 'retained', 'revoked_refresh': 'revoked'}]
+        for index, api in enumerate(('main_ops', 'aux_ops'), 1):
+            row = {'op_key': f'd1-current-{api.replace("_", "-")}', 'payload': 'protected'}
+            rows.extend(({'event': 'submitted', 'api': api, 'row': row, 'time_ns': index * 2},
+                         {'event': 'acknowledged', 'api': api, 'row': row, 'id': str(index),
+                          'time_ns': index * 2 + 1}))
+        rows.append({'event': 'smoke_pass'})
+        ledger.write_bytes(b''.join(recovery.canonical_json(row) + b'\n' for row in rows))
         ledger.chmod(0o600)
         return ledger
 
@@ -513,9 +521,7 @@ class RestoreTask5Matrix(unittest.TestCase):
                 auth = Authority(); auth.read = lambda: result_bytes; auth.sha256 = hashlib.sha256(result_bytes).hexdigest(); return auth
             return Authority()
         oracle_base = self.root/'oracle-root'; oracle_base.mkdir(mode=0o700)
-        original_path = control.Path
-        def redirected(value, *args): return oracle_base if value == '/var/lib/hat-oracle' else original_path(value, *args)
-        with patch.object(control, 'Path', side_effect=redirected), patch.object(control.pwd, 'getpwnam', return_value=type('A', (), {'pw_uid':os.geteuid(),'pw_gid':os.getegid()})()), patch.object(control.os, 'chown'), patch.object(control.os, 'fchown'), patch.object(control.descriptor.DescriptorAuthority, 'open_file', side_effect=open_file), patch.object(control, '_open_held_inputs', return_value=[]), patch.object(io, '_reopen_exact_bytes'), patch.object(io, '_recheck_installed_manifest'), patch.object(io, '_copy_bound', side_effect=fake_copy), patch.object(io, 'command', side_effect=fake_command), patch.object(recovery, '_protected_ledger'), patch.object(recovery, 'parse_acceptance_result', return_value=base):
+        with patch.object(control, 'ORACLE_ROOT', oracle_base), patch.object(control.pwd, 'getpwnam', return_value=type('A', (), {'pw_uid':os.geteuid(),'pw_gid':os.getegid()})()), patch.object(control.os, 'chown'), patch.object(control.os, 'fchown'), patch.object(control.descriptor.DescriptorAuthority, 'open_file', side_effect=open_file), patch.object(control, '_open_held_inputs', return_value=[]), patch.object(io, '_reopen_exact_bytes'), patch.object(io, '_recheck_installed_manifest'), patch.object(io, '_copy_bound', side_effect=fake_copy), patch.object(io, 'command', side_effect=fake_command), patch.object(recovery, '_protected_ledger'), patch.object(recovery, 'parse_acceptance_result', return_value=base):
             value = io.oracle('compare', 'config', positions, ledger)
         self.assertEqual(value['request'], request); self.assertTrue((self.root/'compare-acceptance-result.json').exists())
 
@@ -644,10 +650,14 @@ class RestoreTask5Matrix(unittest.TestCase):
                                 fixture.area.rename(old_area)
                                 fixture.area.mkdir(mode=0o750)
                                 (fixture.area / 'work').mkdir(mode=0o700)
+                                for name in ('replica.yml', 'ledger.jsonl', 'fault-ledger.jsonl',
+                                             'acceptance-request.json'):
+                                    original = old_area / name
+                                    if original.exists():
+                                        replacement = fixture.area / name
+                                        replacement.write_bytes(original.read_bytes())
+                                        replacement.chmod(stat.S_IMODE(original.stat().st_mode))
                                 replacement = fixture.area / relative
-                                replacement.parent.mkdir(parents=True, exist_ok=True)
-                                replacement.write_bytes(raw)
-                                replacement.chmod(stat.S_IMODE((old_area / relative).stat().st_mode))
                                 preserved.extend((old_area / relative, replacement))
                         fixture.io._before_command_spawn = mutate
                         with fixture.popen(), self.assertRaises(ValueError):
@@ -728,6 +738,7 @@ class RestoreTask5Matrix(unittest.TestCase):
                 elif mutation == 'incomplete':
                     j.db.execute('UPDATE operations SET complete=0 WHERE id=?', (op['id'],))
                 elif mutation == 'intent':
+                    j.db.execute("DELETE FROM steps WHERE phase='route' AND status='intent'")
                     j.db.execute("UPDATE steps SET status='intent' WHERE phase='route'")
                 elif callable(mutation):
                     row = j.db.execute("SELECT evidence FROM steps WHERE phase='route' AND status='done'").fetchone()
@@ -757,7 +768,7 @@ class RestoreTask5Matrix(unittest.TestCase):
             value = {'writer':'B','epoch':op['new_epoch'],'config_sha':digest} if phase == 'route' else {}
             j.step(phase, lambda value=value: value)
         j.finish()
-        ingress.rename(root/'ingress.old'); ingress.write_bytes(b'route'); ingress.chmod(0o600)
+        ingress.rename(root/'ingress.old'); ingress.write_bytes(b'ROUTE'); ingress.chmod(0o600)
         with self.assertRaises(RuntimeError): control.current_writer(j, ingress)
         self.assertFalse(control.ingress_allowed(root, root/'maintenance', root/'permit', ingress, 'boot'))
         j.__exit__(None, None, None)

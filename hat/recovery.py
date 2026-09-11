@@ -134,6 +134,7 @@ _ACCEPTANCE_SCHEMA = 'hat-restore-acceptance-1'
 _AUTHORITY_SCHEMA = 'hat-restore-input-authority-1'
 _DBS = ('main', 'session', 'aux')
 _HEX64 = re.compile(r'[0-9a-f]{64}')
+CONTROLLER_ROOT = Path('/var/lib/hat-control')
 
 
 def canonical_json(value):
@@ -205,7 +206,8 @@ def derive_restore_profile(operation, phase, has_fault):
     except KeyError as exc: raise ValueError('unsupported restore acceptance phase') from exc
 
 
-def _authority(value, operation, profile, controller_root=Path('/var/lib/hat-control')):
+def _authority(value, operation, profile, controller_root=None):
+    controller_root = CONTROLLER_ROOT if controller_root is None else controller_root
     if (not isinstance(value, dict) or set(value) != {'schema','operation','origin','ledger','support','binaries'}
             or not isinstance(value.get('support'), dict) or not isinstance(value.get('binaries'), dict)):
         raise ValueError('invalid restore input authority')
@@ -246,7 +248,8 @@ def _authority(value, operation, profile, controller_root=Path('/var/lib/hat-con
         raise ValueError('invalid restore support authority')
 
 
-def _validate_acceptance_request(request, operation, controller_root=Path('/var/lib/hat-control')):
+def _validate_acceptance_request(request, operation, controller_root=None):
+    controller_root = CONTROLLER_ROOT if controller_root is None else controller_root
     operation = _acceptance_operation(operation)
     if not isinstance(request,dict) or set(request) != {'schema','operation','phase','source','target','epoch','positions','profile','inputs'}:
         raise ValueError('invalid restore acceptance request')
@@ -285,7 +288,7 @@ def _validate_acceptance_request(request, operation, controller_root=Path('/var/
     return request
 
 
-def validate_acceptance_request(request, operation, controller_root=Path('/var/lib/hat-control')):
+def validate_acceptance_request(request, operation, controller_root=None):
     try: return _validate_acceptance_request(request, operation, controller_root)
     except ValueError: raise
     except (KeyError,TypeError,AttributeError,OverflowError) as exc:
@@ -372,7 +375,7 @@ def validate_fault_outcomes(value, events):
 
 
 def _validate_acceptance_result(result, request, operation, events=None,
-                                controller_root=Path('/var/lib/hat-control')):
+                                controller_root=None):
     validate_acceptance_request(request, operation, controller_root)
     if not isinstance(result,dict) or set(result) != {'schema','request','request_sha256','databases','signature','checks'} or result['schema'] != _ACCEPTANCE_SCHEMA or result['request'] != request or result['request_sha256'] != hashlib.sha256(canonical_json(request)).hexdigest():
         raise ValueError('invalid restore acceptance result')
@@ -403,7 +406,7 @@ def _validate_acceptance_result(result, request, operation, events=None,
 
 
 def validate_acceptance_result(result, request, operation, events=None,
-                               controller_root=Path('/var/lib/hat-control')):
+                               controller_root=None):
     try: return _validate_acceptance_result(result, request, operation, events, controller_root)
     except ValueError: raise
     except (KeyError,TypeError,AttributeError,OverflowError) as exc:
