@@ -28,6 +28,46 @@ ROUTE_ENDPOINTS = {
     'A': {'writer':'127.0.0.1:14000', 'home':'127.0.0.1:14001'},
     'B': {'writer':'127.0.0.1:14003', 'home':'127.0.0.1:14002'},
 }
+RESTORE_CONTRACT = 'hat-restore-acceptance-1'
+LEGACY_RESTORE_CONTRACT = 'legacy'
+_OPERATIONS_LEGACY_SQL = '''CREATE TABLE operations (
+    id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL,
+    source_epoch TEXT NOT NULL, new_epoch TEXT NOT NULL UNIQUE,
+    complete INTEGER NOT NULL DEFAULT 0 CHECK(complete IN (0,1)))'''
+_OPERATIONS_SQL = _OPERATIONS_LEGACY_SQL[:-1] + ",\n    restore_contract TEXT NOT NULL DEFAULT 'legacy' CHECK(restore_contract IN ('legacy','hat-restore-acceptance-1')))"
+_STEPS_SQL = '''CREATE TABLE steps (
+    operation TEXT NOT NULL REFERENCES operations(id), position INTEGER NOT NULL,
+    phase TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('intent','done')),
+    evidence TEXT NOT NULL, PRIMARY KEY(operation,position,status))'''
+_UNFINISHED_SQL = 'CREATE UNIQUE INDEX one_unfinished ON operations(complete) WHERE complete=0'
+
+
+def _normalized_sql(value):
+    if not isinstance(value,str): return value
+    return ' '.join(value.split()).replace('( ','(').replace(' )',')')
+
+
+def _journal_schema(db):
+    """Return the exact recognized journal generation; unknown state refuses."""
+    if db.execute('PRAGMA quick_check').fetchone()!=('ok',):
+        raise ValueError('unrecognized or damaged journal; reconciliation required')
+    objects=db.execute("SELECT type,name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").fetchall()
+    expected={
+        ('index','one_unfinished',_normalized_sql(_UNFINISHED_SQL)),
+        ('table','steps',_normalized_sql(_STEPS_SQL)),
+    }
+    normalized={(kind,name,_normalized_sql(sql)) for kind,name,sql in objects}
+    operation=[item for item in normalized if item[:2]==('table','operations')]
+    if len(operation)!=1 or normalized-{operation[0]}!=expected:
+        raise ValueError('unrecognized or damaged journal; reconciliation required')
+    sql=operation[0][2]
+    if sql==_normalized_sql(_OPERATIONS_LEGACY_SQL): return LEGACY_RESTORE_CONTRACT
+    if sql!=_normalized_sql(_OPERATIONS_SQL):
+        raise ValueError('unrecognized or damaged journal; reconciliation required')
+    contracts={row[0] for row in db.execute('SELECT restore_contract FROM operations')}
+    if not contracts<={LEGACY_RESTORE_CONTRACT,RESTORE_CONTRACT}:
+        raise ValueError('unknown restore contract')
+    return RESTORE_CONTRACT
 
 
 def phase_plan(source, target):
@@ -65,33 +105,40 @@ class Journal:
             path = self.root/'journal.db'
             for suffix in ('', '-journal', '-wal', '-shm'):
                 candidate = self.root/('journal.db' + suffix)
-                if candidate.exists() or candidate.is_symlink(): private_file(candidate)
+                if candidate.exists() or candidate.is_symlink():
+                    private_file(candidate)
+                    if suffix in ('-wal','-shm'): raise ValueError('WAL journal state is not accepted')
             existing = path.exists()
             if existing:
                 if not path.stat().st_size: raise ValueError('empty existing journal; reconciliation required')
             else:
                 fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600); os.close(fd)
             self.db = sqlite3.connect(path, timeout=0)
-            if existing:
-                tables = {r[0] for r in self.db.execute("SELECT name FROM sqlite_schema WHERE type='table'")}
-                if tables != {'operations', 'steps'} or self.db.execute('PRAGMA quick_check').fetchone() != ('ok',):
-                    raise ValueError('unrecognized or damaged journal; reconciliation required')
-                self.db.execute('SELECT id,source,target,source_epoch,new_epoch,complete FROM operations LIMIT 0')
-                self.db.execute('SELECT operation,position,phase,status,evidence FROM steps LIMIT 0')
             self.db.execute('PRAGMA journal_mode=DELETE')
             self.db.execute('PRAGMA synchronous=EXTRA')
-            self.db.executescript('''
-                CREATE TABLE IF NOT EXISTS operations (
-                    id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL,
-                    source_epoch TEXT NOT NULL, new_epoch TEXT NOT NULL UNIQUE,
-                    complete INTEGER NOT NULL DEFAULT 0 CHECK(complete IN (0,1)));
-                CREATE UNIQUE INDEX IF NOT EXISTS one_unfinished ON operations(complete) WHERE complete=0;
-                CREATE TABLE IF NOT EXISTS steps (
-                    operation TEXT NOT NULL REFERENCES operations(id), position INTEGER NOT NULL,
-                    phase TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('intent','done')),
-                    evidence TEXT NOT NULL, PRIMARY KEY(operation,position,status));
-            ''')
+            changed=not existing
+            if existing:
+                kind=_journal_schema(self.db)
+                if kind==LEGACY_RESTORE_CONTRACT:
+                    self.db.execute('BEGIN IMMEDIATE')
+                    try:
+                        self.db.execute("ALTER TABLE operations ADD COLUMN restore_contract TEXT NOT NULL DEFAULT 'legacy' CHECK(restore_contract IN ('legacy','hat-restore-acceptance-1'))")
+                        if _journal_schema(self.db)!=RESTORE_CONTRACT: raise ValueError('journal migration differs')
+                        self.db.commit();changed=True
+                    except BaseException:
+                        self.db.rollback();raise
+            else:
+                self.db.executescript(_OPERATIONS_SQL+';\n'+_UNFINISHED_SQL+';\n'+_STEPS_SQL+';')
             self.db.execute('PRAGMA foreign_keys=ON')
+            if _journal_schema(self.db)!=RESTORE_CONTRACT: raise ValueError('journal schema differs')
+            if changed:
+                fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
+                try: os.fsync(fd)
+                finally: os.close(fd)
+                self.db.close();self.db=sqlite3.connect(path,timeout=0)
+                self.db.execute('PRAGMA journal_mode=DELETE');self.db.execute('PRAGMA synchronous=EXTRA')
+                self.db.execute('PRAGMA foreign_keys=ON')
+                if _journal_schema(self.db)!=RESTORE_CONTRACT: raise ValueError('journal reopen differs')
             self.database_identity = private_file(path)
             fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
             try: os.fsync(fd)
@@ -123,17 +170,18 @@ class Journal:
         ident = uuid.uuid4().hex
         operation = dict(id=ident, source=source, target=target, source_epoch=source_epoch, new_epoch='d1-'+ident)
         with self.db:
-            self.db.execute('INSERT INTO operations(id,source,target,source_epoch,new_epoch) VALUES(?,?,?,?,?)', tuple(operation.values()))
+            self.db.execute('INSERT INTO operations(id,source,target,source_epoch,new_epoch,restore_contract) VALUES(?,?,?,?,?,?)',
+                            (*operation.values(),RESTORE_CONTRACT))
         self.operation = operation; self.next = 0; self.pending = False
         return dict(operation)
 
     def step(self, phase, action):
         self.check_authority()
-        row=(self.db.execute('SELECT source,target,complete FROM operations WHERE id=?',(self.operation['id'],)).fetchone()
+        row=(self.db.execute('SELECT source,target,complete,restore_contract FROM operations WHERE id=?',(self.operation['id'],)).fetchone()
              if self.operation else None)
         plan=phase_plan(*row[:2]) if row and not row[2] else ()
         if (not self.operation or not row or row[:2]!=(self.operation['source'],self.operation['target'])
-                or self.pending or self.next >= len(plan) or plan[self.next] != phase):
+                or row[3]!=RESTORE_CONTRACT or self.pending or self.next >= len(plan) or plan[self.next] != phase):
             raise RuntimeError('out-of-order or uncertain step; no retry')
         self.pending = True
         with self.db:
@@ -149,8 +197,8 @@ class Journal:
     def _boundary(self, ident, position, direction=('A','B')):
         self.check_authority()
         if not isinstance(ident,str) or not re.fullmatch('[0-9a-f]{32}',ident): raise ValueError('invalid operation')
-        row=self.db.execute('SELECT id,source,target,source_epoch,new_epoch FROM operations WHERE id=? AND complete=0',(ident,)).fetchone()
-        if not row or row[1:3] != direction: raise RuntimeError('operation direction or identity differs')
+        row=self.db.execute('SELECT id,source,target,source_epoch,new_epoch,restore_contract FROM operations WHERE id=? AND complete=0',(ident,)).fetchone()
+        if not row or row[1:3] != direction or row[5]!=RESTORE_CONTRACT: raise RuntimeError('operation direction, identity, or restore contract differs')
         plan=phase_plan(*row[1:3])
         if not 0 <= position < len(plan): raise RuntimeError('invalid operation boundary')
         steps=self.db.execute('SELECT position,phase,status,evidence FROM steps WHERE operation=? ORDER BY rowid',(ident,)).fetchall()
@@ -159,7 +207,7 @@ class Journal:
             raise RuntimeError('not the exact pending '+plan[position]+' boundary')
         try: evidence={p:json.loads(e) for _,p,s,e in steps if s=='done'}
         except (TypeError,ValueError) as exc: raise RuntimeError('malformed operation evidence') from exc
-        return dict(zip(('id','source','target','source_epoch','new_epoch'),row)),evidence
+        return dict(zip(('id','source','target','source_epoch','new_epoch'),row[:5])),evidence
 
     def comparison_boundary(self, ident):
         return self._boundary(ident,5)
@@ -171,17 +219,17 @@ class Journal:
         self.check_authority()
         if self.operation: raise RuntimeError('journal already has an active operation')
         if not isinstance(ident,str) or not re.fullmatch('[0-9a-f]{32}',ident): raise ValueError('invalid operation')
-        row=self.db.execute('SELECT id,source,target,source_epoch,new_epoch FROM operations WHERE id=? AND complete=0',(ident,)).fetchone()
+        row=self.db.execute('SELECT id,source,target,source_epoch,new_epoch,restore_contract FROM operations WHERE id=? AND complete=0',(ident,)).fetchone()
         steps=self.db.execute('SELECT position,phase,status,evidence FROM steps WHERE operation=? ORDER BY rowid',(ident,)).fetchall()
         expected=[(i,p,s) for i,p in enumerate(D3_PHASES[:10]) for s in ('intent','done')]
         if boot_done: expected += [(10,'rejoin_boot',s) for s in ('intent','done')]
-        if (not row or row[1:3]!=('B','A') or [s[:3] for s in steps]!=expected
+        if (not row or row[1:3]!=('B','A') or row[5]!=RESTORE_CONTRACT or [s[:3] for s in steps]!=expected
                 or any(e!='{}' for _,_,status,e in steps if status=='intent')
                 or (self.root/ident/'failure.json').exists() or (self.root/ident/'failure.json').is_symlink()):
             raise RuntimeError('not the exact unused D3 rejoin boundary')
         try: previous={p:json.loads(e) for _,p,s,e in steps if s=='done'}
         except (TypeError,ValueError) as exc: raise RuntimeError('malformed operation evidence') from exc
-        operation=dict(zip(('id','source','target','source_epoch','new_epoch'),row))
+        operation=dict(zip(('id','source','target','source_epoch','new_epoch'),row[:5]))
         _validate_d3_proof(operation,previous)
         if boot_done:
             marker=self.root/ident/'reconciliation-rejoin-boot.json'
@@ -219,14 +267,14 @@ class Journal:
 
     def finish(self):
         self.check_authority()
-        row=(self.db.execute('SELECT source,target,complete FROM operations WHERE id=?',(self.operation['id'],)).fetchone()
+        row=(self.db.execute('SELECT source,target,complete,restore_contract FROM operations WHERE id=?',(self.operation['id'],)).fetchone()
              if self.operation else None)
         plan=phase_plan(*row[:2]) if row and not row[2] else ()
         steps=(self.db.execute('SELECT position,phase,status FROM steps WHERE operation=? ORDER BY rowid',(self.operation['id'],)).fetchall()
                if self.operation else [])
         expected=[(i,phase,status) for i,phase in enumerate(plan) for status in ('intent','done')]
         if (not self.operation or not row or row[:2]!=(self.operation['source'],self.operation['target'])
-                or self.pending or self.next != len(plan) or steps!=expected):
+                or row[3]!=RESTORE_CONTRACT or self.pending or self.next != len(plan) or steps!=expected):
             raise RuntimeError('cannot complete an unfinished transition')
         with self.db:
             self.db.execute('UPDATE operations SET complete=1 WHERE id=?', (self.operation['id'],))
@@ -285,8 +333,8 @@ def _validate_d3_proof(operation, evidence, verified=True):
 
 
 def _d3_serving_state(db, ident, digest, failure):
-    row=db.execute('SELECT source,target,new_epoch,complete FROM operations WHERE id=?',(ident,)).fetchone()
-    if not row or row[:2]!=('B','A') or row[3]: return False
+    row=db.execute('SELECT source,target,new_epoch,complete,restore_contract FROM operations WHERE id=?',(ident,)).fetchone()
+    if not row or row[:2]!=('B','A') or row[3] or row[4]!=RESTORE_CONTRACT: return False
     steps=db.execute('SELECT position,phase,status,evidence FROM steps WHERE operation=? ORDER BY rowid',(ident,)).fetchall()
     base=[(i,p,s) for i,p in enumerate(D3_PHASES[:10]) for s in ('intent','done')]
     tail=[(i,p,s) for i,p in enumerate(D3_PHASES[10:],10) for s in ('intent','done')]
@@ -320,9 +368,9 @@ def current_writer(journal, ingress):
     journal.check_authority()
     if journal.db.execute('SELECT 1 FROM operations WHERE complete=0').fetchone():
         raise RuntimeError('unfinished operation has no current writer authority')
-    row=journal.db.execute('SELECT id,source,target,new_epoch FROM operations WHERE complete=1 ORDER BY rowid DESC LIMIT 1').fetchone()
-    if not row: raise RuntimeError('no completed writer authority')
-    ident,source,target,epoch=row;plan=phase_plan(source,target)
+    row=journal.db.execute('SELECT id,source,target,new_epoch,restore_contract FROM operations WHERE complete=1 ORDER BY rowid DESC LIMIT 1').fetchone()
+    if not row or row[4] not in (LEGACY_RESTORE_CONTRACT,RESTORE_CONTRACT): raise RuntimeError('no completed writer authority')
+    ident,source,target,epoch,_=row;plan=phase_plan(source,target)
     steps=journal.db.execute('SELECT position,phase,status,evidence FROM steps WHERE operation=? ORDER BY rowid',(ident,)).fetchall()
     expected=[(i,p,s) for i,p in enumerate(plan) for s in ('intent','done')]
     if [step[:3] for step in steps]!=expected or any(e!='{}' for _,_,status,e in steps if status=='intent'):
@@ -344,14 +392,20 @@ def ingress_allowed(root, maintenance, permit, ingress, boot):
         if not path.exists(): return not marker_present
         private_file(path)
         with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)) as db:
-            operation=db.execute('SELECT id,source,target,complete,new_epoch FROM operations ORDER BY rowid DESC LIMIT 1').fetchone()
+            kind=_journal_schema(db)
+            if kind==LEGACY_RESTORE_CONTRACT:
+                row=db.execute('SELECT id,source,target,complete,new_epoch FROM operations ORDER BY rowid DESC LIMIT 1').fetchone()
+                operation=(*row,LEGACY_RESTORE_CONTRACT) if row else None
+            else:
+                operation=db.execute('SELECT id,source,target,complete,new_epoch,restore_contract FROM operations ORDER BY rowid DESC LIMIT 1').fetchone()
             if not operation: return not marker_present
-            ident,source,target,complete,epoch=operation
+            ident,source,target,complete,epoch,contract=operation
             digest=hashlib.sha256(ingress.read_bytes()).hexdigest()
             if complete:
                 row=db.execute("SELECT evidence FROM steps WHERE operation=? AND phase='route' AND status='done'",(ident,)).fetchone()
                 return (not marker_present and row is not None
                         and _exact_route(json.loads(row[0]),target,epoch,digest))
+            if contract!=RESTORE_CONTRACT: return False
             if (source,target)==('B','A'):
                 if not re.fullmatch('[0-9a-f]{32}',ident) or not marker_present: return False
                 if json.loads(maintenance.read_text())!={'operation':ident}: return False
@@ -392,11 +446,11 @@ def ingress_allowed(root, maintenance, permit, ingress, boot):
 def reconcile_existing(journal, maintenance, stop_ingress, ingress):
     from transition import atomic_json
     journal.check_authority()
-    row=journal.db.execute('SELECT id FROM operations WHERE complete=0').fetchone()
+    row=journal.db.execute('SELECT id,restore_contract FROM operations WHERE complete=0').fetchone()
     if row:
-        ident=row[0];safe=False
+        ident,contract=row;safe=False
         try:
-            if maintenance.exists():
+            if contract==RESTORE_CONTRACT and maintenance.exists():
                 private_file(maintenance)
                 safe=(json.loads(maintenance.read_text())=={'operation':ident}
                       and _d3_serving_state(journal.db,ident,hashlib.sha256(ingress.read_bytes()).hexdigest(),journal.root/ident/'failure.json'))
@@ -406,14 +460,14 @@ def reconcile_existing(journal, maintenance, stop_ingress, ingress):
             if not maintenance.exists(): atomic_json(maintenance,{'operation':ident})
         finally: stop_ingress()
         raise RuntimeError('unfinished operation: ingress closed; explicit reconciliation required')
-    completed=journal.db.execute('SELECT id,target FROM operations WHERE complete=1 ORDER BY rowid DESC LIMIT 1').fetchone()
+    completed=journal.db.execute('SELECT id,target,new_epoch,restore_contract FROM operations WHERE complete=1 ORDER BY rowid DESC LIMIT 1').fetchone()
     if completed:
-        ident,target=completed
+        ident,target,epoch,contract=completed
+        if contract not in (LEGACY_RESTORE_CONTRACT,RESTORE_CONTRACT): raise RuntimeError('completed restore contract differs')
         route=journal.db.execute("SELECT evidence FROM steps WHERE operation=? AND phase='route' AND status='done'",(ident,)).fetchone()
         digest=hashlib.sha256(ingress.read_bytes()).hexdigest()
         try:
             route_value=json.loads(route[0]) if route else None
-            epoch=journal.db.execute('SELECT new_epoch FROM operations WHERE id=?',(ident,)).fetchone()[0]
         except (TypeError,ValueError,sqlite3.Error) as exc:
             raise RuntimeError('completed route differs; reconciliation refused') from exc
         if (target!='B' or not _exact_route(route_value,target,epoch,digest)):

@@ -200,7 +200,9 @@ class TransitionTests(unittest.TestCase):
                     elif case=='contract':
                         db.execute('PRAGMA ignore_check_constraints=ON')
                         db.execute("INSERT INTO operations VALUES('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','A','B','d1-old','d1-new',1,'unknown')")
-                if case=='wal': (root/'journal.db-wal').write_bytes(b'unknown')
+                    db.commit()
+                if case=='wal':
+                    (root/'journal.db-wal').write_bytes(b'unknown');(root/'journal.db-wal').chmod(0o600)
                 before=path.read_bytes()
                 with self.assertRaises((ValueError,RuntimeError,OSError,sqlite3.Error)):
                     with m.Journal(root): pass
@@ -221,7 +223,7 @@ class TransitionTests(unittest.TestCase):
         Scan().visit(tree)
         self.assertEqual(found,{
             'Journal.__enter__','Journal.begin','Journal.step','Journal._boundary',
-            'Journal.continue_rejoin','Journal.finish','_d3_serving_state',
+            'Journal.continue_rejoin','Journal.finish','_journal_schema','_d3_serving_state',
             'current_writer','ingress_allowed','reconcile_existing',
         })
 
