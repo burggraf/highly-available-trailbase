@@ -1,6 +1,6 @@
 # Manual-Async TrailBase HA Product Plan
 
-**Status:** Product direction proposed; architecture and implementation language intentionally undecided.
+**Status:** Product direction approved. The high-level Rust architecture is recorded in [Rust TrailBase HA Architecture and Rewrite Plan](2026-09-10-rust-ha-architecture-design.md); detailed contracts and qualification remain pending.
 
 **Goal:** Build an installable HA system that can run an existing, supported TrailBase application with one writer and one or more warm standbys, while explicitly allowing recent acknowledged writes to be lost during failover.
 
@@ -56,9 +56,9 @@ A deployment advertises only capabilities it has independently observed. Missing
 
 Apps outside this envelope are reported as unsupported, not accepted with weaker hidden assumptions.
 
-## 4. Language-neutral component model
+## 4. Stable component model
 
-The architecture discussion must decide implementation language without changing these boundaries:
+The approved Rust architecture preserves these language-neutral boundaries:
 
 1. **Node agent** — owns TrailBase/Litestream processes, local identity, database inventory, transition intents, health, freeze, activation, quarantine, and rejoin.
 2. **Controller/CLI** — serializes operations, validates authority, records durable phase intent/result, coordinates fencing, restore, routing, and manual approvals.
@@ -68,7 +68,7 @@ The architecture discussion must decide implementation language without changing
 6. **Configuration and release manifest** — declares nodes, databases, artifacts, storage, integrations, policies, and supported capability profile.
 7. **Status/observability surface** — reports facts and refusals without claiming freshness, RPO, or promotion safety from liveness alone.
 
-The current Python code supplies behavior and adversarial test cases for these components. Reuse, incremental replacement, or rewrite will be decided after comparing Python, Go, and Rust.
+The current Python code supplies behavior and adversarial test cases for these components. Production will be rewritten incrementally in Rust; Python remains a conformance and fault-injection harness rather than production runtime.
 
 ## 5. Safety invariants retained without D4
 
@@ -104,19 +104,9 @@ No D4 module may change fencing, single-writer, operation-journal, or route-auth
 
 ## 7. Delivery stages
 
-### Stage 0 — Architecture decision
+### Stage 0 — Architecture decision (complete)
 
-Compare Python, Go, Rust, and a hybrid approach against:
-
-- reuse of the existing executable specification;
-- safe filesystem/process/systemd primitives;
-- SQLite journal behavior;
-- static deployment and upgrade simplicity;
-- privilege separation;
-- upstream TrailBase integration or fork work;
-- testing, fault injection, maintainability, and contributor fit.
-
-Deliver an architecture decision record before product implementation begins.
+Rust, a single installed HAT executable with isolated process roles, a fixed three-controller OpenRaft quorum, direct mTLS RPC, bundled SQLite controller persistence, and clean native installations are approved. See the [architecture and rewrite plan](2026-09-10-rust-ha-architecture-design.md). OpenRaft and its SQLite storage design remain subject to a bounded qualification spike before production implementation.
 
 ### Stage 1 — Product and configuration contract
 
@@ -172,4 +162,4 @@ The first product release is acceptable only when:
 
 ## 10. Next discussion
 
-The immediate next task is the architecture decision: retain and package Python, implement the product in Go, implement it in Rust, or use a hybrid while preserving the Python suite as a conformance/fault harness. No implementation should begin until that decision records the component boundaries, migration strategy, packaging model, privilege model, and relationship to possible upstream TrailBase changes.
+The immediate next task is to define the exact replicated-versus-local state boundary and versioned protocol contracts in the [approved Rust architecture](2026-09-10-rust-ha-architecture-design.md). Then run the bounded OpenRaft, bundled-SQLite, mTLS, restart, snapshot, and crash-consistency spikes. No production implementation should begin until those spike acceptance criteria and security boundaries are approved.

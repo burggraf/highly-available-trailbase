@@ -4,11 +4,11 @@ D0 checkpoint: 2026-09-08 UTC. Delivery direction approved by owner; work stays 
 
 | Delivered | Currently building | Blocker | Next demonstration |
 | --- | --- | --- | --- |
-| D0–D3 delivered with preserved explicit reconciliations; D4 offline refusal diagnostic merged locally | `manual-async` product architecture decision | Complete acknowledged-write preservation and safe settlement of uncertain external effects are not established | Specify an installable operator-controlled HA product with an explicit nonzero/unknown RPO |
+| D0–D3 delivered with preserved explicit reconciliations; D4 offline refusal diagnostic merged locally; Rust architecture approved | `manual-async` state-machine and protocol contracts | Complete acknowledged-write preservation and safe settlement of uncertain external effects are not established | Qualify fixed-member OpenRaft, bundled SQLite, and mTLS failure boundaries |
 
 ## Next product direction: manual-async HA
 
-The [manual-async product plan](plans/2026-09-10-manual-async-ha-product-plan.md) defines the next language-neutral target: an installable one-writer/warm-standby system for supported existing TrailBase applications, with independently fenced operator-controlled failover and an explicit contract that recent acknowledged writes may be lost. D4 becomes an additive future durability profile rather than a prerequisite for the first HA product. The immediate next decision is Python vs Go vs Rust vs a hybrid; the current Python deployment remains an executable specification and test harness, not a language commitment or production qualification.
+The [manual-async product plan](plans/2026-09-10-manual-async-ha-product-plan.md) defines an installable one-writer/warm-standby system for supported existing TrailBase applications, with independently fenced operator-controlled failover and an explicit contract that recent acknowledged writes may be lost. The [approved high-level architecture](plans/2026-09-10-rust-ha-architecture-design.md) selects one Rust HAT executable with isolated roles, exactly three fixed OpenRaft controllers, direct mTLS RPC, bundled SQLite controller persistence, operator-supplied ingress and fencing integrations, and separately pinned TrailBase and Litestream executables. D4 remains an additive future durability profile. Python remains the executable specification and adversarial conformance harness; the next work is detailed state/protocol design and bounded consensus/storage qualification, not production implementation.
 
 ## Task6 unified restore-acceptance-1 source/test closure — checkpoint `ce1b66651a5c442f44e6459fe17ada9f4ab441b6`
 
