@@ -126,6 +126,73 @@ class ControlIOTests(unittest.TestCase):
                 io._fence_target('B')
 
 
+    def test_fresh_writes_authority_is_canonical_and_required(self):
+        names = ('config.textproto', 'migrations/main/U100__hat_ops.sql',
+                 'migrations/aux/U100__hat_ops.sql', 'secrets/keys/private_key.pem',
+                 'secrets/keys/public_key.pem')
+        support = {name: 'b' * 64 for name in names}
+        binaries = {'trail': 'c' * 64, 'litestream': 'd' * 64}
+        io, root, journal = self.make_io(state={'A': {'config': {
+            'support': support, 'binaries': binaries}}})
+        journal.pending = True; journal.next = 9
+        fresh = root / 'new-writes.jsonl'
+        fresh.write_bytes(b'{"fresh":true}\n'); fresh.chmod(0o600)
+        authority = io.authorize_fresh_writes(fresh)
+        sidecar = root / 'new-writes-input-authority.json'
+        self.assertEqual(recovery.parse_canonical_json(sidecar.read_bytes()), authority)
+        self.assertEqual((authority['origin'], authority['operation'], authority['ledger']['path']),
+                         ('current-verify-exclusive', io.operation['id'], str(fresh)))
+        self.assertEqual((authority['support'], authority['binaries']), (support, binaries))
+
+        account = type('Account', (), {'pw_uid': os.geteuid(), 'pw_gid': os.getegid()})()
+        with patch.object(control.pwd, 'getpwnam', return_value=account), \
+             patch.object(io, '_installed_manifest', side_effect=[support, binaries]), \
+             patch.object(recovery, '_authority'):
+            request, _ = io._acceptance_request(
+                'new-writes', 'config', {'main': 1, 'session': 1, 'aux': 1}, fresh, None)
+        self.assertEqual(request['inputs']['ledger_authority'], authority)
+
+        other, other_root, other_journal = self.make_io(state={'A': {'config': {
+            'support': support, 'binaries': binaries}}})
+        other_journal.pending = True; other_journal.next = 9
+        other_fresh = other_root / 'new-writes.jsonl'
+        other_fresh.write_bytes(b'{"fresh":true}\n'); other_fresh.chmod(0o600)
+        with patch.object(control.pwd, 'getpwnam', return_value=account), \
+             patch.object(other, '_installed_manifest', side_effect=[support, binaries]):
+            with self.assertRaises(ValueError):
+                other._acceptance_request('new-writes', 'config',
+                    {'main': 1, 'session': 1, 'aux': 1}, other_fresh, None)
+        self.assertFalse((other_root / 'new-writes-input-authority.json').exists())
+
+    def test_fresh_writes_authority_rejects_replacement_and_duplicate_sidecar(self):
+        names = ('config.textproto', 'migrations/main/U100__hat_ops.sql',
+                 'migrations/aux/U100__hat_ops.sql', 'secrets/keys/private_key.pem',
+                 'secrets/keys/public_key.pem')
+        support = {name: 'b' * 64 for name in names}
+        binaries = {'trail': 'c' * 64, 'litestream': 'd' * 64}
+        account = type('Account', (), {'pw_uid': os.geteuid(), 'pw_gid': os.getegid()})()
+        for mutation in ('replacement', 'duplicate'):
+            with self.subTest(mutation=mutation):
+                io, root, journal = self.make_io(state={'A': {'config': {
+                    'support': support, 'binaries': binaries}}})
+                journal.pending = True; journal.next = 9
+                fresh = root / 'new-writes.jsonl'
+                fresh.write_bytes(b'{"fresh":true}\n'); fresh.chmod(0o600)
+                io.authorize_fresh_writes(fresh)
+                if mutation == 'replacement':
+                    fresh.rename(root / 'old')
+                    fresh.write_bytes(b'{"fresh":true}\n'); fresh.chmod(0o600)
+                else:
+                    sidecar = root / 'new-writes-input-authority.json'
+                    sidecar.unlink(); sidecar.write_bytes(b'{"schema":"one","schema":"two"}')
+                    sidecar.chmod(0o600)
+                with patch.object(control.pwd, 'getpwnam', return_value=account), \
+                     patch.object(io, '_installed_manifest', side_effect=[support, binaries]), \
+                     patch.object(recovery, '_authority'):
+                    with self.assertRaises(ValueError):
+                        io._acceptance_request('new-writes', 'config',
+                            {'main': 1, 'session': 1, 'aux': 1}, fresh, None)
+
     def _oracle_copy_fixture(self, fault=False):
         io, _, _ = self.make_io()
         positions = {'main': 1, 'session': 1, 'aux': 1}
@@ -148,14 +215,19 @@ class ControlIOTests(unittest.TestCase):
                 events, fds = [], {}
                 next_fd = iter(range(100, 130))
                 area = Path('/var/lib/hat-oracle') / ('d2-' + io.operation['id'] + '-compare')
+                request_path = io.work / 'compare-acceptance-request.json'
                 def opened(path, flags, *args, **kwargs):
                     fd = next(next_fd); fds[fd] = Path(path)
-                    if Path(path).name == 'replica.yml':
+                    if Path(path) == request_path:
+                        self.assertTrue(flags & os.O_EXCL); events.append('operation-request')
+                    elif Path(path).name == 'replica.yml':
                         self.assertTrue(flags & os.O_EXCL); events.append('replica.yml')
                     return fd
                 def synced(fd):
                     path = fds.get(fd)
-                    if path == area: events.append('area-fsync')
+                    if path == request_path: events.append('request-fsync')
+                    elif path == io.work and 'replica.yml' not in events: events.append('work-fsync')
+                    elif path == area: events.append('area-fsync')
                 def copied(source, destination, *args, **kwargs):
                     events.append(Path(destination).name)
                 authorized = MagicMock(); authorized.read.return_value = b'ledger\n'
@@ -172,11 +244,33 @@ class ControlIOTests(unittest.TestCase):
                     with self.assertRaisesRegex(RuntimeError, 'stop'):
                         io.oracle('compare', 'config', positions, '/tmp/ledger.jsonl',
                                   '/tmp/fault.jsonl' if fault else None)
-                expected = ['replica.yml', 'ledger.jsonl']
+                expected = ['operation-request', 'request-fsync', 'work-fsync',
+                            'replica.yml', 'ledger.jsonl']
                 if fault: expected.append('fault-ledger.jsonl')
                 expected += ['acceptance-request.json', 'area-fsync']
                 self.assertEqual([event for event in events if event in expected], expected)
                 command.assert_called_once()
+
+    def test_oracle_request_fsync_failure_creates_no_oracle_area_or_command(self):
+        io, positions = self._oracle_copy_fixture()
+        request_path = io.work / 'compare-acceptance-request.json'
+        fds = {}
+        def opened(path, flags, *args, **kwargs):
+            fd = 780 + len(fds); fds[fd] = Path(path); return fd
+        def synced(fd):
+            if fds.get(fd) == request_path: raise OSError('request fsync')
+        authorized = MagicMock(); authorized.read.return_value = b'ledger\n'
+        with patch.object(io, 'command') as command, \
+             patch.object(control.pwd, 'getpwnam', return_value=type('Account', (), {'pw_uid': os.geteuid(), 'pw_gid': os.getegid()})()), \
+             patch.object(control.descriptor.DescriptorAuthority, 'open_file', return_value=authorized), \
+             patch.object(recovery, '_protected_ledger'), \
+             patch.object(control, 'oracle_directory') as make_area, \
+             patch.object(control.os, 'open', side_effect=opened), \
+             patch.object(control.os, 'write'), patch.object(control.os, 'fsync', side_effect=synced), \
+             patch.object(control.os, 'close'), patch.object(control, '_copy_bound_input') as copied:
+            with self.assertRaisesRegex(OSError, 'request fsync'):
+                io.oracle('compare', 'config', positions, '/tmp/ledger.jsonl')
+        make_area.assert_not_called(); copied.assert_not_called(); command.assert_not_called()
 
     def test_oracle_preexisting_replica_refuses_without_command_or_replay(self):
         io, positions = self._oracle_copy_fixture()

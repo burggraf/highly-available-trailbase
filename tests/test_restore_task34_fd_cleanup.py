@@ -1,3 +1,4 @@
+import errno
 import hashlib
 from pathlib import Path
 from types import SimpleNamespace
@@ -13,11 +14,15 @@ import recovery
 
 
 class Held:
-    def __init__(self):
+    def __init__(self, strict=False):
         self.closed = 0
+        self.strict = strict
+        self.directory_fd = 99
 
     def close(self):
         self.closed += 1
+        if self.strict and self.closed > 1:
+            raise OSError(errno.EBADF, 'already closed')
 
 
 class Journal:
@@ -29,6 +34,32 @@ class Journal:
 
 
 class RestoreTask34FdCleanupTests(unittest.TestCase):
+    def test_manifest_failure_preserves_original_exception_and_closes_once(self):
+        for hold in (False, True):
+            with self.subTest(hold=hold):
+                io = control.ControlIO.__new__(control.ControlIO)
+                authority = Held(strict=True)
+                with patch.object(control.descriptor.DescriptorAuthority, 'open_directory',
+                                  return_value=authority), \
+                     patch.object(control.os, 'listdir', side_effect=RuntimeError('manifest failure')):
+                    with self.assertRaisesRegex(RuntimeError, 'manifest failure'):
+                        io._installed_manifest('/tmp/installed', ('item',), 0, 0, 0o600,
+                                               hold=hold)
+                self.assertEqual(authority.closed, 1)
+
+    def test_manifest_partial_failure_does_not_grow_file_descriptors(self):
+        root = Path(tempfile.mkdtemp(dir=Path.cwd()))
+        (root / 'item').write_bytes(b'item')
+        io = control.ControlIO.__new__(control.ControlIO)
+        before = len(os.listdir('/dev/fd'))
+        for _ in range(20):
+            with patch.object(control.descriptor.DescriptorAuthority, 'open_file',
+                              side_effect=RuntimeError('manifest item failure')):
+                with self.assertRaisesRegex(RuntimeError, 'manifest item failure'):
+                    io._installed_manifest(root, ('item',), os.geteuid(), os.getegid(),
+                                           0o600, hold=True)
+        self.assertEqual(len(os.listdir('/dev/fd')), before)
+
     def test_top_level_manifest_recheck_accepts_then_rejects_replacement(self):
         for mode, name in ((0o640, 'config.textproto'), (0o755, 'trail'), (0o755, 'litestream')):
             with self.subTest(name=name):
