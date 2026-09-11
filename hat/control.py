@@ -1029,20 +1029,39 @@ class ControlIO:
             self._durable_json(self.work / ('restore-plan-' + db + '.json'), plan)
         return {'positions': positions, 'plans': plans}
 
-    def oracle(self, phase, replica_config, positions, selected_ledger,
-               fault_ledger=None, source_epoch=None, acceptance_request=None):
-        """Run the independent oracle only from one canonical, durable request.
+    def _acceptance_request(self, phase, replica_config, positions, ledger, fault_ledger):
+        """Derive the canonical request from journal-authorized state, never callers."""
+        import recovery
+        has_fault = fault_ledger is not None
+        profile, epoch, expected_position, reconciled = recovery.derive_restore_profile(self.operation, phase, has_fault)
+        if self.journal.pending is not True or self.journal.next != expected_position:
+            raise RuntimeError('restore request is not at the locked journal boundary')
+        if not isinstance(positions, dict) or set(positions) != {'main','session','aux'}:
+            raise ValueError('invalid restore positions')
+        ledger = Path(ledger)
+        st = ledger.stat()
+        if ledger.name != ('new-writes.jsonl' if profile == 'fresh-writes' else 'ledger.jsonl'):
+            raise ValueError('unexpected ledger name')
+        support_root = Path('/var/lib/hat-oracle/support')
+        support_names = ('config.textproto','migrations/main/U100__hat_ops.sql','migrations/aux/U100__hat_ops.sql','secrets/keys/private_key.pem','secrets/keys/public_key.pem')
+        support = {name: hashlib.sha256((support_root/name).read_bytes()).hexdigest() for name in support_names}
+        binaries = {name: hashlib.sha256((Path('/opt/hat-oracle/bin')/name).read_bytes()).hexdigest() for name in ('trail','litestream')}
+        authority = {'schema': recovery._AUTHORITY_SCHEMA, 'operation': self.operation['id'], 'origin': ('current-verify-exclusive' if profile == 'fresh-writes' else ('d3-recovery-input' if self.operation['source'] == 'B' else 'd2-preflight')), 'ledger': {'path': str(ledger.absolute()), 'device': st.st_dev, 'inode': st.st_ino, 'mode': stat.S_IMODE(st.st_mode), 'uid': st.st_uid, 'links': st.st_nlink, 'bytes': st.st_size, 'sha256': hashlib.sha256(ledger.read_bytes()).hexdigest()}, 'support': support, 'binaries': binaries}
+        inputs = {'replica_config_sha256': hashlib.sha256(replica_config.encode() if isinstance(replica_config,str) else bytes(replica_config)).hexdigest(), 'ledger_sha256': authority['ledger']['sha256'], 'ledger_authority': authority, 'restore_points': {db: {'source':'/var/lib/hat-demo/depot/data/'+db+'.db', 'position': positions[db]} for db in positions}, 'support': support, 'binaries': binaries}
+        if profile == 'recovery-comparison':
+            from client import read_closed_ledger
+            events = read_closed_ledger(fault_ledger, self.operation['source_epoch'])
+            operations = recovery.fault_operations(events)
+            inputs.update(fault_ledger_sha256=hashlib.sha256(Path(fault_ledger).read_bytes()).hexdigest(), fault_operations=operations, fault_operation_count=len(operations), fault_operations_sha256=hashlib.sha256(recovery.canonical_json(operations)).hexdigest())
+        request = {'schema': recovery._ACCEPTANCE_SCHEMA, 'operation': self.operation['id'], 'phase': phase, 'source': self.operation['source'], 'target': self.operation['target'], 'epoch': epoch, 'positions': positions, 'profile': profile, 'inputs': inputs}
+        return recovery.validate_acceptance_request(request, self.operation), recovery.canonical_json(request)
 
-        The optional argument preserves the Task-4 caller boundary; new callers must
-        provide the already journal-authorized request. No positions sidecar exists.
-        """
+    def oracle(self, phase, replica_config, positions, selected_ledger, fault_ledger=None, source_epoch=None):
+        """Run the independent oracle from a request derived after journal intent."""
         import recovery
         import node
         self.journal.check_authority()
-        if acceptance_request is None:
-            raise ValueError('canonical acceptance request is required')
-        request_bytes = acceptance_request if isinstance(acceptance_request, bytes) else recovery.canonical_json(acceptance_request)
-        request = recovery.parse_acceptance_request(request_bytes, self.operation)
+        request, request_bytes = self._acceptance_request(phase, replica_config, positions, selected_ledger, fault_ledger)
         if request['phase'] != phase or request['positions'] != positions:
             raise ValueError('restore request does not match locked phase')
         if (request['profile'] == 'recovery-comparison') != (fault_ledger is not None):
@@ -1064,28 +1083,15 @@ class ControlIO:
         area = Path('/var/lib/hat-oracle') / (prefix + '-' + self.operation['id'] + '-' + phase)
         oracle_directory(area); os.chown(area, 0, account.pw_gid)
         output = area / 'work'; output.mkdir(mode=0o700); os.chown(output, account.pw_uid, account.pw_gid)
-        support_root = area / 'support'; support_root.mkdir(mode=0o750); os.chown(support_root, 0, account.pw_gid)
-        binary_root = area / 'bin'; binary_root.mkdir(mode=0o750); os.chown(binary_root, 0, account.pw_gid)
-        support_paths = {
-            'config.textproto': Path('/var/lib/hat-oracle/support/config.textproto'),
-            'migrations/main/U100__hat_ops.sql': Path('/var/lib/hat-oracle/support/migrations/main/U100__hat_ops.sql'),
-            'migrations/aux/U100__hat_ops.sql': Path('/var/lib/hat-oracle/support/migrations/aux/U100__hat_ops.sql'),
-            'secrets/keys/private_key.pem': Path('/var/lib/hat-oracle/support/secrets/keys/private_key.pem'),
-            'secrets/keys/public_key.pem': Path('/var/lib/hat-oracle/support/secrets/keys/public_key.pem')}
-        for key, source in support_paths.items():
-            digest = request['inputs']['support'][key]
-            destination = support_root / key; destination.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
-            _copy_bound_input(source, destination, 0o640, 0, account.pw_gid, digest)
-        for name in ('trail','litestream'):
-            _copy_bound_input(Path('/opt/hat-oracle/bin') / name, binary_root / name, 0o755, 0, account.pw_gid, request['inputs']['binaries'][name], private=False)
-        _copy_bound_input(ledger_path, area / 'ledger.jsonl', 0o640, 0, account.pw_gid, authority['ledger']['sha256'], identity)
+        # Support and binaries are fixed installed inputs; copying them would widen the trust boundary.
+        _copy_bound_input(ledger_path, area / 'ledger.jsonl', 0o600, 0, account.pw_gid, authority['ledger']['sha256'], identity)
         # The config is already an authorized raw byte value; write it only after all preflight checks.
         if not (area / 'replica.yml').exists():
             fd = os.open(area / 'replica.yml', os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o640)
             try:
                 os.write(fd, config_raw); os.fchmod(fd, 0o640); os.fchown(fd, 0, account.pw_gid); os.fsync(fd)
             finally: os.close(fd)
-        request_path = self.work / 'acceptance-request.json'
+        request_path = self.work / (phase + '-acceptance-request.json')
         fd = os.open(request_path, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600)
         try: os.write(fd, request_bytes); os.fsync(fd)
         finally: os.close(fd)
@@ -1094,7 +1100,7 @@ class ControlIO:
         if fault_ledger is not None:
             oracle_fault = output / 'fault-ledger.jsonl'
             _copy_bound_input(fault_ledger, oracle_fault, 0o600, os.geteuid(), account.pw_gid, request['inputs']['fault_ledger_sha256'])
-        for directory in (area, output, support_root, binary_root, self.work):
+        for directory in (area, output, self.work):
             fd=os.open(directory, os.O_RDONLY|os.O_DIRECTORY)
             try: os.fsync(fd)
             finally: os.close(fd)
@@ -1105,8 +1111,8 @@ class ControlIO:
                 '--property=NoNewPrivileges=yes', '--property=RuntimeMaxSec=240', '--property=KillMode=control-group',
                 'python3', '/opt/hat-oracle/restore_baseline.py', '--root', str(output),
                 '--acceptance-request', str(area/'acceptance-request.json'), '--config', str(area/'replica.yml'),
-                '--ledger', str(area/'ledger.jsonl'), '--support', str(support_root),
-                '--binaries', str(binary_root), '--result', str(result)]
+                '--ledger', str(area/'ledger.jsonl'), '--support', '/var/lib/hat-oracle/support',
+                '--binaries', '/opt/hat-oracle/bin', '--result', str(result)]
         if oracle_fault is not None: argv += ['--fault-ledger', str(oracle_fault)]
         self.command(argv, timeout=270)
         result_fd = os.open(result, os.O_RDONLY | os.O_NOFOLLOW)
@@ -1167,7 +1173,7 @@ def switchover(config, reconcile=None, verification_only=False):
         elif work.is_symlink() or not work.is_dir() or work.stat().st_uid!=0 or work.stat().st_mode & 0o077:
             raise ValueError('unsafe reconciliation directory')
         state = {'ingress_touched':bool(reconcile)}
-        ledger = work/'client.jsonl'
+        ledger = work/'ledger.jsonl'
         io = ControlIO(journal, config, operation, work, state, maintenance, ingress)
         command = io.command
         remote = io.remote

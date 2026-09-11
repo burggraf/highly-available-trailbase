@@ -13,3 +13,5 @@ class Task34ContractTests(unittest.TestCase):
         source = Path(control.__file__).read_text()
         self.assertIn("ledger = work/'ledger.jsonl'", source)
         self.assertNotIn("work/'client.jsonl'", source)
+
+if __name__ == '__main__': unittest.main()
