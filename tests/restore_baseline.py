@@ -277,6 +277,7 @@ if __name__ == '__main__':
     raw = recovery.canonical_json(value)
     parent = descriptor.DescriptorAuthority.open_directory(
         a.result.parent, trusted_root='/', trusted_uids={0, os.geteuid()})
+    published = [parent]
     try:
         fd = os.open(a.result.name, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600,
                      dir_fd=parent.directory_fd)
@@ -287,11 +288,9 @@ if __name__ == '__main__':
             a.result, trusted_root='/', trusted_uids={0, os.geteuid()}, expected_uid=0,
             expected_mode=0o600, expected_nlink=1, expected_size=len(raw),
             expected_sha256=hashlib.sha256(raw).hexdigest(), limit=1 << 20)
-        try:
-            result_authority.recheck()
-            if result_authority.read() != raw: raise ValueError('result changed after write')
-        finally:
-            result_authority.close()
+        published.append(result_authority)
+        result_authority.recheck()
+        if result_authority.read() != raw: raise ValueError('result changed after write')
     finally:
-        parent.close()
+        descriptor.close_all(published)
     print('PASS: independent finite restore acceptance')

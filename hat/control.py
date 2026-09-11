@@ -807,7 +807,7 @@ def _copy_bound_input(source, destination, mode, uid, gid, expected_sha, expecte
         if expected_identity is not None and identity != expected_identity:
             raise ValueError('source identity is not trusted')
         copied = bound.copy_to(parent, destination.name, mode=mode, uid=uid, gid=gid)
-        copied.close()
+        descriptor.close_all([copied])
         bound.recheck(); parent.recheck()
         return (identity[0], identity[1], stat.S_IMODE(identity[2]), *identity[3:])
 

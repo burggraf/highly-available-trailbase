@@ -251,7 +251,11 @@ class DescriptorAuthority:
                     expected_uid=uid, expected_gid=gid, expected_mode=mode, expected_nlink=1,
                     expected_size=len(self._raw), expected_sha256=self.sha256, limit=self.limit,
                     allow_empty=len(self._raw) == 0)
-        self.recheck(); destination.recheck(); copied.recheck()
+        try:
+            self.recheck(); destination.recheck(); copied.recheck()
+        except BaseException:
+            close_all([copied])
+            raise
         return copied
 
     def close(self):
