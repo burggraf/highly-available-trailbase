@@ -145,15 +145,22 @@ def _valid_id(value):
             and 0<int(value)<=2**63-1)
 
 
-def read_closed_ledger(path,expected_epoch):
+def read_closed_ledger(path,expected_epoch, raw=None):
     """Return complete classifier events only for the controller's expected epoch.
+
+    ``raw`` is used when a caller has already authenticated and holds the
+    descriptor; this avoids reopening a path after validation.
+    "
 
     Row order establishes submission/outcome chronology. Wall time may step;
     it is descriptive, never the elapsed-time clock. Process-death proof is external.
     """
     if not isinstance(expected_epoch,str) or not _EPOCH.fullmatch(expected_epoch):raise ValueError('invalid expected epoch')
-    raw=_read_private(path,MAX_LEDGER)
-    lines=raw.splitlines()
+    if raw is None:
+        raw=_read_private(path,MAX_LEDGER)
+    if not isinstance(raw, (bytes, bytearray)) or len(raw) > MAX_LEDGER:
+        raise ValueError('incomplete or oversized ledger')
+    lines=bytes(raw).splitlines()
     if not raw.endswith(b'\n') or not 2<=len(lines)<=2*MAX_SUBMISSIONS+2:raise ValueError('incomplete or oversized ledger')
     if any(not line or len(line)>8192 for line in lines):raise ValueError('invalid ledger line')
     rows=[_json_object(line) for line in lines];start,stop=rows[0],rows[-1]

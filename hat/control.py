@@ -1731,19 +1731,24 @@ class ControlIO:
                     label = 'oracle-output.dir' if directory == output else 'acceptance-work.dir'
                     self._fsync(fd, label, directory)
                 finally: os.close(fd)
+            operation_evidence = area / 'operation-evidence.json'
+            self._durable_bytes(operation_evidence, recovery.canonical_json(self.operation),
+                                label='oracle-operation-evidence', mode=0o640,
+                                uid=ROOT_UID, gid=account.pw_gid)
             result = output / 'result.json'
             unit = 'hat-' + prefix + '-' + self.operation['id'] + '-' + phase
             argv = ['systemd-run', '--unit='+unit, '--wait', '--collect', '--pipe',
                     '--property=User=hat-oracle', '--property=EnvironmentFile=/etc/hat-oracle/backup.env',
                     '--property=NoNewPrivileges=yes', '--property=RuntimeMaxSec=240', '--property=KillMode=control-group',
                     'python3', '/opt/hat-oracle/restore_baseline.py', '--root', str(output),
-                    '--acceptance-request', str(area/'acceptance-request.json'), '--config', str(area/'replica.yml'),
+                    '--acceptance-request', str(area/'acceptance-request.json'), '-O', str(operation_evidence), '--config', str(area/'replica.yml'),
                     '--ledger', str(area/'ledger.jsonl'), '--support', str(ORACLE_ROOT/'support'),
                     '--binaries', str(ORACLE_BIN_ROOT), '--result', str(result)]
             if oracle_fault is not None: argv += ['--fault-ledger', str(oracle_fault)]
             expected = [(area/'ledger.jsonl', ROOT_UID, account.pw_gid, 0o600, 4 << 20),
                         (area/'replica.yml', ROOT_UID, account.pw_gid, 0o640, 1 << 20),
-                        (area/'acceptance-request.json', ROOT_UID, account.pw_gid, 0o640, 1 << 20)]
+                        (area/'acceptance-request.json', ROOT_UID, account.pw_gid, 0o640, 1 << 20),
+                        (operation_evidence, ROOT_UID, account.pw_gid, 0o640, 1 << 20)]
             if oracle_fault is not None: expected.append((oracle_fault, account.pw_uid, account.pw_gid, 0o600, 4 << 20))
             held = _open_held_inputs(expected, {0, os.geteuid(), account.pw_uid})
             self.command(argv, timeout=270)
@@ -1799,12 +1804,17 @@ class ControlIO:
 
 
 def _validate_verification_baseline_recheck(previous, actual, operation):
-    if (actual['request']['phase'] != 'verification-baseline'
-            or actual['request']['profile'] != 'baseline'
-            or actual['request']['epoch'] != operation['new_epoch']
-            or actual['request']['positions'] != previous['request']['positions']
-            or actual['signature'] != previous['signature']):
-        raise RuntimeError('verification baseline recheck differs')
+    # The recheck is the original baseline request with only its mandated
+    # phase transition.  Comparing the complete request prevents swapping
+    # input identities while preserving positions/signatures.
+    try:
+        expected = dict(previous['request'])
+        expected['phase'] = 'verification-baseline'
+        recovery.validate_acceptance_request(expected, operation)
+        if (actual['request'] != expected or actual['signature'] != previous['signature']):
+            raise RuntimeError('verification baseline recheck differs')
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError('verification baseline recheck differs') from exc
 
 
 def switchover(config, reconcile=None, verification_only=False):

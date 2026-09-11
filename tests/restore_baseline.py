@@ -198,7 +198,7 @@ def _verify_records_and_auth(base, ledger):
         raise ValueError('restore authentication or record checks failed') from None
 
 
-def restore(root, acceptance_request, config, ledger, support, binaries, fault_ledger=None):
+def restore(root, acceptance_request, config, ledger, support, binaries, fault_ledger=None, operation_evidence=None):
     os.umask(0o077)
     request_raw = _read(acceptance_request, 1 << 20)
     request_object = recovery.parse_canonical_json(request_raw)
@@ -207,6 +207,14 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
                  'source_epoch': request_object['epoch'] if request_object['phase'] in ('compare','reconciled-compare') else 'd1-source',
                  'new_epoch': 'd1-' + request_object['operation']}
     request_value = recovery.parse_acceptance_request(request_raw, operation)
+    if operation_evidence is not None:
+        evidence = recovery.parse_canonical_json(_read(operation_evidence, 1 << 20))
+        if evidence != operation:
+            raise ValueError('operation evidence differs')
+    # The CLI fault argument is part of the profile matrix, not an optional
+    # caller override.  Reject it before creating any oracle artifacts.
+    if (request_value['profile'] == 'recovery-comparison') != (fault_ledger is not None):
+        raise ValueError('fault ledger does not match restore profile')
     config_raw = _read(config, 1 << 20)
     if hashlib.sha256(config_raw).hexdigest() != request_value['inputs']['replica_config_sha256']:
         raise ValueError('replica configuration changed')
@@ -229,9 +237,18 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
     if request_value['profile'] != 'recovery-comparison':
         recovery._protected_ledger(ledger_raw)
     if fault_ledger is not None:
-        events = read_closed_ledger(fault_ledger, request_value['epoch'])
-        if hashlib.sha256(_read(fault_ledger)).hexdigest() != request_value['inputs']['fault_ledger_sha256']:
-            raise ValueError('fault ledger changed')
+        # Hold one authenticated descriptor for the complete ledger lifetime;
+        # never reopen the path (replacement, even with identical bytes, is
+        # therefore rejected by the authority recheck).
+        expected = request_value['inputs']['fault_ledger_sha256']
+        with descriptor.DescriptorAuthority.open_file(
+                fault_ledger, trusted_root='/', trusted_uids={0, os.geteuid()},
+                expected_mode=0o600, expected_nlink=1, expected_sha256=expected,
+                limit=4 << 20) as fault_authority:
+            fault_raw = fault_authority.read()
+            fault_authority.recheck()
+            events = read_closed_ledger(fault_ledger, request_value['epoch'], raw=fault_raw)
+            fault_authority.recheck()
     else:
         events = None
     root = Path(root)
@@ -343,13 +360,14 @@ def _parser():
     parser.add_argument('--support', type=Path, required=True)
     parser.add_argument('--binaries', type=Path, required=True)
     parser.add_argument('--fault-ledger', type=Path)
+    parser.add_argument('-O', '--operation-evidence', type=Path)
     parser.add_argument('--result', type=Path, required=True)
     return parser
 
 
 def _main(argv):
     a = _parser().parse_args(argv)
-    value = restore(a.root, a.acceptance_request, a.config, a.ledger, a.support, a.binaries, a.fault_ledger)
+    value = restore(a.root, a.acceptance_request, a.config, a.ledger, a.support, a.binaries, a.fault_ledger, a.operation_evidence)
     raw = recovery.canonical_json(value)
     parent = descriptor.DescriptorAuthority.open_directory(
         a.result.parent, trusted_root='/', trusted_uids={0, os.geteuid()})
