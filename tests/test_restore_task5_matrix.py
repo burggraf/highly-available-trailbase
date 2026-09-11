@@ -292,6 +292,19 @@ class RestoreTask5Matrix(unittest.TestCase):
         return op
 
     # A: SQLite commit and migration boundaries.
+    def test_verification_baseline_recheck_accepts_canonical_positions_and_refuses_wrong_positions(self):
+        op, _ = self.io()
+        positions = {'main': 1, 'session': 2, 'aux': 3}
+        baseline = acceptance_result(op, 'baseline', positions)
+        recheck = acceptance_result(op, 'verification-baseline', positions,
+                                    signature=baseline['signature'])
+        control._validate_verification_baseline_recheck(baseline, recheck, op)
+
+        wrong = json.loads(json.dumps(recheck))
+        wrong['request']['positions']['main'] += 1
+        with self.assertRaisesRegex(RuntimeError, 'baseline recheck differs'):
+            control._validate_verification_baseline_recheck(baseline, wrong, op)
+
     def test_journal_commit_boundaries_before_after_exact_rows_and_no_replay(self):
         cases = ('begin', 'step-intent:preflight', 'step-done:preflight',
                  'accept-comparison-done', 'accept-verification-done', 'finish')
