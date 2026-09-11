@@ -1,0 +1,25 @@
+Task 5 local acceptance gates
+
+Scope: local fixture/controller process only. No VPS, deployment, credentials, public HTTPS, native TrailBase/Litestream, fencing, node action, or disruptive testing.
+
+Source: current dirty main revision; task-owned dirty files listed by git status. No commit/push performed in this checkpoint.
+
+Behavioral evidence:
+- Initial RED retained in docs/reports/v1-task5-red.txt.
+- cargo test --manifest-path rust/Cargo.toml --locked: exit 0; 27 unit tests, 3 CLI, 1 controller, 1 dashboard, 1 node, 8 proxy = 41 tests.
+- Dashboard test executes the real binary, provisions a local account through the CLI, exercises login/session cookie, authenticated status, CSRF/origin-protected operation receipt, unauthenticated refusal, and stale-process journal lock recovery after controller kill.
+- Journal tests cover atomic ownership, SQLite durability settings, exact duplicate/conflict behavior, unfinished reopen, and terminal-state refusal.
+- Auth tests cover Argon2id credentials, generic failures, login throttling, session bounds, logout, expiry/revocation, and durable account disable through controller journal paths.
+
+Required gates:
+- cargo fmt --manifest-path rust/Cargo.toml --check: exit 0.
+- cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings: exit 0.
+- cargo build --manifest-path rust/Cargo.toml --release --locked: exit 0.
+- git diff --check: exit 0.
+
+Review:
+- Fresh read-only spec-reviewer review completed after fixes; T5-AC1 through T5-AC5 passed for the approved local contract.
+- Review findings fixed: atomic stale-lock takeover, loopback/origin enforcement, durable account disable, terminal journal transitions, functional local dashboard controls, explicit cookie/header/body bounds including static assets.
+- Residual risks: restart guard is intentionally a local state boundary rather than a native node restart/action workflow; no operation effect dispatcher, TLS, deployment, provider fencing, or native qualification is claimed.
+
+Result: local Task 5 criteria pass. Stage is accepted locally, not production-qualified or externally tested.

@@ -1,0 +1,8 @@
+Task 5 behavioral RED evidence
+
+Command:
+  cargo test --manifest-path rust/Cargo.toml --test controller controller_status_command_is_recognized
+
+Initial result: failed before the controller command existed. The real binary returned the prior fixed usage refusal for config/proxy/node commands.
+
+The command now reaches the local controller status/serve boundary. Task 5 remains in progress while durable account provisioning/persistence, authenticated operation/dashboard integration, and full restart receipt coverage are completed. No actual VPS, credential, deployment, native, or external action was used.

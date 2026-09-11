@@ -6,7 +6,7 @@ An early-stage project for a single-writer [TrailBase](https://github.com/trailb
 
 ## Current development — Rust V1
 
-**Active scope:** one controller, primary-only proxies, manual fenced failover; no Raft or replica reads. **Current stage: Task 4 accepted.** Task 2, the local-only Task 3 proxy, and the fixture-only Task 4 node lifecycle/replication boundaries are accepted. Controller, failover, deployment, TLS peer identity, and native qualification remain later stages.
+**Active scope:** one controller, primary-only proxies, manual fenced failover; no Raft or replica reads. **Current stage: Task 5 local slice accepted.** Task 2, the local-only Task 3 proxy, the fixture-only Task 4 lifecycle/replication boundaries, and the local Task 5 controller/journal/auth/dashboard/restart boundaries are accepted. Failover, deployment, TLS peer identity, public HTTPS, and native qualification remain later stages.
 
 - [Active plan and restart handoff](docs/plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance) — authoritative stage/acceptance tracker.
 - [Development workflow](AGENTS.md) — restart procedure, autonomous stage loop, evidence and approval rules.

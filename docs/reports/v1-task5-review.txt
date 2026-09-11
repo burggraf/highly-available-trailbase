@@ -1,0 +1,20 @@
+Task 5 fresh review disposition
+
+Reviewer: fresh read-only spec-reviewer subagent (security/spec review)
+Scope: current local diff against approved T5-AC1..T5-AC5 only.
+
+Initial findings retained and fixed:
+- stale journal lock takeover was made atomic with BEGIN IMMEDIATE;
+- loopback listener and local-origin enforcement were added;
+- account disable is now journal-persistent and CLI-accessible;
+- account creation persists before mutating the live AuthStore;
+- terminal journal states cannot be rewritten;
+- dashboard has functional same-origin JS controls, login/logout/status/operation flows;
+- Host, Origin, CSRF, cookie, aggregate header and body bounds cover static and API routes.
+
+Disposition: pass for the approved local-only Task 5 contract.
+
+Residual risks and explicit non-claims:
+- RestartGuard remains a local controller-dependent state boundary, not a qualified TrailBase/systemd/native restart protocol.
+- Journal operations record durable intent/receipts but do not dispatch real node effects.
+- No production TLS, public HTTPS, provider fencing, deployment, VPS, native, or disruptive qualification occurred.

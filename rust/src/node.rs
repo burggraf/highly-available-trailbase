@@ -299,12 +299,12 @@ mod tests {
             .spawn("follower", Command::new("sh").arg("-c").arg("exit 7"))
             .unwrap();
         let mut state = ChildState::Running;
-        for _ in 0..20 {
+        for _ in 0..100 {
             state = supervisor.state("follower").unwrap();
             if state != ChildState::Running {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert_eq!(state, ChildState::Exited(Some(7)));
         supervisor

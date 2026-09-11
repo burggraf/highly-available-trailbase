@@ -24,7 +24,7 @@ This section is the authoritative restart tracker. Follow [AGENTS.md](../../AGEN
 | Task 2 — package/config/routing | accepted | Owner approved T2-AC1 through T2-AC7 in this session. Local inert implementation accepted at checkpoint `3d262a3`; no Task 3 or external effects started. |
 | Task 3 — proxy/peer transport | accepted | Local-only criteria T3-AC1 through T3-AC5 passed on `main`; production TLS/peer identity, deployment, controller integration, and native qualification remain deferred. |
 | Task 4 — lifecycle/replication | accepted | Local fixture-only criteria T4-AC1 through T4-AC5 passed on `main`; native TrailBase/Litestream, systemd, deployment, and live effects remain deferred. |
-| Task 5 — controller/dashboard/restart | pending | Not authorized; action/security contracts must be approved first. |
+| Task 5 — controller/dashboard/restart | accepted | Local-only criteria T5-AC1 through T5-AC5 passed on `main`; VPS/deployment/native/public HTTPS qualification remains separately gated. |
 | Task 6 — restore/fence boundary | pending | Not authorized; fake adapters do not authorize live fencing. |
 | Task 7 — planned switchover | pending | Not authorized; Task 5/6 and fixture approval required. |
 | Task 8 — failover/rejoin | pending | Not authorized; accepted Task 7 required. |
@@ -342,6 +342,21 @@ Approved scope reference: owner authorization in this session. This fixture-only
 
 **Exit:** one isolated primary and one stopped-TrailBase standby with visible replication. Automatic writer activation is still unavailable.
 
+### Task 5 completion contract — approved for local-only implementation
+
+Scope: one local controller process, durable SQLite operation journal, bounded authenticated local management API/dashboard, and controller-dependent restart state using loopback fixtures. No public listener, production TLS/certificates, account provisioning on VPSs, node actions, fencing, deployment, or native qualification. Ask the owner before any actual VPS or disruptive test.
+
+| ID | Observable acceptance requirement | Required evidence | Result |
+| --- | --- | --- | --- |
+| T5-AC1 | The controller journal enables one process owner, uses SQLite foreign keys and `synchronous=FULL`, persists operation intent before dispatch, and reopens unfinished operations without silently clearing them. | `rust/src/journal.rs` tests; `docs/reports/v1-task5-gates.txt` | pass — atomic `BEGIN IMMEDIATE` ownership, stale-process recovery, durable intent, terminal-state refusal, and reopen tests |
+| T5-AC2 | Request/operation identities are bounded and idempotent: exact duplicates return retained status, conflicting reuse refuses, concurrent mutation is serialized, and response loss does not justify a second effect. | `rust/src/journal.rs` and `rust/tests/dashboard.rs`; `docs/reports/v1-task5-gates.txt` | pass — bounded identity, exact receipt replay, conflict refusal, SQLite immediate transactions, and no retry/effect layer |
+| T5-AC3 | Local operator authentication uses Argon2id PHC hashes, opaque expiring sessions, generic login refusal, bounded credentials, and revocation; secrets are absent from responses/logs. | `rust/src/auth.rs`, account CLI, dashboard loopback test; `docs/reports/v1-task5-gates.txt` | pass — Argon2id, durable accounts/disable, throttling/session bounds, opaque cookies, logout/revocation, generic errors |
+| T5-AC4 | The local management API/dashboard exposes status and operation receipts with authentication/CSRF/origin/header/body bounds, escaped status text, and accessible static controls; application proxy traffic is independent of controller availability. | `rust/tests/dashboard.rs`; `docs/reports/v1-task5-gates.txt` | pass — loopback dashboard/JS controls, authenticated login/status/operation, logout, exact Host/Origin, CSRF, aggregate header/body/cookie bounds, CSP, and primary-only proxy remains independent |
+| T5-AC5 | Same-primary restart state waits for controller authorization, binds authorization to the current node incarnation, refuses former/stale identities, and retains uncertainty until reconciled. | restart state tests; `docs/reports/v1-task5-gates.txt` | pass — controller reachability gate, exact incarnation match, stale identity refusal, and permanent blocked-uncertain state until future reconciliation |
+
+
+Approved scope reference: owner authorization in this session. This local slice does not authorize actual VPS inspection/testing, deployment, credentials, public HTTPS exposure, fencing, node activation, failover, or native effects.
+
 ### Task 5 — Single controller, monitoring and durable actions
 
 **Files:** create `rust/src/controller.rs`, `rust/src/journal.rs`, `rust/src/auth.rs`, `rust/tests/controller.rs`, `rust/ui/index.html`, `rust/ui/app.js`, `rust/ui/style.css`, `rust/tests/dashboard.rs`; extend node/main. Embed assets in the same binary.
@@ -356,6 +371,15 @@ Approved scope reference: owner authorization in this session. This fixture-only
 **Check:** `cargo test --manifest-path rust/Cargo.toml --test controller` and `cargo test --manifest-path rust/Cargo.toml --test dashboard`; exercise the actual dashboard in a browser once available.
 
 **Exit:** browser monitoring, protected operation submission and reliable restart/action orchestration with local fixtures. No provider power actions yet.
+
+### Restart handoff — Task 5 local acceptance checkpoint
+
+- **State:** accepted locally; T5-AC1 through T5-AC5 passed. This is not public HTTPS, production TLS, deployment, native qualification, or VPS acceptance.
+- **Source:** `main` checkpoint recorded by `git rev-parse HEAD` (working tree clean after commit); `origin/main` is intentionally not updated in this stage without explicit push approval.
+- **Implemented:** atomic SQLite controller ownership with stale-process recovery, durable operation/account journal, Argon2id accounts and bounded opaque sessions, local account add/disable CLI, loopback dashboard/API with functional same-origin controls, CSRF/Origin/Host/header/body/cookie bounds, operation receipts, and incarnation-bound restart guard.
+- **Evidence:** `docs/reports/v1-task5-red.txt`, `docs/reports/v1-task5-gates.txt`, and `docs/reports/v1-task5-review.txt`. Final fmt, 41-test locked suite, clippy `-D warnings`, locked release build, and diff checks exited 0.
+- **Residual scope:** restart guard and journal receipts do not dispatch native node actions; TrailBase/Litestream, systemd, provider fencing, public HTTPS, deployment, and disruptive/native tests remain later authorized stages.
+- **Next safe action:** obtain authorization before Task 6 restore/fence implementation or any actual VPS/disruptive/native test. No active processes remain.
 
 ### Task 6 — Restore validation and fencing boundary
 

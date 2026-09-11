@@ -70,4 +70,10 @@ Task 4 adds process-local node lifecycle state and replication observations. Nod
 
 `hat node status` reports the inert process-local starting state. This slice does not start TrailBase or Litestream, open configured data paths, use systemd, perform native restore, activate real writers, or claim deployment/process-group qualification.
 
-This is not a controller, deployment, failover, or native qualification claim. Python `hat/`, historical deployment files, and private evidence remain untouched.
+## Local controller slice (Task 5, accepted locally)
+
+The local controller now has a bundled SQLite journal with `foreign_keys=ON`, `synchronous=FULL`, one-owner locking, durable operation intent, exact duplicate receipts, conflict refusal, unfinished-operation reopen, Argon2id account/session primitives, incarnation-bound restart waiting, and a loopback-only dashboard shell/status boundary. `controller serve` requires explicit `--listen`, `--journal`, and `--origin` arguments. It does not create a default account.
+
+This local slice is accepted against T5-AC1 through T5-AC5. It is not public HTTPS, production TLS, a deployment, a fencing/controller action system, a native restart workflow, or a VPS qualification. No actual VPS or external service has been used.
+
+This is not a controller deployment, failover, or native qualification claim. Python `hat/`, historical deployment files, and private evidence remain untouched.
