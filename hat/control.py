@@ -47,26 +47,72 @@ def _normalized_sql(value):
     return ' '.join(value.split()).replace('( ','(').replace(' )',')')
 
 
+_LEGACY_OP_COLUMNS=(('id','TEXT',0,None,1,0),('source','TEXT',1,None,0,0),('target','TEXT',1,None,0,0),('source_epoch','TEXT',1,None,0,0),('new_epoch','TEXT',1,None,0,0),('complete','INTEGER',1,'0',0,0))
+_NEW_OP_COLUMNS=_LEGACY_OP_COLUMNS+(('restore_contract','TEXT',1,"'legacy'",0,0),)
+_STEP_COLUMNS=(('operation','TEXT',1,None,1,0),('position','INTEGER',1,None,2,0),('phase','TEXT',1,None,0,0),('status','TEXT',1,None,3,0),('evidence','TEXT',1,None,0,0))
+
+def _schema_objects(db):
+    return {(kind,name) for kind,name in db.execute("SELECT type,name FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'")}
+
+def _check_table(db,name,expected):
+    actual=[]
+    for row in db.execute('PRAGMA table_xinfo('+name+')'):
+        if len(row)!=7 or row[6] not in (0,): raise ValueError('unrecognized journal table')
+        actual.append(tuple(row[1:]))
+    if tuple(actual)!=expected: raise ValueError('unrecognized journal table')
+
+def _check_indexes(db):
+    indexes=db.execute('PRAGMA index_list(operations)').fetchall()
+    if len(indexes)!=3 or not any(r[1]=='one_unfinished' and r[2]==1 and r[3]=='c' and r[4]==1 for r in indexes):
+        raise ValueError('unrecognized journal indexes')
+    if db.execute('PRAGMA index_list(steps)').fetchall() and len(db.execute('PRAGMA index_list(steps)').fetchall())!=1: raise ValueError('unrecognized journal indexes')
+    one=db.execute('PRAGMA index_info(one_unfinished)').fetchall()
+    if [(r[1],r[2]) for r in one]!=[(5,'complete')]: raise ValueError('unrecognized journal index')
+    for table, expected in (('operations',{'id','new_epoch'}),('steps',{'operation'})):
+        for row in db.execute('PRAGMA index_list('+table+')'):
+            info=db.execute('PRAGMA index_info('+repr(row[1])+')').fetchall()
+            cols=[r[2] for r in info]
+            if row[4] and row[1].startswith('sqlite_autoindex_') and not cols: raise ValueError('unrecognized journal index')
+        if table=='operations' and not any(db.execute('PRAGMA index_info('+repr(r[1])+')').fetchone() and db.execute('PRAGMA index_info('+repr(r[1])+')').fetchone()[2] in expected for r in db.execute('PRAGMA index_list(operations)')): raise ValueError('unrecognized journal index')
+
+def _check_constraints(db, contract):
+    if db.execute('PRAGMA foreign_key_list(steps)').fetchall()!=[(0,0,'operations','operation','id','NO ACTION','NO ACTION','NONE')]: raise ValueError('unrecognized journal foreign key')
+    probe=sqlite3.connect(':memory:'); probe.execute('PRAGMA foreign_keys=ON')
+    try:
+        schemas=db.execute("SELECT sql FROM sqlite_schema WHERE type IN ('table','index') AND name NOT LIKE 'sqlite_%' AND sql IS NOT NULL ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END,name").fetchall()
+        probe.executescript(';'.join(row[0] for row in schemas))
+        try:
+            probe.execute("INSERT INTO operations(id,source,target,source_epoch,new_epoch,complete) VALUES(?,?,?,?,?,?)",('a'*32,'A','B','d1-test','d1-new',1))
+            probe.execute("INSERT INTO steps(operation,position,phase,status,evidence) VALUES(?,?,?,?,?)",('a'*32,0,'preflight','intent','{}'))
+        except sqlite3.IntegrityError as exc:
+            raise ValueError('journal constraints differ') from exc
+        bad=[("INSERT INTO operations(id,source,target,source_epoch,new_epoch,complete) VALUES(?,?,?,?,?,?)",('b'*32,'A','B','d1-test','d1-new',1)),
+             ("INSERT INTO operations(id,source,target,source_epoch,new_epoch,complete) VALUES(?,?,?,?,?,?)",('c'*32,'A','B','d1-test','d1-c',2)),
+             ("INSERT INTO steps(operation,position,phase,status,evidence) VALUES(?,?,?,?,?)",('a'*32,0,'preflight','bad','{}')),
+             ("INSERT INTO steps(operation,position,phase,status,evidence) VALUES(?,?,?,?,?)",('z'*32,1,'x','intent','{}'))]
+        for sql,args in bad:
+            try: probe.execute(sql,args)
+            except sqlite3.IntegrityError: continue
+            raise ValueError('journal constraints differ')
+    finally: probe.close()
+
 def _journal_schema(db):
-    """Return the exact recognized journal generation; unknown state refuses."""
-    if db.execute('PRAGMA quick_check').fetchone()!=('ok',):
+    """Return exact semantic journal generation; unknown or corrupt state refuses."""
+    if db.execute('PRAGMA integrity_check').fetchone()!=('ok',) or db.execute('PRAGMA foreign_key_check').fetchall():
         raise ValueError('unrecognized or damaged journal; reconciliation required')
-    objects=db.execute("SELECT type,name,sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type,name").fetchall()
-    expected={
-        ('index','one_unfinished',_normalized_sql(_UNFINISHED_SQL)),
-        ('table','steps',_normalized_sql(_STEPS_SQL)),
-    }
-    normalized={(kind,name,_normalized_sql(sql)) for kind,name,sql in objects}
-    operation=[item for item in normalized if item[:2]==('table','operations')]
-    if len(operation)!=1 or normalized-{operation[0]}!=expected:
+    if _schema_objects(db)!={('table','operations'),('table','steps'),('index','one_unfinished')}:
         raise ValueError('unrecognized or damaged journal; reconciliation required')
-    sql=operation[0][2]
-    if sql==_normalized_sql(_OPERATIONS_LEGACY_SQL): return LEGACY_RESTORE_CONTRACT
-    if sql!=_normalized_sql(_OPERATIONS_SQL):
-        raise ValueError('unrecognized or damaged journal; reconciliation required')
+    _check_table(db,'steps',_STEP_COLUMNS); _check_indexes(db)
+    columns=tuple(tuple(row[1:]) for row in db.execute('PRAGMA table_xinfo(operations)'))
+    if columns==_LEGACY_OP_COLUMNS:
+        contract=LEGACY_RESTORE_CONTRACT
+    elif columns==_NEW_OP_COLUMNS:
+        contract=RESTORE_CONTRACT
+    else: raise ValueError('unrecognized or damaged journal; reconciliation required')
+    _check_constraints(db,contract)
+    if contract==LEGACY_RESTORE_CONTRACT:return contract
     contracts={row[0] for row in db.execute('SELECT restore_contract FROM operations')}
-    if not contracts<={LEGACY_RESTORE_CONTRACT,RESTORE_CONTRACT}:
-        raise ValueError('unknown restore contract')
+    if not contracts<={LEGACY_RESTORE_CONTRACT,RESTORE_CONTRACT}: raise ValueError('unknown restore contract')
     return RESTORE_CONTRACT
 
 
@@ -80,6 +126,21 @@ def private_file(path):
     if not stat.S_ISREG(s.st_mode) or s.st_uid != os.geteuid() or s.st_mode & 0o077 or s.st_nlink != 1:
         raise ValueError('controller file must be private, owned, regular and singly linked')
     return s.st_dev, s.st_ino
+
+
+def _stable_private_bytes(path, strict=True):
+    path=Path(path)
+    fd=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+    try:
+        before=os.fstat(fd)
+        if (not stat.S_ISREG(before.st_mode) or before.st_uid!=os.geteuid()
+                or (strict and before.st_mode&0o077) or before.st_nlink!=1): raise ValueError('controller file is unsafe')
+        raw=os.read(fd,before.st_size+1)
+        after=os.fstat(fd)
+        identity=lambda s:(s.st_dev,s.st_ino,s.st_size,s.st_mtime_ns,s.st_mode,s.st_uid,s.st_nlink)
+        if len(raw)!=before.st_size or identity(before)!=identity(after): raise ValueError('controller file changed')
+        return raw,identity(after)
+    finally: os.close(fd)
 
 
 class Journal:
@@ -116,6 +177,7 @@ class Journal:
             self.db = sqlite3.connect(path, timeout=0)
             self.db.execute('PRAGMA journal_mode=DELETE')
             self.db.execute('PRAGMA synchronous=EXTRA')
+            self.db.execute('PRAGMA foreign_keys=ON')
             changed=not existing
             if existing:
                 kind=_journal_schema(self.db)
@@ -129,7 +191,6 @@ class Journal:
                         self.db.rollback();raise
             else:
                 self.db.executescript(_OPERATIONS_SQL+';\n'+_UNFINISHED_SQL+';\n'+_STEPS_SQL+';')
-            self.db.execute('PRAGMA foreign_keys=ON')
             if _journal_schema(self.db)!=RESTORE_CONTRACT: raise ValueError('journal schema differs')
             if changed:
                 fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
@@ -390,7 +451,9 @@ def ingress_allowed(root, maintenance, permit, ingress, boot):
         if marker_present: private_file(maintenance)
         path=root/'journal.db'
         if not path.exists(): return not marker_present
-        private_file(path)
+        journal_raw,journal_identity=_stable_private_bytes(path)
+        ingress_raw,ingress_identity=_stable_private_bytes(ingress,strict=False)
+        ingress_digest=hashlib.sha256(ingress_raw).hexdigest()
         with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)) as db:
             kind=_journal_schema(db)
             if kind==LEGACY_RESTORE_CONTRACT:
@@ -400,10 +463,12 @@ def ingress_allowed(root, maintenance, permit, ingress, boot):
                 operation=db.execute('SELECT id,source,target,complete,new_epoch,restore_contract FROM operations ORDER BY rowid DESC LIMIT 1').fetchone()
             if not operation: return not marker_present
             ident,source,target,complete,epoch,contract=operation
-            digest=hashlib.sha256(ingress.read_bytes()).hexdigest()
+            digest=ingress_digest
             if complete:
                 row=db.execute("SELECT evidence FROM steps WHERE operation=? AND phase='route' AND status='done'",(ident,)).fetchone()
-                return (not marker_present and row is not None
+                stable=(journal_identity==_stable_private_bytes(path)[1]
+                        and ingress_identity==_stable_private_bytes(ingress,strict=False)[1])
+                return (stable and not marker_present and row is not None
                         and _exact_route(json.loads(row[0]),target,epoch,digest))
             if contract!=RESTORE_CONTRACT: return False
             if (source,target)==('B','A'):

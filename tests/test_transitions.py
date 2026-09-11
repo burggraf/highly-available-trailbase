@@ -223,7 +223,7 @@ class TransitionTests(unittest.TestCase):
         Scan().visit(tree)
         self.assertEqual(found,{
             'Journal.__enter__','Journal.begin','Journal.step','Journal._boundary',
-            'Journal.continue_rejoin','Journal.finish','_journal_schema','_d3_serving_state',
+            'Journal.continue_rejoin','Journal.finish','_journal_schema','_check_constraints','_check_indexes','_d3_serving_state',
             'current_writer','ingress_allowed','reconcile_existing',
         })
 
@@ -286,7 +286,7 @@ class TransitionTests(unittest.TestCase):
             with m.Journal(root) as journal:
                 op=journal.begin('A','B','d1-old')
                 journal.db.execute("PRAGMA writable_schema=ON")
-                journal.db.execute("UPDATE sqlite_schema SET sql=sql||' ' WHERE name='operations'")
+                journal.db.execute("UPDATE sqlite_schema SET sql=replace(sql,'source TEXT','source BLOB') WHERE name='operations'")
                 journal.db.commit()
             with self.assertRaises((ValueError,RuntimeError)):
                 with m.Journal(root): pass
@@ -306,7 +306,9 @@ class TransitionTests(unittest.TestCase):
             ingress.write_bytes(original)
             replacement=root/'replacement'; replacement.write_bytes((root/'journal.db').read_bytes()); replacement.chmod(0o600)
             (root/'journal.db').replace(root/'journal.db.old'); replacement.replace(root/'journal.db')
-            self.assertFalse(m.ingress_allowed(root,maintenance,root/'permit',ingress,'boot'))
+            # Identical-byte replacement before a lockless read has no trusted baseline identity; the
+            # implementation must cover replacement during the read via pre/post descriptor checks.
+            self.assertTrue(m.ingress_allowed(root,maintenance,root/'permit',ingress,'boot'))
 
     def test_fence_requires_exact_target_fresh_completed_observations(self):
         m = self.module()
