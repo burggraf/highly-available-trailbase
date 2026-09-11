@@ -140,6 +140,9 @@ class FakeIO:
         self.record('smoke-url', str(ledger))
         Path(ledger).write_text('{}\n'); Path(ledger).chmod(0o600)
 
+    def authorize_fresh_writes(self, ledger):
+        self.record('authorize-fresh-writes', str(ledger))
+
 
 class RecoverDriverTests(unittest.TestCase):
     def fixture(self, scenario=None):
@@ -264,7 +267,7 @@ class RecoverDriverTests(unittest.TestCase):
         self.assertEqual(names, ['producer-stopped', 'remote', 'close-ingress', 'fence', 'select-cut',
                                  'remote', 'remote', 'oracle', 'producer-stopped', 'fence', 'remote',
                                  'remote', 'remote', 'remote', 'oracle', 'command', 'start-ingress',
-                                 'verify-url', 'smoke-url', 'remote', 'oracle'])
+                                 'verify-url', 'smoke-url', 'authorize-fresh-writes', 'remote', 'oracle'])
         self.assertFalse(any(call[0] == 'fence' and call[3] != 'offline' for call in FakeIO.calls))
         remote = [call for call in FakeIO.calls if call[0] == 'remote']
         self.assertEqual([(call[2], call[3]) for call in remote[:4]],

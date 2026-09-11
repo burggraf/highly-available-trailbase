@@ -27,7 +27,7 @@ def target(node='fm1', address='fm1.example'):
 
 class ControlIOTests(unittest.TestCase):
     def make_io(self, config=None, state=None, operation=None):
-        root = Path(tempfile.mkdtemp())
+        root = Path(tempfile.mkdtemp()).resolve()
         journal = JournalStub()
         config = config or {'nodes': {'A': {'address': 'fm1.example'}}}
         operation = operation or {'id': 'a' * 32, 'source': 'A', 'target': 'B',
@@ -237,7 +237,7 @@ class ControlIOTests(unittest.TestCase):
                      patch.object(recovery, '_protected_ledger'), \
                      patch.object(control, 'oracle_directory'), patch.object(Path, 'mkdir'), \
                      patch.object(control.os, 'chown'), patch.object(control.os, 'open', side_effect=opened), \
-                     patch.object(control.os, 'write'), patch.object(control.os, 'fchmod'), patch.object(control.os, 'fchown'), \
+                     patch.object(control.os, 'write', side_effect=lambda fd, raw: len(raw)), patch.object(control.os, 'fchmod'), patch.object(control.os, 'fchown'), \
                      patch.object(control.os, 'fsync', side_effect=synced), patch.object(control.os, 'close'), \
                      patch.object(control, '_copy_bound_input', side_effect=copied), \
                      patch.object(control, '_open_held_inputs', return_value=[]):
@@ -266,7 +266,7 @@ class ControlIOTests(unittest.TestCase):
              patch.object(recovery, '_protected_ledger'), \
              patch.object(control, 'oracle_directory') as make_area, \
              patch.object(control.os, 'open', side_effect=opened), \
-             patch.object(control.os, 'write'), patch.object(control.os, 'fsync', side_effect=synced), \
+             patch.object(control.os, 'write', side_effect=lambda fd, raw: len(raw)), patch.object(control.os, 'fsync', side_effect=synced), \
              patch.object(control.os, 'close'), patch.object(control, '_copy_bound_input') as copied:
             with self.assertRaisesRegex(OSError, 'request fsync'):
                 io.oracle('compare', 'config', positions, '/tmp/ledger.jsonl')
