@@ -4,6 +4,18 @@ An early-stage project for a single-writer [TrailBase](https://github.com/trailb
 
 **No production-ready HA deployment is provided.** A bounded local qualification harness now exists; the remaining documents describe the intended system, feasibility gates, and work required.
 
+## Current development — Rust V1
+
+**Active scope:** one controller, primary-only proxies, manual fenced failover; no Raft or replica reads. **Current stage: Task 2, partial—not accepted.** The package has configuration/routing unit code, but its executable has an empty `main()`; there is no configuration-check command or proxy yet.
+
+- [Active plan and restart handoff](docs/plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance) — authoritative stage/acceptance tracker.
+- [Development workflow](AGENTS.md) — restart procedure, autonomous stage loop, evidence and approval rules.
+- [Current status](docs/status.md) and [Rust usage/limits](rust/README.md).
+
+Next implementation work: finish Task 2's runnable checker and configuration/route schema validation, then meet its acceptance gates before Task 3. Current changes are isolated on `hat-v1-task2`, not merged into `main`.
+
+Python `hat/`, `tests/`, `experiments/`, existing `deploy/`, and earlier plans are **historical implementation/evidence**, not instructions to resume old live operations or the current Rust roadmap. Preserve them; do not translate them wholesale or treat their checks as Rust qualification.
+
 ## Start here
 
 - **[V1 single-controller manual failover plan](docs/plans/2026-09-11-v1-manual-failover.md):** current delivery scope—Rust proxies forward all application traffic to one primary, standbys keep TrailBase stopped, and one controller coordinates manual fenced failover. Raft is deferred; scoped replica reads await qualified TrailBase read-only support. Detailed implementation remains proposed.
@@ -19,7 +31,7 @@ An early-stage project for a single-writer [TrailBase](https://github.com/trailb
 - [Deployment and storage contract](docs/deployment.md): per-node setup, S3/R2 layout, credentials, and operations.
 - [Work and issue register](docs/work-register.md): what to build, blockers, tests, and deferred capabilities.
 
-## Initial direction
+## Background and retained qualification context
 
 **Provider-independent cloud VMs/VPSs first.** Hosting-provider selection, SDKs, adapters, account details, and provisioning stay outside this repo. HAT defines portable deployment requirements and an operator-supplied fencing contract; no hosting provider needs to be chosen now.
 

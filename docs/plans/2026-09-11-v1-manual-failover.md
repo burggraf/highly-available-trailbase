@@ -12,6 +12,54 @@
 
 ---
 
+## Execution state and acceptance
+
+This section is the authoritative restart tracker. Follow [AGENTS.md](../../AGENTS.md). The task descriptions below remain the roadmap; historical Python task numbers are unrelated to these V1 stages.
+
+**Workflow approval:** owner selected “finish one explicitly authorized stage, including test/fix/review iterations; stop when its acceptance criteria pass” and allowed local checkpoint commits, with merge/push still requiring approval. This supersedes the default no-commit statement above only for task-owned local checkpoints. It does not authorize later stages or external effects.
+
+| Stage | State | Acceptance/authorization |
+| --- | --- | --- |
+| Task 1 — contracts/prerequisites | in_progress | Owner architecture decisions captured; action/security/native gates still open. Not a blocker to the explicitly authorized inert Task 2 slice. |
+| Task 2 — package/config/routing | in_progress | Original local-only implementation authorized. Draft completion criteria below make missing work explicit; newly specified details require owner confirmation before continuation. |
+| Task 3 — proxy/peer transport | pending | Not authorized; requires accepted Task 2 and approved stage criteria. |
+| Task 4 — lifecycle/replication | pending | Not authorized; native/process qualification separately scoped. |
+| Task 5 — controller/dashboard/restart | pending | Not authorized; action/security contracts must be approved first. |
+| Task 6 — restore/fence boundary | pending | Not authorized; fake adapters do not authorize live fencing. |
+| Task 7 — planned switchover | pending | Not authorized; Task 5/6 and fixture approval required. |
+| Task 8 — failover/rejoin | pending | Not authorized; accepted Task 7 required. |
+| Task 9 — deployment/native acceptance | pending | Not authorized; explicit disposable infrastructure and deployment approvals required. |
+| Task 10 — fault/release qualification | pending | Not authorized; workload, attempt budget and soak approval required. |
+
+### Task 2 completion contract — proposed for confirmation
+
+Scope: inert configuration and route validation/selection only. No listener, network call, writer, child supervision, route persistence, activation, failover, or infrastructure operation. Durable route publication remains a later integration gate; this stage tests in-memory replacement without claiming crash durability or controller authenticity.
+
+| ID | Observable acceptance requirement | Required evidence | Result |
+| --- | --- | --- | --- |
+| T2-AC1 | One package under `rust/`, locked dependencies, a real configuration-check command with documented input/exit semantics. Valid input succeeds; invalid input/arguments fail without leaking supplied content. | Real-binary integration tests using non-secret fixtures, including bounded input and unknown command refusal. | not_run — current main is empty |
+| T2-AC2 | Exact config schema is documented and enforced: version, field/key uniqueness, size limits, UUID/name grammar, fixed inventory and known primary, endpoint rules, required main/session and declared aux; duplicates and local logs enrollment refused. Replica reads refused. | Named positive/negative tests including nested duplicate keys, invalid endpoints/identities, missing fields/DBs, oversized input; fixture includes main/session/aux. | not_run — partial unit coverage only |
+| T2-AC3 | Path rules are explicit and executable: reject unsafe/invalid paths; distinguish lexical validation from actual ownership/permission/symlink checks. No claim of private storage based only on a string prefix; never open referenced secrets/DBs. | Adversarial path tests and temporary non-secret fixtures for any metadata checks. Document which checks are deferred to installation/lifecycle. | not_run — current hard-coded prefix does not establish privacy |
+| T2-AC4 | Strict versioned route wire record binds cluster, primary, writer epoch, incarnation and release/config digests. Generations use validated decimal strings with numeric comparison; endpoints are resolved only from validated inventory, never supplied by a route. Config hints alone cannot create active authority. | Parse/validation tests for malformed/oversize/unknown/duplicate fields, integer boundaries, unknown nodes and wrong cluster. Document canonical identity/digest/epoch formats. | not_run — Rust struct only; arbitrary endpoint currently possible |
+| T2-AC5 | GET, POST, GET logout, auth, SSE, admin, and unknown/custom requests all choose the active primary independently of forwarding. No route refuses as unavailable; no expiry on controller disconnect, retry or fallback. | Named routing tests using realistic request paths and validated inventory/route input. No controller/network dependency in the selection function. | not_run — six existing routing tests are partial evidence |
+| T2-AC6 | Lower generation and conflicting equal generation refuse without altering active state; exact duplicate is idempotent; valid higher generation installs as one replacement. | Tests verify both refusal and unchanged selected route; conflicts include epoch/incarnation/digest as well as node. | not_run — basic conflict tests exist, full postconditions missing |
+| T2-AC7 | Meaningful failing-first evidence, all local gates green, criterion-by-criterion review, accurate docs and restart handoff. | RED assertion failures before fixes, real CLI checks, full commands below, scoped review disposition and source-bound evidence. | not_run — prior compile-only RED and green units do not satisfy this gate |
+
+`not_run` means the complete criterion has not been verified, not that no related code exists. Existing partial code is not grandfathered into acceptance. Before starting each later stage, expand its numbered requirements and Exit into the same ID/check/result table, get approval of scope/criteria, then execute without seeking approval for each routine local iteration. Native or external gates remain separate and cannot be marked passed by mocks.
+
+### Restart handoff — documentation correction checkpoint
+
+- **Location:** branch `hat-v1-task2`, worktree `.worktrees/v1-task2` relative to the main checkout; base `2ce850f`. Resolve current checkpoint revision with Git; runtime was untracked at the preceding checkpoint. No merge/push/deployment performed.
+- **Current authorization:** this pass updates documentation/workflow only. Do not automatically resume Rust implementation from this handoff. Next owner decision: confirm Task 2 completion criteria and authorize its continuation.
+- **Implemented:** Cargo package/lock, config unit code, in-memory primary selection and basic route update guards. **Missing:** working checker CLI, complete validated configuration/route schema and tests, acceptance review. `main()` is empty. Task 3 must not start yet.
+- **Previous evidence (not rerun in this documentation pass):** six routing / 14 total Rust tests passed; fmt, clippy `-D warnings`, locked release build and diff check exited zero. Local log `/tmp/hat-v1-final-verification-rust.txt` recorded these results against the uncommitted five Rust source/package files; temporary logs are not durable acceptance evidence. Future runs must retain sanitized source-bound evidence in `docs/reports/` or an explicitly retained artifact location.
+- **Retained failure history:** initial test invocation had an invalid second filter; subsequent RED was missing-type compilation, not a behavioral assertion. A HashSet compile error, formatting failure and dead-code clippy failure were later corrected. Python discovery initially ran 235 tests with three subprocess import failures; `PYTHONPATH=.` rerun passed 235, with existing SQLite warnings. No Python files were changed. Prior chat claims that Task 2 was complete/ready for Task 3 are retracted.
+- **Review gaps:** config path prefix is not filesystem privacy; endpoint validation is incomplete; route fields are publicly constructible, accept arbitrary endpoints and lack strict wire validation. No independent acceptance review recorded.
+- **Next safe action:** read `AGENTS.md`, inspect branch/diff and criterion approval; after continuation approval, finalize/document the Task 2 schema and write a failing real-binary configuration-check test before implementing the CLI. Resolve remaining criteria in the same stage, not via architecture redesign.
+- **Processes:** no runtime services started by the Rust slice; no build/test process intentionally left running. Inspect managed processes on restart rather than assuming this remains true.
+- **Documentation verification:** six edited/new documentation files checked; 46 local link targets exist, execution-state anchors resolve, and the documented empty entrypoint matches source. `git diff --check` passed. Self-review compared stage state, approval boundaries and known implementation gaps; no independent review or fresh runtime pass is claimed. This documentation checkpoint does not accept any implementation criterion.
+- **Integration:** this checkpoint commits documentation only; the five Rust package/source files remain untracked in this worktree and must be preserved. Branch checkout elsewhere will not recover those untracked files. Capture a clearly labeled partial implementation checkpoint before moving/removing the worktree. Local checkpoints permitted; merge/push require owner approval.
+
 ## 1. Decisions and scope
 
 ### Confirmed by the owner
@@ -216,6 +264,8 @@ All must exit zero before a milestone is described as locally passing. Use the p
 **Exit:** a small reviewable contract, concrete pending deployment inputs and testable refusal cases. No consensus research or feature scaffolding. Timebox approximately one working day; unresolved external guarantees are explicit blockers rather than guessed contracts.
 
 ### Task 2 — Package, configuration and primary-only routing
+
+**Execution: in_progress, not accepted.** See [completion criteria and handoff](#execution-state-and-acceptance); passing the initial unit suite did not complete this task.
 
 **Files:** create `rust/Cargo.toml`, `rust/Cargo.lock`, `rust/src/main.rs`, `rust/src/config.rs`, `rust/src/routing.rs`; tests alongside modules.
 

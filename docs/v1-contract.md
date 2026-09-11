@@ -2,6 +2,8 @@
 
 **Status:** Owner decisions captured, including controller-dependent unattended restart, public HTTPS dashboard access and individual local operator accounts. Implementation contracts below are a design draft for review, not an implemented or qualified protocol and not permission to deploy. See the [implementation plan](plans/2026-09-11-v1-manual-failover.md).
 
+**Implementation tracking:** this contract is not the progress ledger. Task 2 now has partial Rust unit code, but its checker CLI and validated route wire boundary remain unfinished. See the [active acceptance tracker](plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance). The planning-pass statements below describe that earlier pass, not current implementation completion.
+
 ## Confirmed requirements
 
 The owner confirmed these choices on 2026-09-11:
