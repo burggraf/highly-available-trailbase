@@ -475,7 +475,8 @@ def ingress_allowed(root, maintenance, permit, ingress, boot):
                 if not re.fullmatch('[0-9a-f]{32}',ident) or not marker_present: return False
                 if json.loads(maintenance.read_text())!={'operation':ident}: return False
                 failure=root/ident/'failure.json'
-                if _d3_serving_state(db,ident,digest,failure): return True
+                if _d3_serving_state(db,ident,digest,failure):
+                    return journal_identity==_stable_private_bytes(path)[1] and ingress_identity==_stable_private_bytes(ingress,strict=False)[1]
                 steps=db.execute('SELECT position,phase,status,evidence FROM steps WHERE operation=? ORDER BY rowid',(ident,)).fetchall()
                 route_pending=[(i,p,s) for i,p in enumerate(D3_PHASES[:8]) for s in ('intent','done')]+[(8,'route','intent')]
                 verify_pending=[(i,p,s) for i,p in enumerate(D3_PHASES[:9]) for s in ('intent','done')]+[(9,'verify','intent')]
@@ -492,7 +493,9 @@ def ingress_allowed(root, maintenance, permit, ingress, boot):
                 private_file(permit);value=json.loads(permit.read_text())
                 if not isinstance(value,dict) or set(value)!={'operation','boot_id','pid','birth','config_sha'}: return False
                 birth=process_identity(value['pid'])
-                return (value['operation']==ident and value['boot_id']==boot and birth is not None
+                return (journal_identity==_stable_private_bytes(path)[1]
+                        and ingress_identity==_stable_private_bytes(ingress,strict=False)[1]
+                        and value['operation']==ident and value['boot_id']==boot and birth is not None
                         and value['birth']==birth and value['config_sha']==digest)
             expected=[(i,p,s) for i,p in enumerate(PHASES[:8]) for s in ('intent','done')]+[(8,'route','intent')]
             steps=db.execute('SELECT position,phase,status,evidence FROM steps WHERE operation=? ORDER BY rowid',(ident,)).fetchall()
@@ -503,7 +506,9 @@ def ingress_allowed(root, maintenance, permit, ingress, boot):
                 return False
             private_file(permit); value=json.loads(permit.read_text())
             birth=process_identity(value['pid'])
-            return (value['operation']==ident and value['boot_id']==boot and birth is not None
+            return (journal_identity==_stable_private_bytes(path)[1]
+                    and ingress_identity==_stable_private_bytes(ingress,strict=False)[1]
+                    and value['operation']==ident and value['boot_id']==boot and birth is not None
                     and value['birth']==birth and value['config_sha']==digest)
     except (OSError, RuntimeError, ValueError, KeyError, TypeError, sqlite3.Error): return False
 
