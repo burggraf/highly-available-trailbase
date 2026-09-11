@@ -360,7 +360,39 @@ class RestoreTask5Matrix(unittest.TestCase):
                 with self.assertRaises(ValueError): auth.recheck()
             finally: auth.close()
 
-    def test_matching_committed_done_row_is_the_only_positive_writer_authority(self):
+    def test_completed_authority_negative_matrix_only_exact_route_done_is_accepted(self):
+        cases = {
+            'route-digest': lambda route: route.update(config_sha='0' * 64),
+            'route-epoch': lambda route: route.update(epoch='d1-' + 'b' * 32),
+            'route-writer': lambda route: route.update(writer='A'),
+            'route-intent': 'intent', 'route-missing': 'missing',
+            'non-route-done': 'non-route', 'operation-incomplete': 'incomplete',
+        }
+        for name, mutation in cases.items():
+            with self.subTest(name=name):
+                root = Path(tempfile.mkdtemp(dir=Path.cwd())); j = control.Journal(root); j.__enter__()
+                op = j.begin('A', 'B', 'd1-source'); ingress = root/'ingress'; ingress.write_bytes(b'route'); ingress.chmod(0o600)
+                digest = hashlib.sha256(ingress.read_bytes()).hexdigest()
+                for phase in control.PHASES:
+                    value = {'writer':'B','epoch':op['new_epoch'],'config_sha':digest} if phase == 'route' else {}
+                    j.step(phase, lambda value=value: value)
+                if mutation == 'missing':
+                    j.db.execute("DELETE FROM steps WHERE phase='route'")
+                elif mutation == 'non-route':
+                    j.db.execute("UPDATE steps SET phase='other' WHERE phase='route'")
+                elif mutation == 'incomplete':
+                    j.db.execute('UPDATE operations SET complete=0 WHERE id=?', (op['id'],))
+                elif mutation == 'intent':
+                    j.db.execute("UPDATE steps SET status='intent' WHERE phase='route'")
+                elif callable(mutation):
+                    row = j.db.execute("SELECT evidence FROM steps WHERE phase='route' AND status='done'").fetchone()
+                    route = json.loads(row[0]); mutation(route)
+                    j.db.execute("UPDATE steps SET evidence=? WHERE phase='route' AND status='done'", (json.dumps(route),))
+                j.db.commit()
+                with self.assertRaises(RuntimeError): control.current_writer(j, ingress)
+                self.assertFalse(control.ingress_allowed(root, root/'maintenance', root/'permit', ingress, 'boot'))
+                j.__exit__(None, None, None)
+
         root = Path(tempfile.mkdtemp(dir=Path.cwd())); j = control.Journal(root); j.__enter__()
         op = j.begin('A', 'B', 'd1-source'); ingress = root/'ingress'; ingress.write_bytes(b'route'); ingress.chmod(0o600)
         digest = hashlib.sha256(ingress.read_bytes()).hexdigest()
@@ -369,6 +401,20 @@ class RestoreTask5Matrix(unittest.TestCase):
             j.step(phase, lambda value=value: value)
         j.finish()
         self.assertEqual(control.current_writer(j, ingress), {'operation':op['id'], 'writer':'B', 'epoch':op['new_epoch']})
+        j.__exit__(None, None, None)
+
+
+    def test_replacement_is_refused_by_real_writer_and_ingress_consumers(self):
+        root = Path(tempfile.mkdtemp(dir=Path.cwd())); j = control.Journal(root); j.__enter__()
+        op = j.begin('A', 'B', 'd1-source'); ingress = root/'ingress'; ingress.write_bytes(b'route'); ingress.chmod(0o600)
+        digest = hashlib.sha256(ingress.read_bytes()).hexdigest()
+        for phase in control.PHASES:
+            value = {'writer':'B','epoch':op['new_epoch'],'config_sha':digest} if phase == 'route' else {}
+            j.step(phase, lambda value=value: value)
+        j.finish()
+        ingress.rename(root/'ingress.old'); ingress.write_bytes(b'route'); ingress.chmod(0o600)
+        with self.assertRaises(RuntimeError): control.current_writer(j, ingress)
+        self.assertFalse(control.ingress_allowed(root, root/'maintenance', root/'permit', ingress, 'boot'))
         j.__exit__(None, None, None)
 
 
