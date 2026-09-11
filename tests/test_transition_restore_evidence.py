@@ -21,9 +21,18 @@ class RestoreEvidenceTests(unittest.TestCase):
 
     def test_rejects_empty_unrelated_mismatch_and_split_labels(self):
         for output in (b'', b'restore complete', b'txid=10 to_txid=10 position=99',
-                       b'txid=10\nto_txid=10 position=10'):
+                       b'txid=10\nto_txid=10 position=10', b'10',
+                       b'txid=10 to_txid=10 position=10 extra=10'):
             with self.assertRaisesRegex(RuntimeError, 'restore cut evidence unavailable'):
                 transition.validate_restore_evidence(output, self.cut)
+
+    def test_shared_parser_requires_exact_expected_records_and_bound(self):
+        transition.validate_restore_positions(b'txid=10 to_txid=10 position=16', [0x10])
+        for output, expected in ((b'txid=10 to_txid=10 position=16', [0x10, 0x20]),
+                                 (b'txid=10 to_txid=10 position=16\n' * 2, [0x10]),
+                                 (b'x' * (transition._RESTORE_OUTPUT_LIMIT + 1), [0x10])):
+            with self.assertRaisesRegex(RuntimeError, 'restore cut evidence unavailable'):
+                transition.validate_restore_positions(output, expected)
 
 
 if __name__ == '__main__':

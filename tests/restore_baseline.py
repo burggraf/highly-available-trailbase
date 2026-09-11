@@ -96,16 +96,11 @@ def _successful_object(raw):
 
 
 def _verify_restore_position(raw, expected):
-    """Reject a tool that reports a TXID other than the requested cut."""
-    text = raw.decode('utf-8', 'replace')
-    values = []
-    for token in ('txid', 'to_txid', 'position'):
-        import re
-        values.extend(re.findall(rf'\b{token}\b["=:\s]+([0-9a-fA-F]+)', text))
-    if not values or any(int(value, 16) != expected for value in values):
-        # A successful restore must independently report the requested cut; an
-        # empty or unrelated tool output is not proof of the selected position.
-        raise ValueError('restore position differs')
+    """Use the production normative grammar for the single restore record."""
+    try:
+        transition.validate_restore_positions(raw, [expected])
+    except RuntimeError:
+        raise ValueError('restore position differs') from None
 
 
 def _signature_for_data(data_root, authorities):

@@ -120,10 +120,13 @@ def run(args, work, timeout=90, env=None):
         raise RuntimeError('restore cut evidence unavailable') from None
 
 
-def validate_restore_evidence(output, cut):
-    """Require one bounded, coherent labeled record per requested position."""
+def validate_restore_positions(output, expected):
+    """Require exactly one bounded coherent labeled record per expected position."""
     try:
-        text = bytes(output).decode('ascii')
+        raw = bytes(output)
+        if len(raw) > _RESTORE_OUTPUT_LIMIT:
+            raise ValueError
+        text = raw.decode('ascii')
         records = []
         pattern = re.compile(
             r'^\s*txid\s*[:=]\s*([0-9a-fA-F]+)\s+'
@@ -137,12 +140,21 @@ def validate_restore_evidence(output, cut):
                 raise ValueError
             txid, to_txid, position = match.groups()
             records.append((int(txid, 16), int(to_txid, 16), int(position, 0)))
-        expected = sorted(cut.values())
-        if len(records) != len(expected) or len({row[2] for row in records}) != len(records):
-            raise ValueError
-        if sorted(records) != sorted((position, position, position) for position in expected):
+        expected = sorted(expected)
+        if (not expected or any(type(position) is not int or not 0 < position < 2**64 for position in expected)
+                or len(records) != len(expected) or len({row[2] for row in records}) != len(records)
+                or sorted(records) != [(position, position, position) for position in expected]):
             raise ValueError
     except (TypeError, ValueError, UnicodeError):
+        raise RuntimeError('restore cut evidence unavailable') from None
+
+
+def validate_restore_evidence(output, cut):
+    """Require one bounded, coherent labeled record per requested position."""
+    try:
+        validate_cut(cut)
+        validate_restore_positions(output, cut.values())
+    except (TypeError, ValueError, RuntimeError):
         raise RuntimeError('restore cut evidence unavailable') from None
 
 

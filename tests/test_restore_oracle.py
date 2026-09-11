@@ -60,6 +60,16 @@ class RestoreOracleTests(unittest.TestCase):
         self.assertFalse(any(isinstance(node, ast.Assert) for node in ast.walk(tree)))
         self.assertNotIn('demo_smoke', PATH.read_text())
 
+    def test_restore_position_uses_normative_transition_grammar(self):
+        with mock.patch.object(oracle.transition, 'validate_restore_positions') as validate:
+            oracle._verify_restore_position(b'txid=10 to_txid=10 position=16', 16)
+        validate.assert_called_once_with(b'txid=10 to_txid=10 position=16', [16])
+
+    def test_restore_position_rejects_loose_single_token_and_split_labels(self):
+        for raw in (b'10', b'txid=10', b'txid=10\nto_txid=10 position=16'):
+            with self.assertRaises(ValueError):
+                oracle._verify_restore_position(raw, 16)
+
     def test_signature_uses_normative_transition_and_rechecks_held_authorities(self):
         events = []
 
