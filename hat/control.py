@@ -411,6 +411,7 @@ class Journal:
         operation, previous = self._boundary(ident, 10, ('B', 'A'))
         if not isinstance(evidence, dict) or not evidence:
             raise ValueError('rejoin_boot evidence is required')
+        _validate_rejoin_boot_boundary(operation, previous, evidence)
         self.db.execute('INSERT INTO steps VALUES(?,?,?,?,?)',
                         (ident, 10, 'rejoin_boot', 'done', json.dumps(evidence, allow_nan=False)))
         self._commit('reconcile-rejoin-boot-done')
@@ -441,15 +442,13 @@ class Journal:
         try: previous={p:json.loads(e) for _,p,s,e in steps if s=='done'}
         except (TypeError,ValueError) as exc: raise RuntimeError('malformed operation evidence') from exc
         operation=dict(zip(('id','source','target','source_epoch','new_epoch'),row[:5]))
-        _validate_d3_proof(operation,previous)
         if boot_done:
             marker=self.root/ident/'reconciliation-rejoin-boot.json'
             archive=self.root/ident/'failure.before-reconciliation-rejoin-boot.json'
             private_file(marker);private_file(archive)
-            proof=json.loads(marker.read_text())
-            if (proof.get('operation')!=ident or proof.get('action')!='reconcile-rejoin-boot'
-                    or proof.get('failure_sha')!=hashlib.sha256(archive.read_bytes()).hexdigest()):
-                raise RuntimeError('reconciled boot provenance differs')
+            _validate_rejoin_boot_boundary(operation, previous, marker=marker, archive=archive)
+        else:
+            _validate_rejoin_boot_boundary(operation, previous)
         self.operation=operation;self.next=11 if boot_done else 10;self.pending=False
         return dict(operation),previous
 
@@ -575,6 +574,42 @@ def _validate_d3_proof(operation, evidence, verified=True):
             raise ValueError('D3 new-write restore proof is not beyond baseline')
     except (KeyError,TypeError,AttributeError,ValueError) as exc:
         raise RuntimeError('D3 recovery proof differs or is malformed') from exc
+
+
+def _validate_rejoin_boot_boundary(operation, previous, evidence=None, marker=None, archive=None):
+    """One canonical validator for the pre-commit and restart rejoin boundary."""
+    import recovery
+    _validate_d3_proof(operation, previous)
+    if evidence is not None:
+        try:
+            # Round-trip through canonical storage semantics, rejecting injected
+            # fields and non-canonical values before the journal commit.
+            raw = recovery.canonical_json(evidence)
+            value = recovery.parse_canonical_json(raw)
+            if value != evidence or set(value) != {'receipt','fresh_provider','cold','reconciliation','a_probe'}:
+                raise ValueError('rejoin boot evidence schema differs')
+            proof = value['reconciliation']
+            if (not isinstance(proof, dict)
+                    or set(proof) != {'operation','action','failure_sha','receipt_sha','cold_sha'}
+                    or proof['operation'] != operation['id']
+                    or proof['action'] != 'reconcile-rejoin-boot'
+                    or not re.fullmatch(r'[0-9a-f]{64}', proof['failure_sha'])
+                    or proof['receipt_sha'] != hashlib.sha256(recovery.canonical_json(value['receipt'])).hexdigest()
+                    or proof['cold_sha'] != hashlib.sha256(recovery.canonical_json(value['cold'])).hexdigest()):
+                raise ValueError('rejoin boot evidence binding differs')
+            if archive is not None and proof['failure_sha'] != hashlib.sha256(Path(archive).read_bytes()).hexdigest():
+                raise ValueError('rejoin boot failure hash differs')
+        except (TypeError, ValueError, OSError, KeyError) as exc:
+            raise RuntimeError('rejoin boot evidence is malformed') from exc
+    if marker is not None or archive is not None:
+        try:
+            proof = recovery.parse_canonical_json(Path(marker).read_bytes())
+            if (proof.get('operation') != operation['id']
+                    or proof.get('action') != 'reconcile-rejoin-boot'
+                    or proof.get('failure_sha') != hashlib.sha256(Path(archive).read_bytes()).hexdigest()):
+                raise ValueError
+        except (TypeError, ValueError, OSError, KeyError) as exc:
+            raise RuntimeError('reconciled boot provenance differs') from exc
 
 
 def _d3_serving_state(db, ident, digest, failure, failure_snapshot=None, failure_bytes=None):
@@ -1551,9 +1586,11 @@ class ControlIO:
                 raise ValueError('installed tree namespace changed')
 
     def _acceptance_request(self, phase, replica_config, positions, ledger, fault_ledger,
-                            hold_installed=False):
+                            hold_installed=False, operation_evidence=None):
         """Derive the canonical request from journal-authorized state, never callers."""
         import recovery
+        if operation_evidence is not None and operation_evidence != self.operation:
+            raise ValueError('operation evidence differs from controller operation')
         has_fault = fault_ledger is not None
         profile, epoch, expected_position, reconciled = recovery.derive_restore_profile(self.operation, phase, has_fault)
         if reconciled:
@@ -1589,6 +1626,7 @@ class ControlIO:
         account = pwd.getpwnam('hat-oracle')
         support_names, support, binaries = self._authorized_manifests()
         installed_holds = []
+        source_holds = []
         try:
             support_result = self._installed_manifest(
             ORACLE_ROOT / 'support', support_names, ROOT_UID, account.pw_gid,
@@ -1621,6 +1659,7 @@ class ControlIO:
                     authority = recovery.parse_canonical_json(sidecar.read())
                 recovery._authority(authority, self.operation, profile)
                 selected.recheck(); identity = selected.identity
+                source_holds.append(selected)
                 wire = authority['ledger']
                 if (authority != captured or wire['path'] != str(ledger) or wire['sha256'] != selected.sha256
                         or (wire['device'], wire['inode'], wire['mode'], wire['uid'], wire['links'], wire['bytes'])
@@ -1632,36 +1671,40 @@ class ControlIO:
                 wire = authority['ledger']
                 if wire['path'] != str(ledger) or authority['support'] != support or authority['binaries'] != binaries:
                     raise ValueError('protected ledger authority differs from committed preflight')
-                with descriptor.DescriptorAuthority.open_file(
+                selected = descriptor.DescriptorAuthority.open_file(
                         ledger, trusted_root='/', trusted_uids={0, os.geteuid()},
                         expected_uid=wire['uid'], expected_mode=wire['mode'],
                         expected_nlink=wire['links'], expected_size=wire['bytes'],
-                        expected_sha256=wire['sha256'], limit=4 << 20) as selected:
-                    identity = selected.identity
-                    if ((identity[0], identity[1], stat.S_IMODE(identity[2]), identity[3], identity[5], identity[6])
-                            != (wire['device'], wire['inode'], wire['mode'], wire['uid'], wire['links'], wire['bytes'])):
-                        raise ValueError('protected ledger authority differs from committed preflight')
+                        expected_sha256=wire['sha256'], limit=4 << 20)
+                source_holds.append(selected)
+                identity = selected.identity
+                if ((identity[0], identity[1], stat.S_IMODE(identity[2]), identity[3], identity[5], identity[6])
+                        != (wire['device'], wire['inode'], wire['mode'], wire['uid'], wire['links'], wire['bytes'])):
+                    raise ValueError('protected ledger authority differs from committed preflight')
             inputs = {'replica_config_sha256': hashlib.sha256(replica_config.encode() if isinstance(replica_config,str) else bytes(replica_config)).hexdigest(), 'ledger_sha256': authority['ledger']['sha256'], 'ledger_authority': authority, 'restore_points': {db: {'source':'/var/lib/hat-demo/depot/data/'+db+'.db','position': positions[db]} for db in positions}, 'support': support, 'binaries': binaries}
             if profile == 'recovery-comparison':
                 from client import read_closed_ledger
                 seal = self.state.get('fault_seal')
                 if not isinstance(seal, dict):
                     raise ValueError('sealed fault authority is unavailable')
-                with recovery._open_fault(fault_ledger, self.work.parent,
-                                          seal.get('destination'), seal.get('sha256')) as fault:
-                    events = read_closed_ledger(fault_ledger, self.operation['source_epoch'])
-                    fault.recheck()
-                    operations = recovery.fault_operations(events)
-                    inputs.update(fault_ledger_sha256=fault.sha256, fault_operations=operations,
-                                  fault_operation_count=len(operations),
-                                  fault_operations_sha256=hashlib.sha256(recovery.canonical_json(operations)).hexdigest())
+                fault = recovery._open_fault(fault_ledger, self.work.parent,
+                                          seal.get('destination'), seal.get('sha256'))
+                source_holds.append(fault)
+                fault_raw = fault.read()
+                fault.recheck()
+                events = read_closed_ledger(fault_ledger, self.operation['source_epoch'], raw=fault_raw)
+                fault.recheck()
+                operations = recovery.fault_operations(events)
+                inputs.update(fault_ledger_sha256=fault.sha256, fault_operations=operations,
+                              fault_operation_count=len(operations),
+                              fault_operations_sha256=hashlib.sha256(recovery.canonical_json(operations)).hexdigest())
             request = {'schema': recovery._ACCEPTANCE_SCHEMA, 'operation': self.operation['id'], 'phase': phase, 'source': self.operation['source'], 'target': self.operation['target'], 'epoch': epoch, 'positions': positions, 'profile': profile, 'inputs': inputs}
             validated = recovery.validate_acceptance_request(request, self.operation)
             result = validated, recovery.canonical_json(request)
-            return (*result, installed_holds, identity) if hold_installed else result
+            return (*result, installed_holds, identity, source_holds) if hold_installed else result
         except BaseException:
             if hold_installed:
-                descriptor.close_all(installed_holds)
+                descriptor.close_all(installed_holds + source_holds)
             if profile == 'fresh-writes': self._close_fresh_writes()
             raise
 
@@ -1670,10 +1713,26 @@ class ControlIO:
         import recovery
         import node
         self.journal.check_authority()
-        held = []; installed_holds = []
+        held = []; installed_holds = []; source_holds = []
+        operation_path = self.work / (phase + '-operation-evidence.json')
+        operation_raw = recovery.canonical_json(self.operation)
+        self._durable_bytes(operation_path, operation_raw, label='operation-evidence')
+        operation_authority = descriptor.DescriptorAuthority.open_file(
+            operation_path, trusted_root=self.work, trusted_uids={0, os.geteuid()},
+            expected_uid=os.geteuid(), expected_mode=0o600, expected_nlink=1,
+            expected_size=len(operation_raw), expected_sha256=hashlib.sha256(operation_raw).hexdigest(), limit=1 << 20)
+        operation_value = recovery.parse_canonical_json(operation_authority.read())
+        if operation_value != self.operation:
+            descriptor.close_all([operation_authority]); raise ValueError('operation evidence differs')
+        held.append(operation_authority)
         try:
-            request, request_bytes, installed_holds, ledger_identity = self._acceptance_request(
-                phase, replica_config, positions, selected_ledger, fault_ledger, hold_installed=True)
+            accepted = self._acceptance_request(
+                phase, replica_config, positions, selected_ledger, fault_ledger, hold_installed=True,
+                operation_evidence=operation_value)
+            if len(accepted) == 5:
+                request, request_bytes, installed_holds, ledger_identity, source_holds = accepted
+            else:  # compatibility with test doubles for the pre-hold contract
+                request, request_bytes, installed_holds, ledger_identity = accepted
             request_path = self.work / (phase + '-acceptance-request.json')
             self._durable_bytes(request_path, request_bytes, label='acceptance-request')
             if request['phase'] != phase or request['positions'] != positions:
@@ -1692,14 +1751,13 @@ class ControlIO:
             identity = ledger_identity
             if not ledger_path.is_absolute():
                 raise ValueError('authorized ledger is unavailable')
-            with descriptor.DescriptorAuthority.open_file(
-                    ledger_path, trusted_root='/', trusted_uids={0, os.geteuid()},
-                    expected_uid=authority['ledger']['uid'], expected_gid=identity[4],
-                    expected_mode=authority['ledger']['mode'], expected_nlink=authority['ledger']['links'],
-                    expected_size=authority['ledger']['bytes'], expected_sha256=authority['ledger']['sha256'],
-                    limit=4 << 20) as authorized_ledger:
-                if request['profile'] != 'fresh-writes':
-                    recovery._protected_ledger(authorized_ledger.read())
+            for source in source_holds: source.recheck()
+            authorized_ledger = next((item for item in source_holds if item.path == ledger_path), None)
+            if authorized_ledger is None:
+                raise ValueError('selected ledger authority is unavailable')
+            authorized_ledger.recheck()
+            if request['profile'] != 'fresh-writes':
+                recovery._protected_ledger(authorized_ledger.read())
             account = pwd.getpwnam('hat-oracle')
             prefix = 'd2' if (self.operation['source'], self.operation['target']) == ('A', 'B') else 'd3'
             area = ORACLE_ROOT / (prefix + '-' + self.operation['id'] + '-' + phase)
@@ -1731,13 +1789,11 @@ class ControlIO:
                 seal = self.state.get('fault_seal')
                 if not isinstance(seal, dict):
                     raise ValueError('sealed fault authority is unavailable')
-                fault_authority = descriptor.DescriptorAuthority.open_file(
-                    fault_ledger, trusted_root='/', trusted_uids={0, os.geteuid()},
-                    expected_mode=0o600, expected_nlink=1,
-                    expected_sha256=seal.get('sha256'), limit=4 << 20)
-                held.append(fault_authority)
-                fault_raw = fault_authority.read()
+                fault_authority = next((item for item in source_holds if item.path == Path(fault_ledger).absolute()), None)
+                if fault_authority is None:
+                    raise ValueError('sealed fault authority is unavailable')
                 fault_authority.recheck()
+                fault_raw = fault_authority.read()
                 fault_identity = fault_authority.identity
                 oracle_fault = area / 'fault-ledger.jsonl'
                 self._copy_bound(fault_ledger, oracle_fault, 0o600, account.pw_uid, account.pw_gid,
@@ -1770,13 +1826,15 @@ class ControlIO:
                         (area/'acceptance-request.json', ROOT_UID, account.pw_gid, 0o640, 1 << 20),
                         (operation_evidence, ROOT_UID, account.pw_gid, 0o640, 1 << 20)]
             if oracle_fault is not None: expected.append((oracle_fault, account.pw_uid, account.pw_gid, 0o600, 4 << 20))
-            held = _open_held_inputs(expected, {0, os.geteuid(), account.pw_uid})
+            held.extend(_open_held_inputs(expected, {0, os.geteuid(), account.pw_uid}))
+            for source in source_holds: source.recheck()
             self.command(argv, timeout=270)
+            for source in source_holds: source.recheck()
             self._recheck_installed_manifest(
                 ORACLE_ROOT / 'support', support_names, installed_holds)
             self._recheck_installed_manifest(
                 ORACLE_BIN_ROOT, binary_names, installed_holds)
-            for item in held: item.recheck()
+            for item in held + source_holds: item.recheck()
             with descriptor.DescriptorAuthority.open_file(
                     result, trusted_root='/', trusted_uids={0, account.pw_uid},
                     expected_uid=account.pw_uid, expected_gid=account.pw_gid,
@@ -1795,7 +1853,7 @@ class ControlIO:
                 self._copy_bound(result, retained, 0o600, account.pw_uid, os.getegid(),
                                  result_authority.sha256, label='retained-result')
                 self._recheck_result(result_authority, result)
-            for item in held: item.recheck()
+            for item in held + source_holds: item.recheck()
             self._recheck_installed_manifest(
                 ORACLE_ROOT / 'support', support_names, installed_holds)
             self._recheck_installed_manifest(
@@ -1806,7 +1864,7 @@ class ControlIO:
             fresh = getattr(self, '_fresh_writes', None)
             if fresh is not None:
                 del self._fresh_writes
-            descriptor.close_all(([fresh[0]] if fresh is not None else []) + installed_holds + held)
+            descriptor.close_all(installed_holds + held + source_holds)
 
     def verify_url(self, ledger):
         from demo_smoke import verify_restore
@@ -2036,6 +2094,7 @@ def rejoin(config, operation_id, *, root=Path('/var/lib/hat-control'), ingress=P
     """Continue exactly one verified recovery at its durable rejoin boundary."""
     import node
     import transition
+    import recovery
     root, ingress, maintenance = map(Path, (root, ingress, maintenance))
     if io_factory is None: io_factory = ControlIO
     from contextlib import nullcontext
@@ -2186,6 +2245,7 @@ def reconcile_rejoin_boot(config, operation_id, *, root=Path('/var/lib/hat-contr
                           maintenance=Path('/etc/hat-control/maintenance'), io_factory=None):
     """Reconcile one retained D3 boot failure without issuing another power action."""
     import transition
+    import recovery
     root, ingress, maintenance = map(Path, (root, ingress, maintenance))
     if io_factory is None: io_factory = ControlIO
     with Journal(root) as journal:
@@ -2281,8 +2341,8 @@ def reconcile_rejoin_boot(config, operation_id, *, root=Path('/var/lib/hat-contr
         from transition import atomic_json
         atomic_json(marker, {'operation': operation_id, 'action': 'reconcile-rejoin-boot',
                              'failure_sha': hashlib.sha256(failure.read_bytes()).hexdigest(),
-                             'receipt_sha': hashlib.sha256(json.dumps(original_receipt,sort_keys=True).encode()).hexdigest(),
-                             'cold_sha': hashlib.sha256(json.dumps(original_cold,sort_keys=True).encode()).hexdigest()})
+                             'receipt_sha': hashlib.sha256(recovery.canonical_json(original_receipt)).hexdigest(),
+                             'cold_sha': hashlib.sha256(recovery.canonical_json(original_cold)).hexdigest()})
         route=previous['route']; state={'A':{},'ingress_touched':False}
         io=io_factory(journal,config,operation,work,state,maintenance,ingress)
         expected_config=previous.get('activate',{}).get('probe',{}).get('config',{})

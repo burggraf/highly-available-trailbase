@@ -206,10 +206,34 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
     operation = recovery._acceptance_operation(
         recovery.parse_canonical_json(_read(operation_evidence, 1 << 20)))
     request_value = recovery.parse_acceptance_request(request_raw, operation)
-    # The CLI fault argument is part of the profile matrix, not an optional
-    # caller override.  Reject it before creating any oracle artifacts.
+    # Authenticate and parse the exact held fault bytes before any other input,
+    # restore process, or filesystem effect.  The request's operation list is
+    # not trusted merely because its ledger digest is valid.
     if (request_value['profile'] == 'recovery-comparison') != (fault_ledger is not None):
         raise ValueError('fault ledger does not match restore profile')
+    fault_authority = None
+    events = None
+    if fault_ledger is not None:
+        expected = request_value['inputs']['fault_ledger_sha256']
+        fault_authority = descriptor.DescriptorAuthority.open_file(
+            fault_ledger, trusted_root='/', trusted_uids={0, os.geteuid()},
+            expected_mode=0o600, expected_nlink=1, expected_sha256=expected,
+            limit=4 << 20)
+        try:
+            fault_raw = fault_authority.read()
+            fault_authority.recheck()
+            events = read_closed_ledger(fault_ledger, request_value['epoch'], raw=fault_raw)
+            operations = recovery.fault_operations(events)
+            inputs = request_value['inputs']
+            if (operations != inputs['fault_operations']
+                    or len(operations) != inputs['fault_operation_count']
+                    or hashlib.sha256(recovery.canonical_json(operations)).hexdigest()
+                       != inputs['fault_operations_sha256']):
+                raise ValueError('fault operation evidence differs')
+            fault_authority.recheck()
+        except BaseException:
+            descriptor.close_all([fault_authority])
+            raise
     config_raw = _read(config, 1 << 20)
     if hashlib.sha256(config_raw).hexdigest() != request_value['inputs']['replica_config_sha256']:
         raise ValueError('replica configuration changed')
@@ -231,21 +255,6 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
         raise ValueError('ledger authority differs')
     if request_value['profile'] != 'recovery-comparison':
         recovery._protected_ledger(ledger_raw)
-    if fault_ledger is not None:
-        # Hold one authenticated descriptor for the complete ledger lifetime;
-        # never reopen the path (replacement, even with identical bytes, is
-        # therefore rejected by the authority recheck).
-        expected = request_value['inputs']['fault_ledger_sha256']
-        with descriptor.DescriptorAuthority.open_file(
-                fault_ledger, trusted_root='/', trusted_uids={0, os.geteuid()},
-                expected_mode=0o600, expected_nlink=1, expected_sha256=expected,
-                limit=4 << 20) as fault_authority:
-            fault_raw = fault_authority.read()
-            fault_authority.recheck()
-            events = read_closed_ledger(fault_ledger, request_value['epoch'], raw=fault_raw)
-            fault_authority.recheck()
-    else:
-        events = None
     root = Path(root)
     if not root.is_dir() or root.is_symlink(): raise ValueError('oracle root is unsafe')
     work = root / uuid.uuid4().hex; work.mkdir(mode=0o700)
@@ -282,8 +291,21 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
             except (OSError, ValueError):
                 raise ValueError('restore output is unsafe') from None
             database_authorities.append(restored_authority)
-            log_raw = (work / (name + '-restore.log')).read_bytes()
-            _verify_restore_position(log_raw, position)
+            log_path = work / (name + '-restore.log')
+            # The command's log is an oracle-owned artifact.  Bind owner,
+            # mode, link count, size, and bytes to one held descriptor; never
+            # reopen the pathname after the command.
+            log_authority = descriptor.DescriptorAuthority.open_file(
+                log_path, trusted_root=work, trusted_uids={0, os.geteuid()},
+                expected_uid=0, expected_gid=0, expected_mode=0o600,
+                expected_nlink=1, expected_size=log_path.stat().st_size,
+                limit=4 << 20)
+            try:
+                log_raw = log_authority.read()
+                log_authority.recheck()
+                _verify_restore_position(log_raw, position)
+            finally:
+                descriptor.close_all([log_authority])
             db = sqlite3.connect(':memory:', check_same_thread=False)
             try:
                 db.deserialize(restored_authority.read())
@@ -338,7 +360,8 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
         for authority in support_authorities + binary_authorities + database_authorities: authority.recheck()
         return result
     finally:
-        descriptor.close_all(support_authorities + binary_authorities + database_authorities)
+        descriptor.close_all(support_authorities + binary_authorities + database_authorities
+                            + ([fault_authority] if fault_authority is not None else []))
 
 
 class _ArgumentParser(argparse.ArgumentParser):

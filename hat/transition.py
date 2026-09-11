@@ -89,7 +89,7 @@ def logical_signature(data):
 def atomic_json(path, value, mode=0o600):
     temp = path.with_name(path.name+'.pending')
     with temp.open('x') as f:
-        os.fchmod(f.fileno(), mode); json.dump(value, f, allow_nan=False); f.flush(); os.fsync(f.fileno())
+        os.fchmod(f.fileno(), mode); json.dump(value, f, sort_keys=True, separators=(',', ':'), allow_nan=False); f.flush(); os.fsync(f.fileno())
     os.replace(temp, path)
     fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
     try: os.fsync(fd)
