@@ -1113,7 +1113,7 @@ class ControlIO:
             process.kill()
         process.wait(timeout=15)
 
-    def _record_command_outcome(self, path, argv, *, returncode, uncertain, error=None):
+    def _record_command_outcome(self, path, argv, *, returncode, uncertain, error=None, preserve_failure=False):
         value = {'argv': argv, 'returncode': returncode, 'uncertain': uncertain}
         if error is not None:
             value['error_type'] = self._bounded_error_type(error)
@@ -1121,8 +1121,9 @@ class ControlIO:
             self.journal.check_authority()
             self._durable_json(path, value, label='command-outcome')
         except BaseException:
+            if not preserve_failure:
+                raise
             # Never replace the command's original failure with evidence cleanup.
-            pass
 
     def command(self, args, data=None, timeout=180):
         self.journal.check_authority()
@@ -1143,7 +1144,8 @@ class ControlIO:
                                                stdout=out, stderr=err)
                 except BaseException as exc:
                     self._record_command_outcome(prefix.with_suffix('.outcome.json'), argv,
-                                                 returncode=None, uncertain=False, error=exc)
+                                                 returncode=None, uncertain=False, error=exc,
+                                                 preserve_failure=True)
                     raise
                 try:
                     self._after_command_start(process)
@@ -1153,12 +1155,14 @@ class ControlIO:
                         self._before_command_timeout(process)
                         self._stop_command(process)
                     finally: self._record_command_outcome(prefix.with_suffix('.outcome.json'), argv,
-                                                          returncode=None, uncertain=True, error=exc)
+                                                          returncode=None, uncertain=True, error=exc,
+                                                          preserve_failure=True)
                     raise
                 except BaseException as exc:
                     try: self._stop_command(process)
                     finally: self._record_command_outcome(prefix.with_suffix('.outcome.json'), argv,
-                                                          returncode=None, uncertain=True, error=exc)
+                                                          returncode=None, uncertain=True, error=exc,
+                                                          preserve_failure=True)
                     raise
         finally:
             if process is not None and process.poll() is None:
