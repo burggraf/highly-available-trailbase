@@ -1,10 +1,11 @@
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'hat'))
 import control
@@ -123,6 +124,72 @@ class ControlIOTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 io._fence_target('B')
 
+
+    def _oracle_copy_fixture(self, fault=False):
+        io, _, _ = self.make_io()
+        positions = {'main': 1, 'session': 1, 'aux': 1}
+        identity = (1, 2, 0o100600, os.geteuid(), os.getegid(), 1, 7)
+        ledger = {'path': '/tmp/ledger.jsonl', 'device': 1, 'inode': 2, 'mode': 0o600,
+                  'uid': os.geteuid(), 'links': 1, 'bytes': 7, 'sha256': 'a' * 64}
+        inputs = {'replica_config_sha256': control.hashlib.sha256(b'config').hexdigest(),
+                  'ledger_authority': {'ledger': ledger}, 'support': {}, 'binaries': {}}
+        if fault:
+            inputs['fault_ledger_sha256'] = 'b' * 64
+        request = {'phase': 'compare', 'positions': positions,
+                   'profile': 'recovery-comparison' if fault else 'comparison', 'inputs': inputs}
+        io._acceptance_request = Mock(return_value=(request, b'{}', [], identity))
+        return io, positions
+
+    def test_oracle_records_exact_exclusive_artifact_order_with_and_without_fault(self):
+        for fault in (False, True):
+            with self.subTest(fault=fault):
+                io, positions = self._oracle_copy_fixture(fault)
+                events, fds = [], {}
+                next_fd = iter(range(100, 130))
+                area = Path('/var/lib/hat-oracle') / ('d2-' + io.operation['id'] + '-compare')
+                def opened(path, flags, *args, **kwargs):
+                    fd = next(next_fd); fds[fd] = Path(path)
+                    if Path(path).name == 'replica.yml':
+                        self.assertTrue(flags & os.O_EXCL); events.append('replica.yml')
+                    return fd
+                def synced(fd):
+                    path = fds.get(fd)
+                    if path == area: events.append('area-fsync')
+                def copied(source, destination, *args, **kwargs):
+                    events.append(Path(destination).name)
+                authorized = MagicMock(); authorized.read.return_value = b'ledger\n'
+                with patch.object(io, 'command', side_effect=RuntimeError('stop')) as command, \
+                     patch.object(control.pwd, 'getpwnam', return_value=type('Account', (), {'pw_uid': os.geteuid(), 'pw_gid': os.getegid()})()), \
+                     patch.object(control.descriptor.DescriptorAuthority, 'open_file', return_value=authorized), \
+                     patch.object(control.recovery, '_protected_ledger'), \
+                     patch.object(control, 'oracle_directory'), patch.object(Path, 'mkdir'), \
+                     patch.object(control.os, 'chown'), patch.object(control.os, 'open', side_effect=opened), \
+                     patch.object(control.os, 'write'), patch.object(control.os, 'fchmod'), patch.object(control.os, 'fchown'), \
+                     patch.object(control.os, 'fsync', side_effect=synced), patch.object(control.os, 'close'), \
+                     patch.object(control, '_copy_bound_input', side_effect=copied), \
+                     patch.object(control, '_open_held_inputs', return_value=[]):
+                    with self.assertRaisesRegex(RuntimeError, 'stop'):
+                        io.oracle('compare', 'config', positions, '/tmp/ledger.jsonl',
+                                  '/tmp/fault.jsonl' if fault else None)
+                expected = ['replica.yml', 'ledger.jsonl']
+                if fault: expected.append('fault-ledger.jsonl')
+                expected += ['acceptance-request.json', 'area-fsync']
+                self.assertEqual([event for event in events if event in expected], expected)
+                command.assert_called_once()
+
+    def test_oracle_preexisting_replica_refuses_without_command_or_replay(self):
+        io, positions = self._oracle_copy_fixture()
+        authorized = MagicMock(); authorized.read.return_value = b'ledger\n'
+        with patch.object(io, 'command') as command, \
+             patch.object(control.pwd, 'getpwnam', return_value=type('Account', (), {'pw_uid': os.geteuid(), 'pw_gid': os.getegid()})()), \
+             patch.object(control.descriptor.DescriptorAuthority, 'open_file', return_value=authorized), \
+             patch.object(control.recovery, '_protected_ledger'), patch.object(control, 'oracle_directory'), \
+             patch.object(Path, 'mkdir'), patch.object(Path, 'exists', return_value=True), \
+             patch.object(control.os, 'chown'), patch.object(control.os, 'open', side_effect=FileExistsError), \
+             patch.object(control, '_copy_bound_input') as copied:
+            with self.assertRaises(FileExistsError):
+                io.oracle('compare', 'config', positions, '/tmp/ledger.jsonl')
+        command.assert_not_called(); copied.assert_not_called()
 
 if __name__ == '__main__':
     unittest.main()

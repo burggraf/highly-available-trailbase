@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+import unittest.mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'hat'))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -68,6 +69,37 @@ class RestoreTask3Tests(unittest.TestCase):
             with self.assertRaises(ValueError): held[-1].recheck()
         finally:
             for authority in reversed(held): authority.close()
+
+    def test_canonical_wire_authority_reaches_beyond_ledger_comparison_without_gid(self):
+        import restore_baseline
+        root = Path(tempfile.mkdtemp(dir=Path.cwd()))
+        ledger = root / 'ledger.jsonl'; ledger.write_bytes(b'ledger\n'); ledger.chmod(0o600)
+        config = root / 'replica.yml'; config.write_bytes(b'config')
+        request_path = root / 'acceptance-request.json'; request_path.write_bytes(b'{}')
+        info = ledger.stat()
+        wire = {'path': str(ledger.resolve()), 'device': info.st_dev, 'inode': info.st_ino,
+                'mode': info.st_mode & 0o777, 'uid': info.st_uid, 'links': info.st_nlink,
+                'bytes': info.st_size, 'sha256': hashlib.sha256(ledger.read_bytes()).hexdigest()}
+        request = {'operation': 'a' * 32, 'source': 'A', 'target': 'B', 'epoch': 'd1-source',
+                   'phase': 'compare', 'profile': 'comparison',
+                   'inputs': {'replica_config_sha256': hashlib.sha256(b'config').hexdigest(),
+                              'ledger_sha256': wire['sha256'],
+                              'ledger_authority': {'ledger': wire}}}
+        with unittest.mock.patch.object(restore_baseline.recovery, 'parse_canonical_json', return_value=request), \
+             unittest.mock.patch.object(restore_baseline.recovery, 'parse_acceptance_request', return_value=request), \
+             unittest.mock.patch.object(restore_baseline.recovery, '_replica_config'), \
+             unittest.mock.patch.object(restore_baseline.recovery, '_protected_ledger', side_effect=RuntimeError('past-authority')):
+            with self.assertRaisesRegex(RuntimeError, 'past-authority'):
+                restore_baseline.restore(root, request_path, config, ledger, root, root)
+
+    def test_internal_descriptor_identity_still_rejects_gid_mutation(self):
+        import restore_baseline
+        root = Path(tempfile.mkdtemp(dir=Path.cwd()))
+        item = root / 'ledger.jsonl'; item.write_bytes(b'ledger\n'); item.chmod(0o600)
+        expected = list(restore_baseline._stat_identity(item.stat()))
+        expected[4] += 1
+        with self.assertRaises(ValueError):
+            restore_baseline._raw(item, expected=tuple(expected))
 
     def test_request_bytes_are_canonical_and_no_positions_file_contract(self):
         op = {'id':'a'*32,'source':'A','target':'B','source_epoch':'d1-source','new_epoch':'d1-'+'a'*32}
