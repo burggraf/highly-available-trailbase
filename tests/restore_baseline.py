@@ -203,15 +203,9 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
         raise ValueError('operation evidence is required')
     os.umask(0o077)
     request_raw = _read(acceptance_request, 1 << 20)
-    request_object = recovery.parse_canonical_json(request_raw)
-    operation = {'id': request_object['operation'], 'source': request_object['source'],
-                 'target': request_object['target'],
-                 'source_epoch': request_object['epoch'] if request_object['phase'] in ('compare','reconciled-compare') else 'd1-source',
-                 'new_epoch': 'd1-' + request_object['operation']}
+    operation = recovery._acceptance_operation(
+        recovery.parse_canonical_json(_read(operation_evidence, 1 << 20)))
     request_value = recovery.parse_acceptance_request(request_raw, operation)
-    evidence = recovery.parse_canonical_json(_read(operation_evidence, 1 << 20))
-    if evidence != operation:
-        raise ValueError('operation evidence differs')
     # The CLI fault argument is part of the profile matrix, not an optional
     # caller override.  Reject it before creating any oracle artifacts.
     if (request_value['profile'] == 'recovery-comparison') != (fault_ledger is not None):

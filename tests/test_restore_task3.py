@@ -77,6 +77,10 @@ class RestoreTask3Tests(unittest.TestCase):
         ledger = root / 'ledger.jsonl'; ledger.write_bytes(b'ledger\n'); ledger.chmod(0o600)
         config = root / 'replica.yml'; config.write_bytes(b'config')
         request_path = root / 'acceptance-request.json'; request_path.write_bytes(b'{}')
+        operation = {'id': 'a' * 32, 'source': 'A', 'target': 'B',
+                     'source_epoch': 'd1-source', 'new_epoch': 'd1-' + 'a' * 32}
+        operation_path = root / 'operation.json'
+        operation_path.write_bytes(restore_baseline.recovery.canonical_json(operation))
         info = ledger.stat()
         wire = {'path': str(ledger.resolve()), 'device': info.st_dev, 'inode': info.st_ino,
                 'mode': info.st_mode & 0o777, 'uid': info.st_uid, 'links': info.st_nlink,
@@ -86,12 +90,12 @@ class RestoreTask3Tests(unittest.TestCase):
                    'inputs': {'replica_config_sha256': hashlib.sha256(b'config').hexdigest(),
                               'ledger_sha256': wire['sha256'],
                               'ledger_authority': {'ledger': wire}}}
-        with unittest.mock.patch.object(restore_baseline.recovery, 'parse_canonical_json', return_value=request), \
-             unittest.mock.patch.object(restore_baseline.recovery, 'parse_acceptance_request', return_value=request), \
+        with unittest.mock.patch.object(restore_baseline.recovery, 'parse_acceptance_request', return_value=request), \
              unittest.mock.patch.object(restore_baseline.recovery, '_replica_config'), \
              unittest.mock.patch.object(restore_baseline.recovery, '_protected_ledger', side_effect=RuntimeError('past-authority')):
             with self.assertRaisesRegex(RuntimeError, 'past-authority'):
-                restore_baseline.restore(root, request_path, config, ledger, root, root)
+                restore_baseline.restore(root, request_path, config, ledger, root, root,
+                                         operation_evidence=operation_path)
 
     def test_internal_descriptor_identity_still_rejects_gid_mutation(self):
         import restore_baseline
@@ -120,6 +124,7 @@ class RestoreTask3Tests(unittest.TestCase):
                 with sqlite3.connect(path) as db:
                     db.execute('create table t (v text)')
                     db.execute('insert into t values (?)', (name,))
+                path.chmod(0o600)
                 authorities.append(restore_baseline.descriptor.DescriptorAuthority.open_file(
                     path, trusted_root=root, trusted_uids={os.geteuid()}, expected_uid=os.geteuid(),
                     expected_mode=0o600, expected_nlink=1, limit=1 << 20))

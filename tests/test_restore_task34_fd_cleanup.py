@@ -164,6 +164,10 @@ class RestoreTask34FdCleanupTests(unittest.TestCase):
         config = root / 'config'; config.write_bytes(b'config')
         ledger = root / 'ledger.jsonl'; ledger.write_bytes(b'ledger'); ledger.chmod(0o600)
         request_path = root / 'request.json'; request_path.write_bytes(b'{}')
+        operation = {'id': 'a' * 32, 'source': 'A', 'target': 'B',
+                     'source_epoch': 'd1-source', 'new_epoch': 'd1-' + 'a' * 32}
+        operation_path = root / 'operation.json'
+        operation_path.write_bytes(restore_baseline.recovery.canonical_json(operation))
         info = ledger.stat(); support_hold = Held(strict=True, close_error=True); second_hold = Held(strict=True)
         support = {'config.textproto': 'b' * 64}
         binaries = {'trail': 'c' * 64, 'litestream': 'd' * 64}
@@ -175,14 +179,14 @@ class RestoreTask34FdCleanupTests(unittest.TestCase):
                                  'inode':info.st_ino,'mode':0o600,'uid':info.st_uid,
                                  'links':1,'bytes':6,'sha256':hashlib.sha256(b'ledger').hexdigest()}},
                              'support':support,'binaries':binaries}}
-        with patch.object(restore_baseline.recovery, 'parse_canonical_json', return_value=request), \
-             patch.object(restore_baseline.recovery, 'parse_acceptance_request', return_value=request), \
+        with patch.object(restore_baseline.recovery, 'parse_acceptance_request', return_value=request), \
              patch.object(restore_baseline.recovery, '_replica_config'), \
              patch.object(restore_baseline.recovery, '_protected_ledger'), \
              patch.object(restore_baseline, '_validate_fixed_files',
                           side_effect=[[support_hold, second_hold], RuntimeError('binary acquisition')]):
             with self.assertRaisesRegex(RuntimeError, 'binary acquisition'):
-                restore_baseline.restore(root, request_path, config, ledger, root, root)
+                restore_baseline.restore(root, request_path, config, ledger, root, root,
+                                         operation_evidence=operation_path)
         self.assertEqual(support_hold.closed, 1)
         self.assertEqual(second_hold.closed, 1)
 
