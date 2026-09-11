@@ -165,6 +165,27 @@ class TransitionTests(unittest.TestCase):
             self.assertFalse((root/'journal.db-wal').exists());self.assertFalse((root/'journal.db-shm').exists())
             with m.Journal(root): pass
 
+    def test_populated_legacy_unknown_phase_refuses_before_alter(self):
+        m=self.module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve(); path=root/'journal.db'
+            with closing(sqlite3.connect(path)) as db:
+                db.executescript('''
+                    CREATE TABLE operations (id TEXT PRIMARY KEY, source TEXT NOT NULL, target TEXT NOT NULL,
+                        source_epoch TEXT NOT NULL, new_epoch TEXT NOT NULL UNIQUE,
+                        complete INTEGER NOT NULL DEFAULT 0 CHECK(complete IN (0,1)));
+                    CREATE UNIQUE INDEX one_unfinished ON operations(complete) WHERE complete=0;
+                    CREATE TABLE steps (operation TEXT NOT NULL REFERENCES operations(id), position INTEGER NOT NULL,
+                        phase TEXT NOT NULL, status TEXT NOT NULL CHECK(status IN ('intent','done')),
+                        evidence TEXT NOT NULL, PRIMARY KEY(operation,position,status));
+                    INSERT INTO operations VALUES('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','A','B','d1-old','d1-new',1);
+                    INSERT INTO steps VALUES('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',0,'unknown','intent','{}');
+                ''')
+            path.chmod(0o600); before=path.read_bytes()
+            with self.assertRaises(ValueError):
+                with m.Journal(root): pass
+            self.assertEqual(path.read_bytes(),before)
+
     def test_interrupted_legacy_migration_reopens_as_exact_old_then_new_schema(self):
         m=self.module()
         with tempfile.TemporaryDirectory() as tmp:
