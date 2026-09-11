@@ -95,6 +95,12 @@ class DescriptorAuthority:
         return self._directories[-1][1]
 
     @property
+    def file_fd(self):
+        if self._file_fd is None:
+            raise ValueError('authority is not a file')
+        return self._file_fd
+
+    @property
     def identity(self):
         if self._file_identity is None:
             raise ValueError('authority is not a file')

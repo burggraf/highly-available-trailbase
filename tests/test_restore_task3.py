@@ -1,6 +1,7 @@
 import hashlib
 import json
 import os
+import sqlite3
 from pathlib import Path
 import sys
 import tempfile
@@ -100,6 +101,31 @@ class RestoreTask3Tests(unittest.TestCase):
         expected[4] += 1
         with self.assertRaises(ValueError):
             restore_baseline._raw(item, expected=tuple(expected))
+
+    def test_restore_position_report_mismatch_is_rejected(self):
+        import restore_baseline
+        with self.assertRaisesRegex(ValueError, 'restore position differs'):
+            restore_baseline._verify_restore_position(b'{"txid":"0000000000000002"}', 1)
+        restore_baseline._verify_restore_position(b'{"txid":"0000000000000001"}', 1)
+
+    def test_result_signature_uses_held_database_descriptors(self):
+        import restore_baseline
+        root = Path(tempfile.mkdtemp(dir=Path.cwd()))
+        authorities = []
+        try:
+            for name in ('main', 'session', 'aux'):
+                path = root / (name + '.db')
+                with sqlite3.connect(path) as db:
+                    db.execute('create table t (v text)')
+                    db.execute('insert into t values (?)', (name,))
+                authorities.append(restore_baseline.descriptor.DescriptorAuthority.open_file(
+                    path, trusted_root=root, trusted_uids={os.geteuid()}, expected_uid=os.geteuid(),
+                    expected_mode=0o600, expected_nlink=1, limit=1 << 20))
+            before = restore_baseline._logical_signature_from_authorities(authorities)
+            (root / 'main.db').unlink()
+            self.assertEqual(before, restore_baseline._logical_signature_from_authorities(authorities))
+        finally:
+            for authority in reversed(authorities): authority.close()
 
     def test_request_bytes_are_canonical_and_no_positions_file_contract(self):
         op = {'id':'a'*32,'source':'A','target':'B','source_epoch':'d1-source','new_epoch':'d1-'+'a'*32}

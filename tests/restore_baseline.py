@@ -26,19 +26,6 @@ def _stat_identity(st):
     return (st.st_dev, st.st_ino, st.st_mode, st.st_uid, st.st_gid, st.st_nlink, st.st_size)
 
 
-def _trusted_ancestry(path):
-    path = Path(path)
-    if not path.is_absolute():
-        raise ValueError('oracle input path is not absolute')
-    parts = path.parts
-    current = Path(parts[0])
-    for part in parts[1:-1]:
-        current /= part
-        st = current.lstat()
-        if not stat.S_ISDIR(st.st_mode) or st.st_uid != os.geteuid() or st.st_mode & 0o022:
-            raise ValueError('oracle input ancestry is unsafe')
-
-
 def _open_descriptor(path, flags=os.O_RDONLY):
     path = Path(path)
     if not path.is_absolute(): raise ValueError('oracle input path is not absolute')
@@ -71,6 +58,38 @@ def _raw(path, limit=4 << 20, expected=None):
 
 def _read(path, limit=4 << 20, expected=None):
     return _raw(path, limit, expected)[0]
+
+
+def _verify_restore_position(raw, expected):
+    """Reject a tool that reports a TXID other than the requested cut."""
+    text = raw.decode('utf-8', 'replace')
+    values = []
+    for token in ('txid', 'to_txid', 'position'):
+        import re
+        values.extend(re.findall(rf'\b{token}\b["=:\s]+([0-9a-fA-F]+)', text))
+    if any(int(value, 16) != expected for value in values):
+        raise ValueError('restore position differs')
+
+
+def _logical_signature_from_authorities(authorities):
+    result = {}
+    for name, authority in zip(('main', 'session', 'aux'), authorities):
+        db = sqlite3.connect(':memory:', check_same_thread=False)
+        try:
+            db.deserialize(authority.read())
+            db.execute('PRAGMA ignore_check_constraints=ON')
+            if db.execute('PRAGMA integrity_check').fetchone() != ('ok',) or db.execute('PRAGMA foreign_key_check').fetchall():
+                raise ValueError('database integrity failure')
+            schema = db.execute('SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name').fetchall()
+            digest = hashlib.sha256(repr(schema).encode())
+            for table, in db.execute("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name"):
+                digest.update(table.encode())
+                for row in sorted(repr(row) for row in db.execute('SELECT * FROM "'+table.replace('"','""')+'"')):
+                    digest.update(row.encode() + b'\\n')
+            result[name] = digest.hexdigest()
+        finally:
+            db.close()
+    return result
 
 
 def _validate_fixed_files(root, names, uid, gid, modes):
@@ -152,7 +171,7 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
     if not root.is_dir() or root.is_symlink(): raise ValueError('oracle root is unsafe')
     work = root / uuid.uuid4().hex; work.mkdir(mode=0o700)
     expected_support = request_value['inputs']['support']
-    support_authorities = _validate_fixed_files(support, expected_support, 0, os.getegid(), 0o640)
+    support_authorities = _validate_fixed_files(support, expected_support, 0, 0, 0o640)
     expected_binaries = request_value['inputs']['binaries']
     if set(expected_binaries) != {'trail', 'litestream'}:
         raise ValueError('binary set is invalid')
@@ -160,29 +179,47 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
     binary_authorities = _validate_fixed_files(binary_root, expected_binaries, 0, 0, 0o755)
     depot = Path(support); data = work / 'data'; data.mkdir(mode=0o700)
     evidence = {'databases': {}}
+    database_authorities = []
     for name in ('main', 'session', 'aux'):
         position = request_value['positions'][name]
         target = data / (name + '.db')
         with (work / (name + '-restore.log')).open('xb') as log:
-            subprocess.run([str(Path(binaries)/'litestream'), 'restore', '-config', str(config), '-txid', f'{position:016x}',
+            binary = next(item for item in binary_authorities
+                           if item.path.name == 'litestream')
+            subprocess.run([f'/proc/self/fd/{binary.file_fd}', 'restore', '-config', str(config), '-txid', f'{position:016x}',
                             '-o', str(target), '/var/lib/hat-demo/depot/data/' + name + '.db'],
-                           stdout=log, stderr=subprocess.STDOUT, check=True, timeout=180)
+                           stdout=log, stderr=subprocess.STDOUT, check=True, timeout=180,
+                           pass_fds=(binary.file_fd,))
         for authority in support_authorities + binary_authorities: authority.recheck()
-        if target.is_symlink() or not target.is_file(): raise ValueError('restore output is unsafe')
-        with sqlite3.connect(f'file:{target}?mode=ro', uri=True) as db:
+        try:
+            restored_authority = descriptor.DescriptorAuthority.open_file(
+                target, trusted_root=work, trusted_uids={0, os.geteuid()},
+                expected_uid=0, expected_gid=0, expected_mode=0o600,
+                expected_nlink=1, limit=64 << 20)
+        except (OSError, ValueError):
+            raise ValueError('restore output is unsafe') from None
+        database_authorities.append(restored_authority)
+        log_raw = (work / (name + '-restore.log')).read_bytes()
+        _verify_restore_position(log_raw, position)
+        db = sqlite3.connect(':memory:', check_same_thread=False)
+        try:
+            db.deserialize(restored_authority.read())
             db.execute('PRAGMA ignore_check_constraints=ON')
             if db.execute('PRAGMA integrity_check').fetchone() != ('ok',) or db.execute('PRAGMA foreign_key_check').fetchall():
                 raise ValueError('database checks failed')
-        restored = _read(target, 64 << 20)
-        evidence['databases'][name] = {'position': position, 'sha256': hashlib.sha256(restored).hexdigest(), 'integrity':'PASS', 'foreign_keys':'PASS'}
-    for authority in support_authorities + binary_authorities: authority.recheck()
-    evidence['signature'] = logical_signature(data)
+        finally:
+            db.close()
+        restored = restored_authority.read()
+        evidence['databases'][name] = {'position': position, 'sha256': restored_authority.sha256, 'integrity':'PASS', 'foreign_keys':'PASS'}
+    for authority in support_authorities + binary_authorities + database_authorities: authority.recheck()
+    evidence['signature'] = _logical_signature_from_authorities(database_authorities)
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
     base = f'http://127.0.0.1:{port}'
     env = {k:v for k,v in os.environ.items() if not k.startswith('IDRIVE_')}
     log = (work / 'trail-oracle.log').open('xb')
-    child = subprocess.Popen([str(Path(binaries)/'trail'), '--depot', str(depot), 'run', '--address', f'127.0.0.1:{port}', '--stderr-logging'], stdout=log, stderr=subprocess.STDOUT, env=env)
+    trail = next(item for item in binary_authorities if item.path.name == 'trail')
+    child = subprocess.Popen([f'/proc/self/fd/{trail.file_fd}', '--depot', str(depot), 'run', '--address', f'127.0.0.1:{port}', '--stderr-logging'], stdout=log, stderr=subprocess.STDOUT, env=env, pass_fds=(trail.file_fd,))
     try:
         deadline = time.monotonic() + 60
         while True:
@@ -215,8 +252,8 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
     dfd=os.open(work, os.O_RDONLY|os.O_DIRECTORY); os.fsync(dfd); os.close(dfd)
     if _read(result_path, 1 << 20) != raw:
         raise ValueError('result changed after write')
-    for authority in support_authorities + binary_authorities: authority.recheck()
-    for authority in reversed(support_authorities + binary_authorities): authority.close()
+    for authority in support_authorities + binary_authorities + database_authorities: authority.recheck()
+    for authority in reversed(support_authorities + binary_authorities + database_authorities): authority.close()
     return result
 
 
@@ -233,14 +270,23 @@ if __name__ == '__main__':
     a = p.parse_args()
     value = restore(a.root, a.acceptance_request, a.config, a.ledger, a.support, a.binaries, a.fault_ledger)
     raw = recovery.canonical_json(value)
-    _trusted_ancestry(a.result)
-    parent_fd = os.open(a.result.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    parent = descriptor.DescriptorAuthority.open_directory(
+        a.result.parent, trusted_root='/', trusted_uids={0, os.geteuid()})
     try:
-        fd = os.open(a.result.name, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600, dir_fd=parent_fd)
+        fd = os.open(a.result.name, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600,
+                     dir_fd=parent.directory_fd)
         with os.fdopen(fd, 'wb') as stream:
             stream.write(raw); stream.flush(); os.fsync(stream.fileno())
-        os.fsync(parent_fd)
-        if _read(a.result, 1 << 20) != raw: raise ValueError('result changed after write')
+        os.fsync(parent.directory_fd)
+        result_authority = descriptor.DescriptorAuthority.open_file(
+            a.result, trusted_root='/', trusted_uids={0, os.geteuid()}, expected_uid=0,
+            expected_mode=0o600, expected_nlink=1, expected_size=len(raw),
+            expected_sha256=hashlib.sha256(raw).hexdigest(), limit=1 << 20)
+        try:
+            result_authority.recheck()
+            if result_authority.read() != raw: raise ValueError('result changed after write')
+        finally:
+            result_authority.close()
     finally:
-        os.close(parent_fd)
+        parent.close()
     print('PASS: independent finite restore acceptance')
