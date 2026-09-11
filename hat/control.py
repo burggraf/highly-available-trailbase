@@ -771,7 +771,7 @@ def _copy_bound_input(source, destination, mode, uid, gid, expected_sha, expecte
     """Copy through one descriptor authority; callers retain longer-lived handles."""
     source, destination = Path(source).absolute(), Path(destination).absolute()
     trusted = {0, os.geteuid()}
-    expected_mode = expected_identity[2] if expected_identity is not None else (0o600 if private else None)
+    expected_mode = stat.S_IMODE(expected_identity[2]) if expected_identity is not None else (0o600 if private else None)
     with descriptor.DescriptorAuthority.open_file(
             source, trusted_root='/', trusted_uids=trusted, expected_uid=uid,
             expected_gid=(expected_identity[4] if expected_identity is not None else None),
@@ -781,10 +781,8 @@ def _copy_bound_input(source, destination, mode, uid, gid, expected_sha, expecte
          descriptor.DescriptorAuthority.open_directory(
             destination.parent, trusted_root='/', trusted_uids=trusted) as parent:
         identity = bound.identity
-        if expected_identity is not None:
-            actual = (identity[0], identity[1], stat.S_IMODE(identity[2]), *identity[3:])
-            if actual != expected_identity:
-                raise ValueError('source identity is not trusted')
+        if expected_identity is not None and identity != expected_identity:
+            raise ValueError('source identity is not trusted')
         copied = bound.copy_to(parent, destination.name, mode=mode, uid=uid, gid=gid)
         copied.close()
         bound.recheck(); parent.recheck()
