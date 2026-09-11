@@ -1,0 +1,12 @@
+Task 4 final local gate evidence
+
+Current source revision is the dirty main checkout after the fixture-only Task 4 changes, including multi-restart incarnation reuse refusal.
+
+Verified exit 0:
+  cargo fmt --manifest-path rust/Cargo.toml --check
+  cargo test --manifest-path rust/Cargo.toml --locked
+  cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings
+  cargo build --manifest-path rust/Cargo.toml --release --locked
+  git diff --check
+
+Test counts: 20 unit, 3 CLI, 1 node integration, and 8 proxy tests passed (32 total). Native qualification, TrailBase/Litestream execution, systemd, deployment, activation, failover, and external effects were not run.

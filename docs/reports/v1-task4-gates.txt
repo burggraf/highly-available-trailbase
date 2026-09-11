@@ -1,0 +1,13 @@
+Task 4 local gate record
+
+Source: current main checkout; fixture-only scope.
+
+Commands and exits:
+  cargo fmt --manifest-path rust/Cargo.toml --check                 0
+  cargo test --manifest-path rust/Cargo.toml --locked               0
+    20 unit + 3 CLI + 1 node integration + 8 proxy tests passed
+  cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings  0
+  cargo build --manifest-path rust/Cargo.toml --release --locked   0
+  git diff --check                                                  0
+
+Task 4 unit coverage includes closed admission, exact activation identity, restart invalidation, child exit/reaping, declared database inventory, follower/uploader ownership exclusion, and unknown observation refusal. No native TrailBase/Litestream or deployment behavior was exercised.

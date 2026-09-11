@@ -6,13 +6,13 @@ An early-stage project for a single-writer [TrailBase](https://github.com/trailb
 
 ## Current development — Rust V1
 
-**Active scope:** one controller, primary-only proxies, manual fenced failover; no Raft or replica reads. **Current stage: Task 2 accepted.** The inert package provides bounded configuration checking and inventory-bound primary-only route selection; proxy, controller, and failover work remain later stages.
+**Active scope:** one controller, primary-only proxies, manual fenced failover; no Raft or replica reads. **Current stage: Task 4 accepted.** Task 2, the local-only Task 3 proxy, and the fixture-only Task 4 node lifecycle/replication boundaries are accepted. Controller, failover, deployment, TLS peer identity, and native qualification remain later stages.
 
 - [Active plan and restart handoff](docs/plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance) — authoritative stage/acceptance tracker.
 - [Development workflow](AGENTS.md) — restart procedure, autonomous stage loop, evidence and approval rules.
 - [Current status](docs/status.md) and [Rust usage/limits](rust/README.md).
 
-Task 2 is accepted at local checkpoint `3d262a3`; Task 3 is not authorized or started. Current changes are isolated on `hat-v1-task2`, not merged into `main`.
+Task 2 is accepted and merged into `main` at `f8e217b`. Task 3 is authorized for local-only implementation directly on the clean `main` branch; no external effects are authorized.
 
 Python `hat/`, `tests/`, `experiments/`, existing `deploy/`, and earlier plans are **historical implementation/evidence**, not instructions to resume old live operations or the current Rust roadmap. Preserve them; do not translate them wholesale or treat their checks as Rust qualification.
 

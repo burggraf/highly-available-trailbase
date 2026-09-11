@@ -1,0 +1,9 @@
+Task 4 fresh read-only review
+
+Reviewer: code-quality-reviewer subagent, final review after the incarnation-reuse fix.
+
+Disposition: PASS for the explicitly approved fixture-only Task 4 slice.
+
+Verified boundaries: closed startup admission, exact activation identity, restart invalidation across multiple incarnations, bounded/reaped child ownership, admission closure on child stop, follower/uploader exclusivity, declared-database role configuration, separate unknown replication observations, and current gate evidence.
+
+Residual limitations: incarnation values are local UUID inputs rather than OS-generated identities; no TrailBase/Litestream, systemd, deployment, native restore, live activation, failover, or external service behavior was run. The local child supervisor is not a production process-group containment qualification.

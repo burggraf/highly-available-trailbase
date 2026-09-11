@@ -1,0 +1,19 @@
+Task 3 read-only review disposition
+
+Reviewer: fresh code-quality-reviewer subagent, run 93e9dbe7-ff66-42e1-a28f-8b03a687db68.
+
+Findings corrected:
+- proxy stdin is bounded to the configuration input limit;
+- duplicate JSON keys are rejected before nested values are normalized;
+- request and response hop-by-hop headers, including Connection-listed names, are stripped;
+- internal requests bind token, writer epoch, primary node and incarnation;
+- an internal-dispatch marker prevents forwarding through another public proxy;
+- missing-route refusal and complete request-body/header normalization have regression coverage;
+- unused direct hyper/http-body-util dependencies were removed.
+
+Residual scope limitations:
+- the local peer boundary is bearer-token/plain-HTTP only and is not production TLS or peer-identity authentication;
+- no stress/soak backpressure qualification is claimed; the retained local matrix covers redirect, SSE-style streaming, upstream error, disconnect, and no-retry behavior;
+- the route endpoint is a local fixture target, not a qualified node-agent transport.
+
+No deployment, live service, credential, provider, or native action was used. The local-only Task 3 criteria are accepted after the final gate rerun; production TLS/peer identity, deployment, controller integration, stress/soak, and native qualification remain deferred.

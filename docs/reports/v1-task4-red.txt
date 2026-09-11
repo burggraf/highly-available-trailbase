@@ -1,0 +1,11 @@
+Task 4 behavioral RED evidence
+
+Command:
+  cargo test --manifest-path rust/Cargo.toml --test node node_status_command_is_recognized
+
+Initial result: failed before the node command/lifecycle slice existed.
+
+Observed refusal:
+  usage: hat config check | proxy serve --listen HOST:PORT
+
+The test then passed after adding the inert `hat node status` boundary and local node/replication behavior. No TrailBase/Litestream, systemd, deployment, native process, or external service was used.

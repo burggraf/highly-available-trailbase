@@ -10,7 +10,7 @@
 ## Scope and authority
 
 - New runtime code belongs under `rust/`. Python `hat/`, `tests/`, `experiments/`, and existing deployment files are historical executable references, not the Rust roadmap. Do not modify or run historical live/native harnesses without scoped authorization.
-- Work in an isolated implementation branch/worktree. No new repository, consensus framework, speculative scaffold, or architecture reset.
+- Work in an isolated implementation branch/worktree by default. When the owner explicitly directs work on the clean `main` branch, use `main`, do not create a competing worktree, and preserve unrelated/uncommitted files. No new repository, consensus framework, speculative scaffold, or architecture reset.
 - Owner-approved autonomy: finish **one explicitly authorized stage**, including local test/fix/review iterations, then stop at acceptance. A plan listing later stages is not permission to execute them.
 - Owner permits local checkpoint commits. Commit only understood task-owned changes; label partial checkpoints honestly. Never sweep unrelated files into a commit. Merge, push, and worktree deletion require explicit approval.
 - No deployment, private credential discovery/access, live services, fencing, infrastructure provisioning/spending, or destructive historical cleanup without separate scoped approval. Unit success cannot authorize these actions. Native tests must remain explicit opt-in with an approved disposable fixture.

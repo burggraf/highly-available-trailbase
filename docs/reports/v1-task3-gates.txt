@@ -1,0 +1,13 @@
+Task 3 local gate record
+
+Source: current main checkout after Task 3 edits; no external services.
+
+Commands and results:
+  cargo fmt --manifest-path rust/Cargo.toml --check       exit 0
+  cargo test --manifest-path rust/Cargo.toml --locked     exit 0
+    13 unit tests, 3 CLI tests, 8 proxy tests passed
+  cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings  exit 0
+  cargo build --manifest-path rust/Cargo.toml --release --locked            exit 0
+  git diff --check                                          exit 0
+
+Proxy tests exercise the real binary and loopback fixtures for request/header/body forwarding, redirects, upstream errors, SSE-style streamed bytes, disconnect/no-retry, public routing-header refusal, missing routes, unauthorized/stale peer identity, and authorized internal dispatch. The implementation remains local-only: no TLS deployment, controller, activation, persistence, failover, native process, or external service was used.

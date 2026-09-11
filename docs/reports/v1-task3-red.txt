@@ -1,0 +1,11 @@
+Task 3 behavioral RED evidence
+
+Command:
+  cargo test --manifest-path rust/Cargo.toml --test proxy proxy_command_accepts_a_real_listen_boundary
+
+Initial result: failed before proxy command implementation.
+
+Observed refusal:
+  proxy command was not recognized: usage: hat config check (JSON configuration on stdin)
+
+The test was then replaced by real-binary forwarding and peer-boundary tests. No external or live service was used; fixtures bind loopback sockets only.

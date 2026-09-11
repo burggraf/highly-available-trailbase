@@ -22,8 +22,8 @@ This section is the authoritative restart tracker. Follow [AGENTS.md](../../AGEN
 | --- | --- | --- |
 | Task 1 — contracts/prerequisites | in_progress | Owner architecture decisions captured; action/security/native gates still open. Not a blocker to the explicitly authorized inert Task 2 slice. |
 | Task 2 — package/config/routing | accepted | Owner approved T2-AC1 through T2-AC7 in this session. Local inert implementation accepted at checkpoint `3d262a3`; no Task 3 or external effects started. |
-| Task 3 — proxy/peer transport | pending | Not authorized; requires accepted Task 2 and approved stage criteria. |
-| Task 4 — lifecycle/replication | pending | Not authorized; native/process qualification separately scoped. |
+| Task 3 — proxy/peer transport | accepted | Local-only criteria T3-AC1 through T3-AC5 passed on `main`; production TLS/peer identity, deployment, controller integration, and native qualification remain deferred. |
+| Task 4 — lifecycle/replication | accepted | Local fixture-only criteria T4-AC1 through T4-AC5 passed on `main`; native TrailBase/Litestream, systemd, deployment, and live effects remain deferred. |
 | Task 5 — controller/dashboard/restart | pending | Not authorized; action/security contracts must be approved first. |
 | Task 6 — restore/fence boundary | pending | Not authorized; fake adapters do not authorize live fencing. |
 | Task 7 — planned switchover | pending | Not authorized; Task 5/6 and fixture approval required. |
@@ -50,12 +50,12 @@ Scope: inert configuration and route validation/selection only. No listener, net
 ### Restart handoff — Task 2 acceptance checkpoint
 
 - **Location:** branch `hat-v1-task2`, worktree `.worktrees/v1-task2` relative to the main checkout; accepted source checkpoint `3d262a3`. No merge/push/deployment performed.
-- **Current authorization:** Task 2 is accepted under the owner's explicit approval of T2-AC1 through T2-AC7. Stop here; Task 3 and all external effects remain unauthorized.
+- **Current authorization:** Task 2 and the local-only Task 3 proxy slice are accepted on `main`. Task 4 and later stages remain unauthorized; no external effects are authorized.
 - **Implemented:** Cargo package/lock, bounded `hat config check` stdin CLI, exact configuration validation, strict inventory-bound route wire records, primary-only in-memory selection, and route replacement/refusal guards. The binary never opens referenced paths or starts services.
 - **Evidence:** `docs/reports/v1-task2-red.txt` retains behavioral CLI RED; `docs/reports/v1-task2-gates.txt` records fmt, 16-test package suite, clippy `-D warnings`, locked release build, and diff-check exits 0.
 - **Retained failure history:** the initial real-binary CLI test failed 0/3 before implementation and is preserved in `docs/reports/v1-task2-red.txt`; a later review found missing epoch/incarnation/digest conflict assertions, which were added before final verification. No Python files were changed and no historical live/native harness was run.
 - **Review disposition:** fresh read-only reviewer found the implementation security boundaries sound, identified stale docs and incomplete conflict coverage, and returned FAIL. The conflict coverage was corrected; root README, status, Rust README, and this handoff now describe the accepted binary. Filesystem ownership/permissions/symlink safety, database existence/schema, endpoint reachability, proxying, activation, persistence, and failover remain intentionally deferred.
-- **Next safe action:** none for this authorized stage. Preserve checkpoint `3d262a3`; before any later stage, obtain its separate authorization and expand that stage's acceptance table. Task 3 must not start from this handoff.
+- **Next safe action:** obtain separate authorization and expand the Task 4 acceptance table before implementing lifecycle/replication. Preserve the Task 3 local-only boundary; Task 4 and later stages remain unauthorized.
 - **Processes:** no runtime services started by the Rust slice; the managed gate process exited 0 and no active processes remain.
 - **Documentation verification:** `rust/README.md`, root `README.md`, `docs/status.md`, this plan, and retained reports match the source checkpoint; `git diff --check` passed after documentation edits. Fresh reviews: initial read-only `reviewer` run `6326f027-2d1e-47e7-80db-bc7ba6ce6e66` found stale docs and missing conflict coverage; follow-up `reviewer` run `5b149332-98f4-4c73-9f7b-7d8e5c6389ad` returned PASS after fixes. Reviewer commands were intentionally none; retained gate logs record independent local commands.
 - **Integration:** source checkpoint `3d262a3`; this handoff/status documentation is the task-owned follow-up commit after that source checkpoint. Merge, push, deployment, and worktree deletion remain unapproved.
@@ -277,6 +277,31 @@ All must exit zero before a milestone is described as locally passing. Use the p
 
 **Exit:** inert configuration/routing functionality; nothing can launch a writer or change a service.
 
+### Restart handoff — Task 4 acceptance checkpoint
+
+- **Location:** `main`; Task 2 and Task 3 remain in the current dirty source tree, with Task 4 fixture-only lifecycle/replication changes added locally.
+- **Authorization:** Task 4 is accepted only for local fixture behavior. Task 5 and later stages remain unauthorized; no native TrailBase/Litestream, deployment, systemd, activation, failover, or external effects occurred.
+- **Implemented:** closed node admission, exact incarnation-bound activation grants, multi-restart incarnation tombstones, bounded child ownership/reaping, admission closure on child stop, declared-database replication configuration, ownership exclusion, and separate unknown observations.
+- **Evidence:** `docs/reports/v1-task4-red.txt`, `v1-task4-gates.txt`, `v1-task4-final-gates.txt`, and `v1-task4-review.txt`; final package run passed 32 tests and all required local gates.
+- **Next safe action:** before Task 5, obtain separate authorization and expand its acceptance table. Preserve the local-only boundary and do not start native qualification from this handoff.
+- **Processes:** no active Task 4 services; fixture children are reaped by tests.
+
+### Task 3 completion contract — approved for local-only implementation
+
+Scope: real local HTTP forwarding through the Rust binary, with a separate private peer entry point and bounded refusal behavior. No controller dependency, activation, persistence, failover, TLS deployment, or external/native effects. Local test certificates or an explicit test-only peer authenticator may be used; this slice must not claim production peer authentication or deployment qualification.
+
+| ID | Observable acceptance requirement | Required evidence | Result |
+| --- | --- | --- | --- |
+| T3-AC1 | The real binary accepts public HTTP requests and forwards method, path/query, headers, cookies, authorization, request body, status, response headers, redirects, errors, and streamed response bytes once to the active primary. | `rust/tests/proxy.rs`; `docs/reports/v1-task3-final-gates.txt` | pass — real-binary loopback tests cover forwarding, redirect, error and SSE-style stream responses |
+| T3-AC2 | Forwarding is bounded and streaming: request/response bodies are not eagerly buffered, management-style limits do not cap application streams, hop-by-hop headers are normalized, and upstream connection loss is returned without retry. | `rust/tests/proxy.rs`; final gate report | pass — bounded input, direct streaming bodies, single-attempt client, request/response hop-by-hop stripping, and disconnect/no-retry are covered; no stress/soak claim |
+
+
+| T3-AC3 | Client-controlled routing headers cannot select a target; targets come only from the validated active route, missing/stale routes refuse, and controller absence does not interrupt an already configured route. | routing/proxy integration tests | pass — public routing headers refuse, validated route is required for normal startup, missing route returns service unavailable, and no controller dependency exists |
+| T3-AC4 | A distinct internal peer endpoint accepts only the configured authenticated peer boundary, rejects unauthorized peers and forged internal headers, dispatches locally without proxy loops, and does not log credentials or bodies. | private-peer refusal/loop tests; no live TLS claim | pass for local-only boundary — exact token/epoch/node/incarnation checks and dispatch guard tested; bearer token/plain HTTP are explicitly not production authentication |
+| T3-AC5 | Meaningful failing-first real-boundary evidence, full Rust gates, diff review, and updated usage/handoff documentation are retained. | `docs/reports/v1-task3-red.txt`, `docs/reports/v1-task3-gates.txt`, `docs/reports/v1-task3-final-gates.txt`, `docs/reports/v1-task3-review.txt`, fresh review | pass — RED, 24-test final suite, all gates, review findings/fixes, and docs are retained |
+
+Approved scope reference: owner authorization in this session. This local slice does not authorize public deployment, certificate/account creation, live services, native qualification, or claiming production-grade peer authentication.
+
 ### Task 3 — Streaming proxy and authenticated peer transport
 
 **Files:** create `rust/src/proxy.rs`, `rust/tests/proxy.rs`; extend configuration/routing/main.
@@ -289,6 +314,20 @@ All must exit zero before a milestone is described as locally passing. Use the p
 **Check:** `cargo test --manifest-path rust/Cargo.toml --test proxy`.
 
 **Exit:** a real forwarding demo, including SSE. No failover claim yet. Qualify WebSocket upgrades if a declared application needs them; SSE support alone is not WebSocket support.
+
+### Task 4 completion contract — approved for local fixture-only implementation
+
+Scope: node admission state, incarnation-bound activation, bounded child ownership, and per-database replication observations using temporary loopback/process fixtures. No TrailBase/Litestream execution, native restore, systemd, deployment, activation of real writers, or external effects. Native checks remain Task 9-gated.
+
+| ID | Observable acceptance requirement | Required evidence | Result |
+| --- | --- | --- | --- |
+| T4-AC1 | A node starts with a fresh incarnation and closed application admission; only an exact cluster/node/incarnation/writer-epoch activation grant can open it. Restart creates a new incarnation and closes admission; stale/wrong grants refuse. | `rust/src/node.rs` lifecycle tests; `rust/tests/node.rs`; Task 4 reports | pass — exact grants, closed startup, multi-restart invalidation, same-incarnation and reused-incarnation refusal |
+| T4-AC2 | Owned child processes are bounded and reaped; child exit/crash is observable, stop closes admission, and no second follower/uploader ownership can be acquired concurrently. | `rust/src/node.rs` child tests; `rust/src/replication.rs` ownership tests; final gates | pass — two-child bound, explicit/drop reaping, exit observation, admission closure, and ownership exclusion |
+| T4-AC3 | Replication configuration is derived only from the declared required database inventory, excludes local `logs`, and distinguishes primary versus stopped-standby role without starting TrailBase/Litestream. | `rust/src/replication.rs` config tests; final gates | pass — declared inventory and role only; native services were not started |
+| T4-AC4 | Per-database observations separately report process liveness, progress position/age, errors, and recoverability; missing/unknown observations are not converted into healthy state. | `rust/src/replication.rs` observation tests; final gates | pass — fields remain separate and unknown is unhealthy |
+| T4-AC5 | Meaningful failing-first evidence, full Rust gates, read-only review, and updated usage/handoff documentation are retained. | `docs/reports/v1-task4-red.txt`, `v1-task4-gates.txt`, `v1-task4-final-gates.txt`, `v1-task4-review.txt`, plan handoff | pass — RED, 32 tests, all gates, final review, fixes, and docs retained |
+
+Approved scope reference: owner authorization in this session. This fixture-only slice does not authorize native TrailBase/Litestream checks, systemd, deployment, live services, activation, failover, or external effects.
 
 ### Task 4 — Node lifecycle and continuous replication
 

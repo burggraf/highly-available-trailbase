@@ -1,0 +1,13 @@
+Task 3 final local gate evidence
+
+Source: current main checkout; no external services.
+
+Commands and exits:
+  cargo fmt --manifest-path rust/Cargo.toml --check                 0
+  cargo test --manifest-path rust/Cargo.toml --locked               0
+    13 unit + 3 CLI + 8 proxy tests passed
+  cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings  0
+  cargo build --manifest-path rust/Cargo.toml --release --locked   0
+  git diff --check                                                  0
+
+Proxy tests use only loopback fixtures and cover forwarding, headers/body, redirect, upstream error, SSE-style streaming, disconnect/no-retry, missing route, public routing-header refusal, unauthorized peer, stale peer identity, and authorized internal dispatch. No TLS deployment, controller, activation, persistence, failover, native process, or external service was used.

@@ -187,6 +187,10 @@ impl Route {
     pub fn primary_node_id(&self) -> &str {
         &self.primary_node_id
     }
+
+    pub fn primary_incarnation(&self) -> &str {
+        &self.primary_incarnation
+    }
 }
 
 impl RouteTable {

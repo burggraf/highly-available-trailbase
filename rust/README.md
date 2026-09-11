@@ -51,4 +51,23 @@ cargo build --manifest-path rust/Cargo.toml --release --locked
 git diff --check
 ```
 
-This is not a proxy, controller, deployment, failover, or native qualification claim. Python `hat/`, historical deployment files, and private evidence remain untouched.
+## Local proxy slice (Task 3)
+
+The binary also runs a local-only primary proxy:
+
+```sh
+printf '%s' '<proxy input envelope>' | cargo run --manifest-path rust/Cargo.toml -- \
+  proxy serve --listen 127.0.0.1:18081
+```
+
+The envelope contains the already-validated `config`, an inventory-bound `route`, and a bounded test peer token. The route is required; configuration hints do not create authority. Public requests are streamed once to the active route target, preserve application headers/bodies/statuses, remove hop-by-hop headers, and never retry after an upstream failure. `GET`, `POST`, auth, SSE, admin, and unknown paths use the same primary target. `x-hat-*` routing headers from public clients are refused.
+
+`/__hat/internal/<path>` is a separate local test boundary requiring the configured peer token and exact writer epoch; it strips those headers before forwarding and refuses unauthorized requests. This is not production TLS or peer-identity qualification. The proxy has no controller dependency, route persistence, activation, failover, deployment support, or native qualification.
+
+## Local node/lifecycle slice (Task 4)
+
+Task 4 adds process-local node lifecycle state and replication observations. Nodes start with closed admission and a fresh incarnation; activation requires an exact cluster/node/incarnation/writer-epoch grant. Restart closes admission and invalidates the prior grant. Owned fixture children are observed and reaped explicitly. Replication tracks only the declared application databases, prevents follower/uploader ownership overlap, and keeps process liveness, progress, age, errors, and recoverability separate. Unknown observations are not healthy.
+
+`hat node status` reports the inert process-local starting state. This slice does not start TrailBase or Litestream, open configured data paths, use systemd, perform native restore, activate real writers, or claim deployment/process-group qualification.
+
+This is not a controller, deployment, failover, or native qualification claim. Python `hat/`, historical deployment files, and private evidence remain untouched.
