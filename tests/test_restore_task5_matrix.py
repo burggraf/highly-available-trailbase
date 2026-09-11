@@ -617,6 +617,34 @@ class RestoreTask5Matrix(unittest.TestCase):
             finally:
                 fixture.close()
 
+    def test_real_oracle_retained_result_only_replay_refuses_before_effects(self):
+        for phase in ('compare', 'baseline', 'new-writes'):
+            for kind in ('file', 'symlink'):
+                with self.subTest(phase=phase, kind=kind):
+                    fixture = RealOracleFixture(self, phase=phase)
+                    try:
+                        retained = fixture.work / (phase + '-acceptance-result.json')
+                        if kind == 'file':
+                            retained.write_bytes(b'retained oracle result')
+                        else:
+                            retained.symlink_to('failure.json')
+                        before = retained.read_bytes()
+                        fixture.reopen()
+                        command = Mock(side_effect=AssertionError('command called'))
+                        popen = Mock(side_effect=AssertionError('Popen called'))
+                        fixture.io.command = command
+                        with patch.object(control.subprocess, 'Popen', popen), \
+                             self.assertRaisesRegex(RuntimeError, 'acceptance result already exists'):
+                            fixture.invoke()
+                        command.assert_not_called()
+                        popen.assert_not_called()
+                        self.assertEqual(retained.read_bytes(), before)
+                        self.assertFalse((fixture.work / (phase + '-acceptance-request.json')).exists())
+                        self.assertFalse(fixture.area.exists())
+                        fixture.assert_pending()
+                    finally:
+                        fixture.close()
+
     def test_real_oracle_replacement_matrix_refuses_every_bound_consumer(self):
         artifacts = ('replica', 'ledger', 'fault', 'request')
         mutations = ('content-hash', 'path-inode', 'parent')
