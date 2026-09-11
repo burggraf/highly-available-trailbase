@@ -100,6 +100,16 @@ class RestoreTask5Tests(unittest.TestCase):
 
     def test_private_command_seams_are_present(self):
         self.assertTrue(hasattr(control.ControlIO, '_after_command_start'))
+        self.assertTrue(hasattr(control.ControlIO, '_before_command_timeout'))
+
+    def test_journal_root_fsync_failure_reopens_authoritative_schema(self):
+        root = Path(tempfile.mkdtemp()).resolve()
+        journal = control.Journal(root)
+        journal._after_root_fsync = lambda label: (_ for _ in ()).throw(RuntimeError('root fsync'))
+        with self.assertRaisesRegex(RuntimeError, 'root fsync'):
+            journal.__enter__()
+        with control.Journal(root) as reopened:
+            self.assertEqual(control._journal_schema(reopened.db), control.RESTORE_CONTRACT)
 
 
 if __name__ == '__main__':
