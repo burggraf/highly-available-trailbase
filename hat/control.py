@@ -250,12 +250,35 @@ class Journal:
     def _migration_alter(self):
         self.db.execute("ALTER TABLE operations ADD COLUMN restore_contract TEXT NOT NULL DEFAULT 'legacy' CHECK(restore_contract IN ('legacy','hat-restore-acceptance-1'))")
 
+    def _before_root_fsync(self, label):
+        return None
+
+    def _after_root_fsync(self, label):
+        return None
+
+    def _root_fsync(self, label='root-fsync'):
+        self._before_root_fsync(label)
+        fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        self._after_root_fsync(label)
+
+    def _before_reopen(self, path):
+        return None
+
+    def _after_reopen(self, path):
+        return None
+
     def _reopen(self, path):
+        self._before_reopen(path)
         self.db.close()
         self.db = sqlite3.connect(path, timeout=0)
         self.db.execute('PRAGMA journal_mode=DELETE')
         self.db.execute('PRAGMA synchronous=EXTRA')
         self.db.execute('PRAGMA foreign_keys=ON')
+        self._after_reopen(path)
 
     def __enter__(self):
         try:
@@ -298,15 +321,11 @@ class Journal:
                 self.db.executescript(_OPERATIONS_SQL+';\n'+_UNFINISHED_SQL+';\n'+_STEPS_SQL+';')
             if _journal_schema(self.db)!=RESTORE_CONTRACT: raise ValueError('journal schema differs')
             if changed:
-                fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
-                try: os.fsync(fd)
-                finally: os.close(fd)
+                self._root_fsync('journal-root-fsync')
                 self._reopen(path)
                 if _journal_schema(self.db)!=RESTORE_CONTRACT: raise ValueError('journal reopen differs')
             self.database_identity = private_file(path)
-            fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
-            try: os.fsync(fd)
-            finally: os.close(fd)
+            self._root_fsync('root-fsync')
             return self
         except BaseException:
             self.__exit__(None, None, None)
@@ -829,7 +848,7 @@ def oracle_directory(area):
     area.chmod(0o750)  # mkdir's mode is otherwise reduced to 0700 by the controller umask.
 
 
-def _copy_bound_input(source, destination, mode, uid, gid, expected_sha, expected_identity=None, limit=4 * 1024 * 1024, private=True, fsync=None):
+def _copy_bound_input(source, destination, mode, uid, gid, expected_sha, expected_identity=None, limit=4 * 1024 * 1024, private=True, fsync=None, label='copy'):
     """Copy through one descriptor authority; callers retain longer-lived handles."""
     source, destination = Path(source).absolute(), Path(destination).absolute()
     trusted = {0, os.geteuid()}
@@ -845,7 +864,7 @@ def _copy_bound_input(source, destination, mode, uid, gid, expected_sha, expecte
         identity = bound.identity
         if expected_identity is not None and identity != expected_identity:
             raise ValueError('source identity is not trusted')
-        copied = bound.copy_to(parent, destination.name, mode=mode, uid=uid, gid=gid, fsync=fsync)
+        copied = bound.copy_to(parent, destination.name, mode=mode, uid=uid, gid=gid, fsync=fsync, label=label)
         descriptor.close_all([copied])
         bound.recheck(); parent.recheck()
         return (identity[0], identity[1], stat.S_IMODE(identity[2]), *identity[3:])
@@ -892,15 +911,38 @@ class ControlIO:
     def _after_fsync(self, label, path):
         return None
 
+    def _before_result_read(self, path):
+        return None
+
+    def _after_result_read(self, path):
+        return None
+
+    def _before_result_recheck(self, path):
+        return None
+
+    def _after_result_recheck(self, path):
+        return None
+
+    def _read_result(self, authority, path):
+        self._before_result_read(path)
+        value = authority.read()
+        self._after_result_read(path)
+        return value
+
+    def _recheck_result(self, authority, path):
+        self._before_result_recheck(path)
+        authority.recheck()
+        self._after_result_recheck(path)
+
     def _fsync(self, fd, label, path):
         path = Path(path)
         self._before_fsync(label, path)
         os.fsync(fd)
         self._after_fsync(label, path)
 
-    def _copy_bound(self, source, destination, mode, uid, gid, expected_sha, expected_identity=None):
+    def _copy_bound(self, source, destination, mode, uid, gid, expected_sha, expected_identity=None, label='copy'):
         return _copy_bound_input(source, destination, mode, uid, gid, expected_sha,
-                                 expected_identity, fsync=self._fsync)
+                                 expected_identity, fsync=self._fsync, label=label)
 
     def _durable_json(self, path, value, label='json'):
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -914,19 +956,55 @@ class ControlIO:
         finally:
             os.close(fd)
 
-    def _durable_bytes(self, path, raw, label='bytes'):
-        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    def _durable_bytes(self, path, raw, label='bytes', mode=0o600, uid=None, gid=None):
+        path = Path(path)
+        raw = bytes(raw)
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
         try:
             view = memoryview(raw)
             while view:
                 written = os.write(fd, view)
                 if written <= 0: raise OSError('short durable write')
                 view = view[written:]
+            if mode != 0o600:
+                os.fchmod(fd, mode)
+            if uid is not None or gid is not None:
+                os.fchown(fd, -1 if uid is None else uid, -1 if gid is None else gid)
             self._fsync(fd, label + '.file', path)
         finally: os.close(fd)
-        directory = os.open(Path(path).parent, os.O_RDONLY | os.O_DIRECTORY)
-        try: self._fsync(directory, label + '.dir', Path(path).parent)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try: self._fsync(directory, label + '.dir', path.parent)
         finally: os.close(directory)
+
+    def _reopen_exact_bytes(self, path, expected, *, mode=None, uid=None, gid=None):
+        """Reopen a durable artifact and verify its complete content and identity."""
+        path = Path(path)
+        expected = bytes(expected)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            info = os.fstat(fd)
+            if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1
+                    or mode is not None and stat.S_IMODE(info.st_mode) != mode
+                    or uid is not None and info.st_uid != uid
+                    or gid is not None and info.st_gid != gid):
+                raise ValueError('durable file identity differs')
+            chunks = []; count = 0
+            while True:
+                part = os.read(fd, 65536)
+                if not part: break
+                chunks.append(part); count += len(part)
+            actual = b''.join(chunks)
+            if count != len(expected) or hashlib.sha256(actual).digest() != hashlib.sha256(expected).digest() or actual != expected:
+                raise ValueError('durable file content differs')
+            if os.fstat(fd).st_size != count:
+                raise ValueError('durable file length differs')
+        finally:
+            os.close(fd)
+
+    @staticmethod
+    def _bounded_error_type(exc):
+        value = type(exc).__name__
+        return value if re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,63}', value) else 'Error'
 
     def _committed_preflight_authority(self, required=True):
         import recovery
@@ -1021,33 +1099,68 @@ class ControlIO:
         """Crash-test boundary after durable command intent and before spawn."""
         return None
 
+    def _after_command_start(self, process):
+        """Crash-test boundary after Popen proves a child may exist."""
+        return None
+
+    def _stop_command(self, process):
+        """Do not leave an uncertain command running after communication failure."""
+        if process.poll() is None:
+            process.kill()
+        process.wait(timeout=15)
+
+    def _record_command_outcome(self, path, argv, *, returncode, uncertain, error=None):
+        value = {'argv': argv, 'returncode': returncode, 'uncertain': uncertain}
+        if error is not None:
+            value['error_type'] = self._bounded_error_type(error)
+        try:
+            self.journal.check_authority()
+            self._durable_json(path, value, label='command-outcome')
+        except BaseException:
+            # Never replace the command's original failure with evidence cleanup.
+            pass
+
     def command(self, args, data=None, timeout=180):
         self.journal.check_authority()
         argv = list(args)
         prefix = self.work / str(time.time_ns())
         intent = prefix.with_suffix('.intent.json')
-        self._durable_json(intent, {'argv': argv})
+        self._durable_json(intent, {'argv': argv}, label='command-intent')
         self._before_command_spawn(argv)
         stdout = prefix.with_suffix('.stdout')
         stderr = prefix.with_suffix('.stderr')
         out_fd = os.open(stdout, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
         err_fd = os.open(stderr, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(out_fd, 'wb') as out, os.fdopen(err_fd, 'wb') as err:
-            try:
-                process = subprocess.run(argv, input=data, stdout=out, stderr=err, timeout=timeout)
-            except subprocess.TimeoutExpired:
-                self.journal.check_authority()
-                self._durable_json(prefix.with_suffix('.outcome.json'),
-                                   {'argv': argv, 'returncode': None, 'uncertain': True})
-                raise
-            except BaseException:
-                self.journal.check_authority()
-                self._durable_json(prefix.with_suffix('.outcome.json'),
-                                   {'argv': argv, 'returncode': None, 'uncertain': False})
-                raise
+        process = None
+        try:
+            with os.fdopen(out_fd, 'wb') as out, os.fdopen(err_fd, 'wb') as err:
+                try:
+                    process = subprocess.Popen(argv, stdin=subprocess.PIPE if data is not None else None,
+                                               stdout=out, stderr=err)
+                except BaseException as exc:
+                    self._record_command_outcome(prefix.with_suffix('.outcome.json'), argv,
+                                                 returncode=None, uncertain=False, error=exc)
+                    raise
+                try:
+                    self._after_command_start(process)
+                    process.communicate(input=data, timeout=timeout)
+                except subprocess.TimeoutExpired as exc:
+                    try: self._stop_command(process)
+                    finally: self._record_command_outcome(prefix.with_suffix('.outcome.json'), argv,
+                                                          returncode=None, uncertain=True, error=exc)
+                    raise
+                except BaseException as exc:
+                    try: self._stop_command(process)
+                    finally: self._record_command_outcome(prefix.with_suffix('.outcome.json'), argv,
+                                                          returncode=None, uncertain=True, error=exc)
+                    raise
+        finally:
+            if process is not None and process.poll() is None:
+                try: self._stop_command(process)
+                except BaseException: pass
         self.journal.check_authority()
-        self._durable_json(prefix.with_suffix('.outcome.json'),
-                           {'argv': argv, 'returncode': process.returncode, 'uncertain': False})
+        self._record_command_outcome(prefix.with_suffix('.outcome.json'), argv,
+                                     returncode=process.returncode, uncertain=False)
         if process.returncode:
             raise RuntimeError('command failed; protected stdout/stderr retained')
         if stdout.stat().st_size > 4 * 1024 * 1024:
@@ -1448,17 +1561,20 @@ class ControlIO:
             oracle_directory(area); os.chown(area, 0, account.pw_gid)
             output = area / 'work'; output.mkdir(mode=0o700); os.chown(output, account.pw_uid, account.pw_gid)
             # The config is already an authorized raw byte value; write it only after all preflight checks.
-            fd = os.open(area / 'replica.yml', os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o640)
-            try:
-                os.write(fd, config_raw); os.fchmod(fd, 0o640); os.fchown(fd, 0, account.pw_gid); self._fsync(fd, 'replica-config.file', area / 'replica.yml')
-            finally: os.close(fd)
+            replica_path = area / 'replica.yml'
+            self._durable_bytes(replica_path, config_raw, label='oracle-replica-config',
+                                mode=0o640, uid=0, gid=account.pw_gid)
+            self._reopen_exact_bytes(replica_path, config_raw, mode=0o640, uid=0, gid=account.pw_gid)
             # Support and binaries are fixed installed inputs; copying them would widen the trust boundary.
-            self._copy_bound(ledger_path, area / 'ledger.jsonl', 0o600, 0, account.pw_gid, authority['ledger']['sha256'], identity)
+            self._copy_bound(ledger_path, area / 'ledger.jsonl', 0o600, 0, account.pw_gid,
+                             authority['ledger']['sha256'], identity, label='oracle-ledger')
             oracle_fault = None
             if fault_ledger is not None:
                 oracle_fault = area / 'fault-ledger.jsonl'
-                self._copy_bound(fault_ledger, oracle_fault, 0o600, os.geteuid(), account.pw_gid, request['inputs']['fault_ledger_sha256'])
-            self._copy_bound(request_path, area / 'acceptance-request.json', 0o640, 0, account.pw_gid, hashlib.sha256(request_bytes).hexdigest())
+                self._copy_bound(fault_ledger, oracle_fault, 0o600, os.geteuid(), account.pw_gid,
+                                 request['inputs']['fault_ledger_sha256'], label='oracle-fault-ledger')
+            self._copy_bound(request_path, area / 'acceptance-request.json', 0o640, 0, account.pw_gid,
+                             hashlib.sha256(request_bytes).hexdigest(), label='oracle-request')
             for directory in (area, output, self.work):
                 fd=os.open(directory, os.O_RDONLY|os.O_DIRECTORY)
                 try:
@@ -1490,7 +1606,7 @@ class ControlIO:
                     result, trusted_root='/', trusted_uids={0, account.pw_uid},
                     expected_uid=account.pw_uid, expected_gid=account.pw_gid,
                     expected_mode=0o600, expected_nlink=1, limit=4 << 20) as result_authority:
-                result_raw = result_authority.read()
+                result_raw = self._read_result(result_authority, result)
                 events = None
                 if request['profile'] == 'recovery-comparison':
                     # Reparse the controller-held sealed ledger independently of oracle output.
@@ -1499,8 +1615,9 @@ class ControlIO:
                 if events is not None:
                     recovery.validate_fault_outcomes(value['checks']['fault_outcomes'], events)
                 retained = self.work / (phase + '-acceptance-result.json')
-                self._copy_bound(result, retained, 0o600, account.pw_uid, os.getegid(), result_authority.sha256)
-                result_authority.recheck()
+                self._copy_bound(result, retained, 0o600, account.pw_uid, os.getegid(),
+                                 result_authority.sha256, label='retained-result')
+                self._recheck_result(result_authority, result)
             for item in held: item.recheck()
             self._recheck_installed_manifest(
                 Path('/var/lib/hat-oracle/support'), support_names, installed_holds)

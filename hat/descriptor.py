@@ -222,7 +222,7 @@ class DescriptorAuthority:
                 os.close(item)
         return self
 
-    def copy_to(self, destination, name, *, mode, uid, gid, fsync=None):
+    def copy_to(self, destination, name, *, mode, uid, gid, fsync=None, label='copy'):
         """Exclusive-create a bound copy through a held destination directory fd."""
         if self._file_fd is None or '/' in name or name in ('', '.', '..'):
             raise ValueError('invalid descriptor copy')
@@ -239,14 +239,14 @@ class DescriptorAuthority:
                 view = view[written:]
             os.fchmod(out, mode)
             os.fchown(out, uid, gid)
-            sync(out, 'copy.file', destination.path / name)
+            sync(out, label + '.file', destination.path / name)
             info = os.fstat(out)
             if (stat.S_IMODE(info.st_mode) != mode or info.st_uid != uid or info.st_gid != gid
                     or info.st_nlink != 1 or info.st_size != len(self._raw)):
                 raise ValueError('descriptor destination identity differs')
         finally:
             os.close(out)
-        sync(destination.directory_fd, 'copy.dir', destination.path)
+        sync(destination.directory_fd, label + '.dir', destination.path)
         copied = type(self).open_file(destination.path / name,
                     trusted_root=destination.trusted_root, trusted_uids=destination.trusted_uids,
                     expected_uid=uid, expected_gid=gid, expected_mode=mode, expected_nlink=1,
