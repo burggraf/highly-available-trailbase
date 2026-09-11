@@ -51,6 +51,23 @@ class ControlIOTests(unittest.TestCase):
         self.assertEqual(len(timeout), 1)
         self.assertGreaterEqual(journal.checks, 4)
 
+    def test_command_boundary_failure_keeps_only_durable_intent(self):
+        io, root, _ = self.make_io()
+        def fail(_argv):
+            raise RuntimeError('pre-spawn boundary')
+        io._before_command_spawn = fail
+        with patch.object(control.subprocess, 'run') as spawn:
+            with self.assertRaisesRegex(RuntimeError, 'pre-spawn boundary'):
+                io.command(['systemd-run', '--unit=one'])
+        spawn.assert_not_called()
+        intents = list(root.glob('*.intent.json'))
+        self.assertEqual(len(intents), 1)
+        self.assertEqual(json.loads(intents[0].read_text())['argv'],
+                         ['systemd-run', '--unit=one'])
+        self.assertEqual(list(root.glob('*.stdout')), [])
+        self.assertEqual(list(root.glob('*.stderr')), [])
+        self.assertEqual(list(root.glob('*.outcome.json')), [])
+
     def test_command_runs_only_safe_local_subprocess_integration(self):
         io, _, _ = self.make_io()
         self.assertEqual(io.command([sys.executable, '-c', 'print("safe")']), b'safe\n')

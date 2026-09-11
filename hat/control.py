@@ -1001,12 +1001,17 @@ class ControlIO:
             del self._fresh_writes
             descriptor.close_all([value[0]])
 
+    def _before_command_spawn(self, argv):
+        """Crash-test boundary after durable command intent and before spawn."""
+        return None
+
     def command(self, args, data=None, timeout=180):
         self.journal.check_authority()
         argv = list(args)
         prefix = self.work / str(time.time_ns())
         intent = prefix.with_suffix('.intent.json')
         self._durable_json(intent, {'argv': argv})
+        self._before_command_spawn(argv)
         stdout = prefix.with_suffix('.stdout')
         stderr = prefix.with_suffix('.stderr')
         out_fd = os.open(stdout, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
@@ -1570,6 +1575,9 @@ def switchover(config, reconcile=None, verification_only=False):
                     elif value.get('event') != 'acknowledged': raise ValueError('invalid historical ledger entry')
                     f.write(json.dumps(value)+'\n')
                 f.flush(); os.fsync(f.fileno())
+                fd=os.open(ledger.parent,os.O_RDONLY|os.O_DIRECTORY)
+                try: os.fsync(fd)
+                finally: os.close(fd)
             return {'source_boot':state['A']['boot_id'],'candidate_boot':state['B']['boot_id'],'identity':'matched',
                     'ledger_authority':io.capture_protected_authority(ledger, 'd2-preflight')}
         def quiesce():
