@@ -49,7 +49,11 @@ class FakeIO:
         self.calls.append(('wait-reachable', label, timeout))
         return {'label': label, 'address': '192.0.2.2', 'port': 22}
 
-    def remote(self, label, action, payload=None, epoch=None, timeout=180):
+    def remote(self, label, action, payload=None, timeout=180):
+        wire_action, source = control.ControlIO._REMOTE_ACTIONS[action]
+        epoch = (self.state.get(label, {}).get('epoch', self.operation['source_epoch'])
+                 if source == 'current' else self.operation[source])
+        action = wire_action
         request_boot = self.state.get(label, {}).get('boot_id')
         self.calls.append(('remote', label, action, epoch, request_boot, timeout))
         if label == 'A':

@@ -23,13 +23,16 @@ class IO(FakeIO):
         if self.scenario == 'provider-failure': raise RuntimeError('provider unavailable')
         return {'action': 'inspect', 'state': 'running', 'target': TARGET}
 
-    def remote(self, label, action, payload=None, epoch=None, timeout=180):
-        if label == 'B' and action == 'inspect-cold':
-            self.calls.append(('remote', label, action, epoch, self.state.get('B', {}).get('boot_id'), timeout))
+    def remote(self, label, action, payload=None, timeout=180):
+        wire_action, source = control.ControlIO._REMOTE_ACTIONS[action]
+        epoch = (self.state.get(label, {}).get('epoch', self.operation['source_epoch'])
+                 if source == 'current' else self.operation[source])
+        if label == 'B' and wire_action == 'inspect-cold':
+            self.calls.append(('remote', label, wire_action, epoch, self.state.get('B', {}).get('boot_id'), timeout))
             value = copy.deepcopy(self.original)
             if self.scenario == 'changed-cold': value['config_sha'] = 'e' * 64
             return value
-        return super().remote(label, action, payload, epoch, timeout)
+        return super().remote(label, action, payload, timeout)
 
 
 TARGET = dict(node='fm2', instance_id=2, provider_label='fixture-b', address='192.0.2.2', host_key='fixture-key')
@@ -45,7 +48,7 @@ class BootReconciliationTests(unittest.TestCase):
                 journal.step('rejoin_boot', lambda: (_ for _ in ()).throw(RuntimeError('old guard')))
         work = root / op['id']
         private(work / 'failure.json', {'phase': 'rejoin_boot', 'error': 'RuntimeError'})
-        cold = FakeIO(None, {}, op, work, {}, maintenance, ingress).remote('B', 'inspect-cold', epoch=op['source_epoch'])
+        cold = FakeIO(None, {}, op, work, {}, maintenance, ingress).remote('B', 'inspect-cold')
         IO.original = cold
         with control.Journal(root) as journal:
             value=json.loads(journal.db.execute("SELECT evidence FROM steps WHERE operation=? AND phase='preflight' AND status='done'",(op['id'],)).fetchone()[0])

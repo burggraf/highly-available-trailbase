@@ -3,6 +3,7 @@
 import argparse
 from contextlib import closing
 import datetime
+import descriptor
 import fcntl
 import hashlib
 import json
@@ -769,58 +770,27 @@ def oracle_directory(area):
 
 
 def _copy_bound_input(source, destination, mode, uid, gid, expected_sha, expected_identity=None, limit=4 * 1024 * 1024, private=True):
-    """Copy immutable raw bytes while refusing replacement, links, and unsafe ancestry."""
+    """Copy through one descriptor authority; callers retain longer-lived handles."""
     source, destination = Path(source).absolute(), Path(destination).absolute()
-    if '..' in source.parts or '..' in destination.parts:
-        raise ValueError('artifact path traversal is forbidden')
-    for path in (source.parent, destination.parent):
-        current = path
-        while True:
-            info = current.lstat()
-            if not stat.S_ISDIR(info.st_mode) or stat.S_ISLNK(info.st_mode) or info.st_mode & 0o022:
-                raise ValueError('artifact ancestry is unsafe')
-            if current.parent == current: break
-            current = current.parent
-    try:
-        fd = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
-    except OSError as exc:
-        raise ValueError('source is not a regular file') from exc
-    try:
-        before = os.fstat(fd)
-        identity_of = lambda value: (value.st_dev, value.st_ino, stat.S_IMODE(value.st_mode), value.st_uid, value.st_gid, value.st_nlink, value.st_size)
-        if (not stat.S_ISREG(before.st_mode) or before.st_uid != uid or before.st_nlink != 1
-                or (private and before.st_mode & 0o077) or before.st_size <= 0 or before.st_size > limit
-                or (expected_identity is not None and identity_of(before) != expected_identity)):
-            raise ValueError('source identity is not trusted')
-        digest = hashlib.sha256(); chunks=[]
-        while True:
-            chunk = os.read(fd, 65536)
-            if not chunk: break
-            chunks.append(chunk); digest.update(chunk)
-            if sum(map(len, chunks)) > limit: raise ValueError('source is oversized')
-        raw = b''.join(chunks)
-        after = os.fstat(fd)
-        identity = identity_of(after)
-        if before.st_size != len(raw) or identity != identity_of(before) or digest.hexdigest() != expected_sha:
-            raise ValueError('source changed during copy')
-    finally:
-        os.close(fd)
-    out = os.open(destination, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode)
-    try:
-        view = memoryview(raw)
-        while view:
-            count = os.write(out, view); view = view[count:]
-        os.fchmod(out, mode); os.fchown(out, uid, gid); os.fsync(out)
-        check = os.fstat(out)
-        if (check.st_size != len(raw) or check.st_mode & 0o777 != mode
-                or hashlib.sha256(os.pread(out, len(raw), 0)).hexdigest() != expected_sha):
-            raise ValueError('destination copy differs')
-    finally:
-        os.close(out)
-    directory = os.open(destination.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    try: os.fsync(directory)
-    finally: os.close(directory)
-    return identity
+    trusted = {0, os.geteuid()}
+    expected_mode = expected_identity[2] if expected_identity is not None else (0o600 if private else None)
+    with descriptor.DescriptorAuthority.open_file(
+            source, trusted_root='/', trusted_uids=trusted, expected_uid=uid,
+            expected_gid=(expected_identity[4] if expected_identity is not None else None),
+            expected_mode=expected_mode, expected_nlink=1,
+            expected_size=(expected_identity[6] if expected_identity is not None else None),
+            expected_sha256=expected_sha, limit=limit) as bound, \
+         descriptor.DescriptorAuthority.open_directory(
+            destination.parent, trusted_root='/', trusted_uids=trusted) as parent:
+        identity = bound.identity
+        if expected_identity is not None:
+            actual = (identity[0], identity[1], stat.S_IMODE(identity[2]), *identity[3:])
+            if actual != expected_identity:
+                raise ValueError('source identity is not trusted')
+        copied = bound.copy_to(parent, destination.name, mode=mode, uid=uid, gid=gid)
+        copied.close()
+        bound.recheck(); parent.recheck()
+        return (identity[0], identity[1], stat.S_IMODE(identity[2]), *identity[3:])
 
 
 class ControlIO:
@@ -887,10 +857,26 @@ class ControlIO:
             raise RuntimeError('oversized command result')
         return stdout.read_bytes()
 
-    def remote(self, label, action, payload=None, epoch=None, timeout=180):
+    _REMOTE_ACTIONS = {
+        'probe-source': ('probe', 'source_epoch'), 'probe-new': ('probe', 'new_epoch'),
+        'quiesce': ('quiesce', 'source_epoch'), 'freeze': ('freeze', 'source_epoch'),
+        'restore': ('restore', 'source_epoch'), 'prepare': ('prepare', 'source_epoch'),
+        'inspect-frozen': ('inspect-frozen', 'source_epoch'),
+        'restore-recovery': ('restore-recovery', 'source_epoch'),
+        'rejoin': ('rejoin', 'source_epoch'), 'activate-new': ('activate', 'new_epoch'),
+        'inspect-cold': ('inspect-cold', 'current'),
+        'prepare-recovery': ('prepare-recovery', 'current'),
+    }
+
+    def remote(self, label, action, payload=None, timeout=180):
         node = self.config['nodes'][label]
-        request = dict(action=action, operation=self.operation['id'],
-                       epoch=(self.operation['source_epoch'] if epoch is None else epoch),
+        try:
+            wire_action, epoch_source = self._REMOTE_ACTIONS[action]
+            epoch = (self.state.get(label, {}).get('epoch', self.operation['source_epoch'])
+                     if epoch_source == 'current' else self.operation[epoch_source])
+        except (KeyError, TypeError):
+            raise ValueError('remote action has no fixed epoch authority') from None
+        request = dict(action=wire_action, operation=self.operation['id'], epoch=epoch,
                        boot_id=self.state.get(label, {}).get('boot_id'), payload=payload or {})
         host = node['address']
         argv = ['ssh', *self.SSH_FLAGS, 'root@' + host, 'hat-node']
@@ -1034,6 +1020,43 @@ class ControlIO:
             self._durable_json(self.work / ('restore-plan-' + db + '.json'), plan)
         return {'positions': positions, 'plans': plans}
 
+    def _installed_manifest(self, root, names, uid, gid, modes):
+        """Hash an exact fixed tree only through stable descriptors."""
+        root = Path(root)
+        expected_files = set(names)
+        expected_dirs = {str(Path(name).parent) for name in names} - {'.'}
+        expected_dirs |= {str(parent) for name in names for parent in Path(name).parents
+                          if str(parent) not in ('.', '')}
+        with descriptor.DescriptorAuthority.open_directory(
+                root, trusted_root='/', trusted_uids={0, os.geteuid()}) as directory:
+            found_files = set(); found_dirs = set(); stack = [('', directory)]
+            opened = []
+            try:
+                while stack:
+                    prefix, current = stack.pop()
+                    for entry in os.listdir(current.directory_fd):
+                        rel = str(Path(prefix) / entry) if prefix else entry
+                        try:
+                            child = descriptor.DescriptorAuthority.open_directory(
+                                root / rel, trusted_root='/', trusted_uids={0, os.geteuid()})
+                        except (NotADirectoryError, ValueError, OSError):
+                            if rel not in expected_files: raise ValueError('installed tree has unexpected entry')
+                            found_files.add(rel); continue
+                        opened.append(child); found_dirs.add(rel); stack.append((rel, child))
+                if found_files != expected_files or found_dirs != expected_dirs:
+                    raise ValueError('installed tree is not exact')
+            finally:
+                for child in reversed(opened): child.close()
+        result = {}
+        for name in names:
+            mode = modes[name] if isinstance(modes, dict) else modes
+            with descriptor.DescriptorAuthority.open_file(
+                    root/name, trusted_root='/', trusted_uids={0, os.geteuid()}, expected_uid=uid,
+                    expected_gid=gid, expected_mode=mode, expected_nlink=1,
+                    limit=128 << 20) as item:
+                result[name] = item.sha256
+        return result
+
     def _acceptance_request(self, phase, replica_config, positions, ledger, fault_ledger):
         """Derive the canonical request from journal-authorized state, never callers."""
         import recovery
@@ -1043,25 +1066,47 @@ class ControlIO:
             raise RuntimeError('restore request is not at the locked journal boundary')
         if not isinstance(positions, dict) or set(positions) != {'main','session','aux'}:
             raise ValueError('invalid restore positions')
-        ledger = Path(ledger)
-        st = ledger.stat()
+        ledger = Path(ledger).absolute()
         if ledger.name != ('new-writes.jsonl' if profile == 'fresh-writes' else 'ledger.jsonl'):
             raise ValueError('unexpected ledger name')
-        support_root = Path('/var/lib/hat-oracle/support')
+        account = pwd.getpwnam('hat-oracle')
         support_names = ('config.textproto','migrations/main/U100__hat_ops.sql','migrations/aux/U100__hat_ops.sql','secrets/keys/private_key.pem','secrets/keys/public_key.pem')
-        support = {name: hashlib.sha256((support_root/name).read_bytes()).hexdigest() for name in support_names}
-        binaries = {name: hashlib.sha256((Path('/opt/hat-oracle/bin')/name).read_bytes()).hexdigest() for name in ('trail','litestream')}
-        authority = {'schema': recovery._AUTHORITY_SCHEMA, 'operation': self.operation['id'], 'origin': ('current-verify-exclusive' if profile == 'fresh-writes' else ('d3-recovery-input' if self.operation['source'] == 'B' else 'd2-preflight')), 'ledger': {'path': str(ledger.absolute()), 'device': st.st_dev, 'inode': st.st_ino, 'mode': stat.S_IMODE(st.st_mode), 'uid': st.st_uid, 'gid': st.st_gid, 'links': st.st_nlink, 'bytes': st.st_size, 'sha256': hashlib.sha256(ledger.read_bytes()).hexdigest()}, 'support': support, 'binaries': binaries}
+        manifests = []
+        for value in self.state.values():
+            config = value.get('config') if isinstance(value, dict) else None
+            if isinstance(config, dict) and set(config.get('support', {})) == set(support_names) \
+                    and set(config.get('binaries', {})) == {'trail', 'litestream'}:
+                manifests.append((config['support'], config['binaries']))
+        if not manifests or any(item != manifests[0] for item in manifests[1:]):
+            raise ValueError('authorized writer release identity is unavailable')
+        support, binaries = manifests[0]
+        if self._installed_manifest(Path('/var/lib/hat-oracle/support'), support_names, 0,
+                                    account.pw_gid, {name: 0o640 for name in support_names}) != support:
+            raise ValueError('installed oracle support differs')
+        if self._installed_manifest(Path('/opt/hat-oracle/bin'), ('trail','litestream'),
+                                    0, 0, 0o755) != binaries:
+            raise ValueError('installed oracle binaries differ')
+        with descriptor.DescriptorAuthority.open_file(
+                ledger, trusted_root='/', trusted_uids={0, os.geteuid()}, expected_uid=os.geteuid(),
+                expected_mode=0o600, expected_nlink=1, limit=4 << 20) as selected:
+            identity = selected.identity
+            authority = {'schema': recovery._AUTHORITY_SCHEMA, 'operation': self.operation['id'], 'origin': ('current-verify-exclusive' if profile == 'fresh-writes' else ('d3-recovery-input' if self.operation['source'] == 'B' else 'd2-preflight')), 'ledger': {'path': str(ledger), 'device': identity[0], 'inode': identity[1], 'mode': stat.S_IMODE(identity[2]), 'uid': identity[3], 'gid': identity[4], 'links': identity[5], 'bytes': identity[6], 'sha256': selected.sha256}, 'support': support, 'binaries': binaries}
         inputs = {'replica_config_sha256': hashlib.sha256(replica_config.encode() if isinstance(replica_config,str) else bytes(replica_config)).hexdigest(), 'ledger_sha256': authority['ledger']['sha256'], 'ledger_authority': authority, 'restore_points': {db: {'source':'/var/lib/hat-demo/depot/data/'+db+'.db', 'position': positions[db]} for db in positions}, 'support': support, 'binaries': binaries}
         if profile == 'recovery-comparison':
             from client import read_closed_ledger
             events = read_closed_ledger(fault_ledger, self.operation['source_epoch'])
             operations = recovery.fault_operations(events)
-            inputs.update(fault_ledger_sha256=hashlib.sha256(Path(fault_ledger).read_bytes()).hexdigest(), fault_operations=operations, fault_operation_count=len(operations), fault_operations_sha256=hashlib.sha256(recovery.canonical_json(operations)).hexdigest())
+            with descriptor.DescriptorAuthority.open_file(
+                    fault_ledger, trusted_root='/', trusted_uids={0, os.geteuid()},
+                    expected_uid=os.geteuid(), expected_mode=0o600, expected_nlink=1,
+                    limit=4 << 20) as fault:
+                inputs.update(fault_ledger_sha256=fault.sha256, fault_operations=operations,
+                              fault_operation_count=len(operations),
+                              fault_operations_sha256=hashlib.sha256(recovery.canonical_json(operations)).hexdigest())
         request = {'schema': recovery._ACCEPTANCE_SCHEMA, 'operation': self.operation['id'], 'phase': phase, 'source': self.operation['source'], 'target': self.operation['target'], 'epoch': epoch, 'positions': positions, 'profile': profile, 'inputs': inputs}
         return recovery.validate_acceptance_request(request, self.operation), recovery.canonical_json(request)
 
-    def oracle(self, phase, replica_config, positions, selected_ledger, fault_ledger=None, source_epoch=None):
+    def oracle(self, phase, replica_config, positions, selected_ledger, fault_ledger=None):
         """Run the independent oracle from a request derived after journal intent."""
         import recovery
         import node
@@ -1079,10 +1124,16 @@ class ControlIO:
         if ledger_path.absolute() != Path(selected_ledger).absolute():
             raise ValueError('selected ledger differs from authority')
         identity = tuple(authority['ledger'][key] for key in ('device','inode','mode','uid','gid','links','bytes'))
-        if not (ledger_path.is_absolute() and ledger_path.exists()):
+        if not ledger_path.is_absolute():
             raise ValueError('authorized ledger is unavailable')
-        if request['profile'] != 'fresh-writes':
-            recovery._protected_ledger(ledger_path.read_bytes())
+        with descriptor.DescriptorAuthority.open_file(
+                ledger_path, trusted_root='/', trusted_uids={0, os.geteuid()},
+                expected_uid=authority['ledger']['uid'], expected_gid=authority['ledger']['gid'],
+                expected_mode=authority['ledger']['mode'], expected_nlink=authority['ledger']['links'],
+                expected_size=authority['ledger']['bytes'], expected_sha256=authority['ledger']['sha256'],
+                limit=4 << 20) as authorized_ledger:
+            if request['profile'] != 'fresh-writes':
+                recovery._protected_ledger(authorized_ledger.read())
         account = pwd.getpwnam('hat-oracle')
         prefix = 'd2' if (self.operation['source'], self.operation['target']) == ('A', 'B') else 'd3'
         area = Path('/var/lib/hat-oracle') / (prefix + '-' + self.operation['id'] + '-' + phase)
@@ -1119,25 +1170,31 @@ class ControlIO:
                 '--ledger', str(area/'ledger.jsonl'), '--support', '/var/lib/hat-oracle/support',
                 '--binaries', '/opt/hat-oracle/bin', '--result', str(result)]
         if oracle_fault is not None: argv += ['--fault-ledger', str(oracle_fault)]
-        self.command(argv, timeout=270)
-        result_fd = os.open(result, os.O_RDONLY | os.O_NOFOLLOW)
+        expected = [(ledger_path, 0, account.pw_gid, 0o600, 4 << 20),
+                    (area/'replica.yml', 0, account.pw_gid, 0o640, 1 << 20),
+                    (area/'acceptance-request.json', 0, account.pw_gid, 0o640, 1 << 20)]
+        if oracle_fault is not None: expected.append((oracle_fault, os.geteuid(), account.pw_gid, 0o600, 4 << 20))
+        held = [descriptor.DescriptorAuthority.open_file(
+                    path, trusted_root='/', trusted_uids={0, os.geteuid(), account.pw_uid},
+                    expected_uid=uid, expected_gid=gid, expected_mode=mode,
+                    expected_nlink=1, limit=limit)
+                for path, uid, gid, mode, limit in expected]
         try:
-            result_stat = os.fstat(result_fd)
-            if (result_stat.st_uid != account.pw_uid or result_stat.st_nlink != 1
-                    or stat.S_IMODE(result_stat.st_mode) != 0o600 or result_stat.st_size <= 0 or result_stat.st_size > 4 * 1024 * 1024):
-                raise ValueError('oracle result identity is unsafe')
-            result_raw = b''
-            while len(result_raw) <= 4 * 1024 * 1024:
-                chunk = os.read(result_fd, 65536)
-                if not chunk: break
-                result_raw += chunk
-            if len(result_raw) > 4 * 1024 * 1024: raise ValueError('oracle result is oversized')
+            self.command(argv, timeout=270)
+            for item in held: item.recheck()
+            with descriptor.DescriptorAuthority.open_file(
+                    result, trusted_root='/', trusted_uids={0, account.pw_uid},
+                    expected_uid=account.pw_uid, expected_gid=account.pw_gid,
+                    expected_mode=0o600, expected_nlink=1, limit=4 << 20) as result_authority:
+                result_raw = result_authority.read()
+                value = recovery.parse_acceptance_result(result_raw, request, self.operation)
+                retained = self.work / (phase + '-acceptance-result.json')
+                _copy_bound_input(result, retained, 0o600, account.pw_uid, os.getegid(), result_authority.sha256)
+                result_authority.recheck()
+            for item in held: item.recheck()
+            return value
         finally:
-            os.close(result_fd)
-        value = recovery.parse_acceptance_result(result_raw, request, self.operation)
-        retained = self.work / (phase + '-acceptance-result.json')
-        _copy_bound_input(result, retained, 0o600, account.pw_uid, os.getegid(), hashlib.sha256(result_raw).hexdigest())
-        return value
+            for item in reversed(held): item.close()
 
     def verify_url(self, ledger):
         from demo_smoke import verify_restore
@@ -1188,7 +1245,7 @@ def switchover(config, reconcile=None, verification_only=False):
         def preflight():
             if socket.gethostname() != config['hostname']: raise ValueError('wrong controller')
             if maintenance.exists(): raise RuntimeError('ingress maintenance already set')
-            state['A'] = remote('A','probe'); state['B'] = remote('B','probe')
+            state['A'] = remote('A','probe-source'); state['B'] = remote('B','probe-source')
             for label,role in [('A','writer'),('B','standby')]:
                 value=state[label]
                 if value['config']['role'] != role or value['status']['epoch'] != config['epoch'] or value['status']['trailbase_running'] != (role=='writer'):
@@ -1235,8 +1292,8 @@ def switchover(config, reconcile=None, verification_only=False):
         def activate():
             digest=hashlib.sha256(json.dumps(state['fence'],sort_keys=True).encode()).hexdigest()
             remote('B','prepare',dict(new_epoch=operation['new_epoch'],signature=state['comparison']['signature'],fence_digest=digest))
-            value=remote('B','activate',epoch=operation['new_epoch'])
-            state['new']=remote('B','probe',epoch=operation['new_epoch']); return value
+            value=remote('B','activate-new')
+            state['new']=remote('B','probe-new'); return value
         def baseline():
             state['baseline']=oracle('baseline',state['new']['replica_config'],state['new']['status']['positions'],ledger)
             return state['baseline']
@@ -1258,12 +1315,12 @@ def switchover(config, reconcile=None, verification_only=False):
             smoke('http://127.0.0.1:18080',json.loads(Path('/etc/hat-control/demo-login.json').read_text()),fresh)
             deadline=time.monotonic()+90
             while True:
-                value=remote('B','probe',epoch=operation['new_epoch'])
+                value=remote('B','probe-new')
                 if all(value['status']['positions'][db] > pos for db,pos in state['baseline']['positions'].items()): break
                 if time.monotonic()>deadline: raise RuntimeError('new writes not confirmed published')
                 time.sleep(1)
             evidence=oracle('new-writes',value['replica_config'],value['status']['positions'],fresh)
-            return dict(writer='B',epoch=operation['new_epoch'],positions=value['status']['positions'],new_writes=evidence)
+            return dict(writer='B',positions=value['status']['positions'],new_writes=evidence)
         actions=(preflight,close_ingress,quiesce,power_off,freeze,compare,activate,baseline,route,verify)
         try:
             if verification_only:
@@ -1278,7 +1335,7 @@ def switchover(config, reconcile=None, verification_only=False):
                 close_ingress()
                 fresh_fence=fence('inspect','offline')
                 state['B']={'boot_id':previous['preflight']['candidate_boot']}
-                current=remote('B','probe',epoch=operation['new_epoch'])
+                current=remote('B','probe-new')
                 if current['config']['role']!='writer' or not current['status']['trailbase_running']:raise RuntimeError('candidate writer changed')
                 state['baseline']=previous['baseline']
                 route_proof=previous['route'];digest=hashlib.sha256(ingress.read_bytes()).hexdigest()
@@ -1379,13 +1436,13 @@ def rejoin(config, operation_id, *, root=Path('/var/lib/hat-control'), ingress=P
                 raise RuntimeError('verified A route is not current')
             if not isinstance(expected_a_boot, str) or not expected_a_boot:
                 raise RuntimeError('retained A boot evidence is unavailable')
-            probe = io.remote('A', 'probe', epoch=operation['new_epoch'])
+            probe = io.remote('A', 'probe-new')
             state['A'] = {'boot_id': expected_a_boot, 'positions': writer_probe(probe, expected_a_boot)}
             receipt = io.fence('power-on', 'running', label='B')
             if not isinstance(receipt, dict) or receipt.get('action') != 'power-on' or receipt.get('state') != 'running':
                 raise RuntimeError('power-on receipt is not pinned')
             readiness = io.wait_reachable('B', timeout=90)
-            cold = io.remote('B', 'inspect-cold', epoch=operation['source_epoch'])
+            cold = io.remote('B', 'inspect-cold')
             boot_id = cold.get('boot_id')
             try:
                 if str(uuid.UUID(boot_id)) != boot_id or boot_id == old_b_boot:
@@ -1412,7 +1469,7 @@ def rejoin(config, operation_id, *, root=Path('/var/lib/hat-control'), ingress=P
             return {'receipt': receipt, 'readiness': readiness, 'cold': cold, 'boot_id': boot_id}
 
         def rejoin_node():
-            result = io.remote('B', 'rejoin', {'new_epoch': operation['new_epoch']}, epoch=operation['source_epoch'])
+            result = io.remote('B', 'rejoin', {'new_epoch': operation['new_epoch']})
             transition.validate_cut(result.get('cut'))
             if (result.get('operation') != operation_id or result.get('role') != 'standby'
                     or result.get('epoch') != operation['new_epoch']
@@ -1428,7 +1485,7 @@ def rejoin(config, operation_id, *, root=Path('/var/lib/hat-control'), ingress=P
             while True:
                 result = None
                 try:
-                    result = io.remote('B', 'probe', epoch=operation['new_epoch'],
+                    result = io.remote('B', 'probe-new',
                                        timeout=max(1, min(10, deadline-time.monotonic())))
                 except (RuntimeError, subprocess.TimeoutExpired):
                     pass  # The native probe refuses while startup health is false.
@@ -1452,7 +1509,7 @@ def rejoin(config, operation_id, *, root=Path('/var/lib/hat-control'), ingress=P
                 if time.monotonic() >= deadline:
                     raise RuntimeError('B did not reach the captured A same-epoch cut')
                 time.sleep(1)
-            final_a = io.remote('A', 'probe', epoch=operation['new_epoch'])
+            final_a = io.remote('A', 'probe-new')
             writer_probe(final_a, state['A']['boot_id'])
             if hashlib.sha256(ingress.read_bytes()).hexdigest() != route.get('config_sha'):
                 raise RuntimeError('verified A ingress route changed during rejoin')
@@ -1466,11 +1523,11 @@ def rejoin(config, operation_id, *, root=Path('/var/lib/hat-control'), ingress=P
                 retained = previous['rejoin_boot']['cold']
                 if hashlib.sha256(ingress.read_bytes()).hexdigest() != route.get('config_sha'):
                     raise RuntimeError('verified A route changed after reconciliation')
-                current_a = io.remote('A', 'probe', epoch=operation['new_epoch'])
+                current_a = io.remote('A', 'probe-new')
                 state['A'] = {'boot_id': expected_a_boot, 'positions': writer_probe(current_a, expected_a_boot)}
                 state['B'] = {'boot_id': retained['boot_id'], 'config_sha': retained['config_sha'],
                               'replica_sha': retained['replica_sha']}
-                if io.remote('B', 'inspect-cold', epoch=operation['source_epoch']) != retained:
+                if io.remote('B', 'inspect-cold') != retained:
                     raise RuntimeError('B cold state changed after reconciliation')
             journal.step('rejoin', rejoin_node)
             journal.step('verify_redundancy', verify)
@@ -1592,7 +1649,7 @@ def reconcile_rejoin_boot(config, operation_id, *, root=Path('/var/lib/hat-contr
         expected_boot=previous.get('activate',{}).get('probe',{}).get('boot_id') or previous['preflight'].get('candidate_boot')
         if route.get('writer')!='A' or route.get('epoch')!=operation['new_epoch'] or hashlib.sha256(ingress.read_bytes()).hexdigest()!=route.get('config_sha'):
             raise RuntimeError('verified A route is not current')
-        fresh_a=io.remote('A','probe',epoch=operation['new_epoch'])
+        fresh_a=io.remote('A','probe-new')
         status=fresh_a.get('status',{}); cfg=fresh_a.get('config',{})
         transition.validate_cut(status.get('positions'))
         if (fresh_a.get('boot_id')!=expected_boot or cfg.get('role')!='writer' or cfg.get('epoch')!=operation['new_epoch']
@@ -1601,7 +1658,7 @@ def reconcile_rejoin_boot(config, operation_id, *, root=Path('/var/lib/hat-contr
             raise RuntimeError('A is not the retained healthy writer')
         fresh_provider=io.fence('inspect','running',label='B')
         state['B']={'boot_id':original_cold['boot_id']}
-        fresh_cold=io.remote('B','inspect-cold',epoch=operation['source_epoch'])
+        fresh_cold=io.remote('B','inspect-cold')
         if fresh_cold != original_cold or fresh_cold.get('authority')!='absent' or fresh_cold.get('boot_id')==old_source:
             raise RuntimeError('current B cold evidence differs from retained boot evidence')
         evidence={'receipt':original_receipt,'fresh_provider':fresh_provider,'cold':fresh_cold,'reconciliation':json.loads(marker.read_text()),'a_probe':fresh_a}

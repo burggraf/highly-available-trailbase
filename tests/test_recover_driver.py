@@ -49,7 +49,11 @@ class FakeIO:
         return {'unit': unit, 'load_state': 'loaded', 'main_pid': 0,
                 'active_state': 'inactive', 'sub_state': 'dead', 'cgroup': 'absent'}
 
-    def remote(self, label, action, payload=None, epoch=None):
+    def remote(self, label, action, payload=None):
+        wire_action, source = control.ControlIO._REMOTE_ACTIONS[action]
+        epoch = (self.state.get(label, {}).get('epoch', self.operation['source_epoch'])
+                 if source == 'current' else self.operation[source])
+        action = wire_action
         self.record('remote', label, action, epoch, payload)
         operation = self.operation['id']
         if action == 'inspect-cold':
@@ -105,8 +109,8 @@ class FakeIO:
         return {'positions': dict(main=10, session=11, aux=12), 'plans': {db: {} for db in DBS}}
 
     def oracle(self, phase, replica_config, positions, selected_ledger,
-               fault_ledger=None, source_epoch=None):
-        self.record('oracle', phase, dict(positions), fault_ledger is not None, source_epoch)
+               fault_ledger=None):
+        self.record('oracle', phase, dict(positions), fault_ledger is not None)
         if phase == 'compare' and self.scenario == 'changed-ledger':
             with self.fault_path.open('a') as stream: stream.write('{}\n')
         signature = ({db: hashlib.sha256(('cut-' + db).encode()).hexdigest() for db in DBS}

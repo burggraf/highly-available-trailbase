@@ -14,6 +14,7 @@ import time
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'hat'))
+import descriptor
 import recovery
 from client import read_closed_ledger
 from demo_smoke import request, verify_restore
@@ -54,70 +55,61 @@ def _open_descriptor(path, flags=os.O_RDONLY):
 
 
 def _raw(path, limit=4 << 20, expected=None):
-    _trusted_ancestry(path)
-    fd = _open_descriptor(path)
-    try:
-        before = os.fstat(fd)
-        if (not stat.S_ISREG(before.st_mode) or before.st_nlink != 1
-                or before.st_mode & 0o022 or before.st_size > limit):
+    expected_mode = stat.S_IMODE(expected[2]) if expected is not None else None
+    with descriptor.DescriptorAuthority.open_file(
+            path, trusted_root='/', trusted_uids={0, os.geteuid()},
+            expected_uid=(expected[3] if expected is not None else None),
+            expected_gid=(expected[4] if expected is not None else None),
+            expected_mode=expected_mode, expected_nlink=1,
+            expected_size=(expected[6] if expected is not None else None), limit=limit) as authority:
+        if expected is None and stat.S_IMODE(authority.identity[2]) & 0o022:
             raise ValueError('unsafe oracle input')
-        if expected is not None and _stat_identity(before) != expected:
+        if expected is not None and authority.identity != expected:
             raise ValueError('oracle input identity changed')
-        data = bytearray()
-        while len(data) <= limit:
-            part = os.read(fd, min(65536, limit + 1-len(data)))
-            if not part: break
-            data.extend(part)
-        after = os.fstat(fd)
-        if len(data) > limit or _stat_identity(before) != _stat_identity(after):
-            raise ValueError('oracle input changed')
-        return bytes(data), _stat_identity(after)
-    finally:
-        os.close(fd)
+        return authority.read(), authority.identity
 
 
 def _read(path, limit=4 << 20, expected=None):
     return _raw(path, limit, expected)[0]
 
 
-def _copy_fixed_support(source, destination, names):
-    source, destination = Path(source), Path(destination)
-    expected = set(names)
-    if not source.is_dir() or source.is_symlink(): raise ValueError('support root is unsafe')
-    _trusted_ancestry(source / 'placeholder')
-    root_stat = source.lstat()
-    if root_stat.st_uid != os.geteuid() or root_stat.st_mode & 0o022:
-        raise ValueError('support root is unsafe')
-    found = set()
-    for current, dirs, files in os.walk(source, topdown=True, followlinks=False):
-        current = Path(current)
-        dirs[:] = sorted(dirs)
-        for name in dirs + files:
-            path = current / name
-            rel = path.relative_to(source).as_posix()
-            st = path.lstat()
-            if stat.S_ISLNK(st.st_mode) or (stat.S_ISDIR(st.st_mode) and st.st_nlink != 1):
-                raise ValueError('support tree contains unsafe entry')
-            if not stat.S_ISDIR(st.st_mode):
-                if rel not in expected: raise ValueError('support tree has unexpected file')
-                if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_mode & 0o022:
-                    raise ValueError('support file is unsafe')
-                found.add(rel)
-    if found != expected: raise ValueError('support tree is incomplete')
-    for rel in sorted(expected):
-        target = destination / rel
-        target.parent.mkdir(parents=True, exist_ok=True)
-        raw = _read(source / rel)
-        if hashlib.sha256(raw).hexdigest() != names[rel]:
-            raise ValueError('support identity differs')
-        fd = os.open(target, os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, 'wb') as stream:
-            stream.write(raw); stream.flush(); os.fsync(stream.fileno())
-    parents = {destination} | {(destination / rel).parent for rel in expected}
-    for parent in parents:
-        parent.mkdir(parents=True, exist_ok=True)
-        fd = os.open(parent, os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
-        os.fsync(fd); os.close(fd)
+def _validate_fixed_files(root, names, uid, gid, modes):
+    """Open the exact installed tree; callers retain returned authorities."""
+    root = Path(root)
+    expected_files = set(names)
+    expected_dirs = {str(parent) for name in names for parent in Path(name).parents
+                     if str(parent) not in ('.', '')}
+    authorities = []
+    directory = descriptor.DescriptorAuthority.open_directory(
+        root, trusted_root='/', trusted_uids={0, os.geteuid()})
+    authorities.append(directory); stack = [('', directory)]; found_files = set(); found_dirs = set()
+    try:
+        while stack:
+            prefix, current = stack.pop()
+            for entry in os.listdir(current.directory_fd):
+                rel = str(Path(prefix) / entry) if prefix else entry
+                if rel in expected_dirs:
+                    child = descriptor.DescriptorAuthority.open_directory(
+                        root / rel, trusted_root='/', trusted_uids={0, os.geteuid()})
+                    authorities.append(child); found_dirs.add(rel); stack.append((rel, child))
+                elif rel in expected_files:
+                    found_files.add(rel)
+                else:
+                    raise ValueError('installed tree has unexpected entry')
+        if found_files != expected_files or found_dirs != expected_dirs:
+            raise ValueError('installed tree is incomplete')
+        for name, digest in names.items():
+            mode = modes[name] if isinstance(modes, dict) else modes
+            item = descriptor.DescriptorAuthority.open_file(
+                root / name, trusted_root='/', trusted_uids={0, os.geteuid()}, expected_uid=uid,
+                expected_gid=gid, expected_mode=mode, expected_nlink=1,
+                expected_sha256=digest, limit=128 << 20)
+            authorities.append(item)
+        for item in authorities: item.recheck()
+        return authorities
+    except BaseException:
+        for item in reversed(authorities): item.close()
+        raise
 
 
 def restore(root, acceptance_request, config, ledger, support, binaries, fault_ledger=None):
@@ -160,21 +152,13 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
     if not root.is_dir() or root.is_symlink(): raise ValueError('oracle root is unsafe')
     work = root / uuid.uuid4().hex; work.mkdir(mode=0o700)
     expected_support = request_value['inputs']['support']
-    _copy_fixed_support(support, work / 'depot', expected_support)
+    support_authorities = _validate_fixed_files(support, expected_support, 0, os.getegid(), 0o640)
     expected_binaries = request_value['inputs']['binaries']
     if set(expected_binaries) != {'trail', 'litestream'}:
         raise ValueError('binary set is invalid')
     binary_root = Path(binaries)
-    _trusted_ancestry(binary_root / 'placeholder')
-    if not binary_root.is_dir() or binary_root.is_symlink() or binary_root.lstat().st_mode & 0o022:
-        raise ValueError('binary root is unsafe')
-    if {item.name for item in binary_root.iterdir()} != {'trail', 'litestream'}:
-        raise ValueError('binary set is invalid')
-    for name, digest in expected_binaries.items():
-        actual = _read(binary_root / name, 128 << 20)
-        if hashlib.sha256(actual).hexdigest() != digest:
-            raise ValueError('binary identity differs')
-    depot = work / 'depot'; data = depot / 'data'; data.mkdir(mode=0o700)
+    binary_authorities = _validate_fixed_files(binary_root, expected_binaries, 0, 0, 0o755)
+    depot = Path(support); data = work / 'data'; data.mkdir(mode=0o700)
     evidence = {'databases': {}}
     for name in ('main', 'session', 'aux'):
         position = request_value['positions'][name]
@@ -183,6 +167,7 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
             subprocess.run([str(Path(binaries)/'litestream'), 'restore', '-config', str(config), '-txid', f'{position:016x}',
                             '-o', str(target), '/var/lib/hat-demo/depot/data/' + name + '.db'],
                            stdout=log, stderr=subprocess.STDOUT, check=True, timeout=180)
+        for authority in support_authorities + binary_authorities: authority.recheck()
         if target.is_symlink() or not target.is_file(): raise ValueError('restore output is unsafe')
         with sqlite3.connect(f'file:{target}?mode=ro', uri=True) as db:
             db.execute('PRAGMA ignore_check_constraints=ON')
@@ -190,6 +175,7 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
                 raise ValueError('database checks failed')
         restored = _read(target, 64 << 20)
         evidence['databases'][name] = {'position': position, 'sha256': hashlib.sha256(restored).hexdigest(), 'integrity':'PASS', 'foreign_keys':'PASS'}
+    for authority in support_authorities + binary_authorities: authority.recheck()
     evidence['signature'] = logical_signature(data)
     with socket.socket() as sock:
         sock.bind(('127.0.0.1', 0)); port = sock.getsockname()[1]
@@ -229,6 +215,8 @@ def restore(root, acceptance_request, config, ledger, support, binaries, fault_l
     dfd=os.open(work, os.O_RDONLY|os.O_DIRECTORY); os.fsync(dfd); os.close(dfd)
     if _read(result_path, 1 << 20) != raw:
         raise ValueError('result changed after write')
+    for authority in support_authorities + binary_authorities: authority.recheck()
+    for authority in reversed(support_authorities + binary_authorities): authority.close()
     return result
 
 

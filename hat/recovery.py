@@ -780,7 +780,7 @@ def recover(config, *, control_module=None, io_factory=None,
         intake, sealed_fault, seal = _seal_fault(root, input_value, fault_raw)
         provisional = {'id': authority['operation'], 'source': 'B', 'target': 'A',
                        'source_epoch': authority['epoch']}
-        state = {'ingress_touched': False, 'A': {'boot_id': input_value['candidate_boot']}}
+        state = {'ingress_touched': False, 'A': {'boot_id': input_value['candidate_boot'], 'epoch': input_value['candidate_epoch']}}
         guard_io = io_factory(journal, config, provisional, intake, state, maintenance, ingress)
         death = _producer_proof(guard_io.producer_stopped(input_value['producer_unit'],
                                                          input_value['producer_cgroup']),
@@ -800,7 +800,7 @@ def recover(config, *, control_module=None, io_factory=None,
         def preflight():
             if socket.gethostname() != config['hostname']: raise ValueError('wrong controller')
             if maintenance.exists() or maintenance.is_symlink(): raise RuntimeError('ingress maintenance already set')
-            candidate = io.remote('A', 'inspect-cold', epoch=input_value['candidate_epoch'])
+            candidate = io.remote('A', 'inspect-cold')
             expected_replica = replace_replica_prefix(candidate.get('replica_config', ''),
                                                       input_value['candidate_epoch'], input_value['source_epoch'])
             if expected_replica != input_value['source_replica']:
@@ -834,15 +834,14 @@ def recover(config, *, control_module=None, io_factory=None,
             return selected
 
         def restore():
-            prepared = io.remote('A', 'prepare-recovery', {'source_epoch': operation['source_epoch']},
-                                 epoch=input_value['candidate_epoch'])
+            prepared = io.remote('A', 'prepare-recovery', {'source_epoch': operation['source_epoch']})
             if (prepared.get('operation') != operation['id'] or prepared.get('original_epoch') != input_value['candidate_epoch']
                     or prepared.get('original_boot_id') != input_value['candidate_boot']
                     or prepared.get('epoch') != operation['source_epoch'] or prepared.get('role') != 'standby'):
                 raise RuntimeError('candidate recovery preparation differs')
+            state['A']['epoch'] = operation['source_epoch']
             digest = hashlib.sha256(json.dumps(state['fence'], sort_keys=True).encode()).hexdigest()
-            restored = io.remote('A', 'restore-recovery', {'cut': state['cut'], 'fence_digest': digest},
-                                 epoch=operation['source_epoch'])
+            restored = io.remote('A', 'restore-recovery', {'cut': state['cut'], 'fence_digest': digest})
             validate_cut(restored.get('cut'))
             signature = restored.get('signature')
             if (restored.get('operation') != operation['id'] or restored['cut'] != state['cut']
@@ -860,8 +859,7 @@ def recover(config, *, control_module=None, io_factory=None,
 
         def compare():
             compared = io.oracle('compare', input_value['source_replica'], state['cut'],
-                                 Path(input_value['protected_ledger']), fault_ledger=sealed_fault,
-                                 source_epoch=operation['source_epoch'])
+                                 Path(input_value['protected_ledger']), fault_ledger=sealed_fault)
             _cut_report(compared)
             if compared['request']['positions'] != state['cut'] or compared['signature'] != state['restore']['signature']:
                 raise RuntimeError('candidate and independent restored images differ')
@@ -875,18 +873,19 @@ def recover(config, *, control_module=None, io_factory=None,
                                                            input_value['producer_cgroup']),
                                        input_value['producer_unit'])
             fresh_fence = io.fence('inspect', 'offline', label='B')
-            current = io.remote('A', 'inspect-cold', epoch=operation['source_epoch'])
+            current = io.remote('A', 'inspect-cold')
             _cold(current, operation['id'], operation['source_epoch'], input_value['candidate_boot'],
                   'standby', input_value['source_config'], input_value['source_replica'])
             prepared = io.remote('A', 'prepare', {'new_epoch': operation['new_epoch'],
                                  'signature': state['comparison']['signature'],
-                                 'fence_digest': state['fence_digest']}, epoch=operation['source_epoch'])
+                                 'fence_digest': state['fence_digest']})
             if (prepared.get('epoch') != operation['new_epoch']
                     or prepared.get('signature') != state['comparison']['signature']
                     or prepared.get('fence_digest') != state['fence_digest']):
                 raise RuntimeError('candidate activation preparation differs')
-            activated = io.remote('A', 'activate', epoch=operation['new_epoch'])
-            writer = _writer(io.remote('A', 'probe', epoch=operation['new_epoch']),
+            state['A']['epoch'] = operation['new_epoch']
+            activated = io.remote('A', 'activate-new')
+            writer = _writer(io.remote('A', 'probe-new'),
                              operation['new_epoch'], input_value['candidate_boot'], input_value['source_config'])
             state['new'] = writer
             return {'producer': producer, 'source_fence': fresh_fence,
@@ -928,7 +927,7 @@ def recover(config, *, control_module=None, io_factory=None,
             _owned_bytes(fresh, MAX_ARTIFACT, root)
             deadline = time.monotonic() + 90
             while True:
-                writer = _writer(io.remote('A', 'probe', epoch=operation['new_epoch']),
+                writer = _writer(io.remote('A', 'probe-new'),
                                  operation['new_epoch'], input_value['candidate_boot'], input_value['source_config'])
                 positions = writer['status']['positions']
                 if all(positions[db] > state['baseline']['positions'][db] for db in node.DBS): break

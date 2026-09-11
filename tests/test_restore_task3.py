@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -22,7 +23,32 @@ class RestoreTask3Tests(unittest.TestCase):
         root = Path(tempfile.mkdtemp(dir=Path.cwd()))
         source = root / 'support'; source.mkdir()
         (source / 'ok').write_bytes(b'ok'); (source / 'extra').write_bytes(b'x')
-        with self.assertRaises(ValueError): restore_baseline._copy_fixed_support(source, root / 'out', {'ok'})
+        with self.assertRaises(ValueError): restore_baseline._validate_fixed_files(source, {'ok': '0' * 64}, os.geteuid(), os.getegid(), 0o600)
+
+    def test_fixed_installed_files_refuse_mode_gid_link_extra_directory_and_replacement(self):
+        import restore_baseline
+        for mutation in ('mode', 'gid', 'link', 'extra-directory'):
+            with self.subTest(mutation=mutation):
+                root = Path(tempfile.mkdtemp(dir=Path.cwd())); (root / 'nested').mkdir(mode=0o700)
+                item = root / 'nested/ok'; item.write_bytes(b'ok'); item.chmod(0o600)
+                expected_gid = os.getegid()
+                if mutation == 'mode': item.chmod(0o640)
+                elif mutation == 'gid': expected_gid += 1
+                elif mutation == 'link': os.link(item, root / 'linked')
+                elif mutation == 'extra-directory': (root / 'extra').mkdir()
+                with self.assertRaises(ValueError):
+                    restore_baseline._validate_fixed_files(
+                        root, {'nested/ok': hashlib.sha256(b'ok').hexdigest()},
+                        os.geteuid(), expected_gid, 0o600)
+        root = Path(tempfile.mkdtemp(dir=Path.cwd())); item = root / 'ok'
+        item.write_bytes(b'ok'); item.chmod(0o600)
+        held = restore_baseline._validate_fixed_files(
+            root, {'ok': hashlib.sha256(b'ok').hexdigest()}, os.geteuid(), os.getegid(), 0o600)
+        item.rename(root / 'old'); item.write_bytes(b'ok'); item.chmod(0o600)
+        try:
+            with self.assertRaises(ValueError): held[-1].recheck()
+        finally:
+            for authority in reversed(held): authority.close()
 
     def test_request_bytes_are_canonical_and_no_positions_file_contract(self):
         op = {'id':'a'*32,'source':'A','target':'B','source_epoch':'d1-source','new_epoch':'d1-'+'a'*32}
