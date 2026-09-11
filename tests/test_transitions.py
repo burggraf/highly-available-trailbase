@@ -256,6 +256,58 @@ class TransitionTests(unittest.TestCase):
                         journal.pending=False
                         with self.assertRaises(RuntimeError):journal.finish()
 
+    def test_semantic_schema_rejects_extra_objects_constraint_differences_and_corruption(self):
+        m=self.module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve()
+            with m.Journal(root): pass
+            path=root/'journal.db'
+            with closing(sqlite3.connect(path)) as db:
+                db.execute('CREATE TABLE extra(value TEXT)'); db.commit()
+            with self.assertRaises((ValueError,RuntimeError)): 
+                with m.Journal(root): pass
+            path.unlink()
+            for suffix in ('-journal','-wal','-shm'):
+                p=root/('journal.db'+suffix)
+                if p.exists():p.unlink()
+            with m.Journal(root): pass
+            with closing(sqlite3.connect(path)) as db:
+                db.execute("UPDATE operations SET complete=2") if False else None
+                db.execute('PRAGMA writable_schema=ON')
+                db.execute("UPDATE sqlite_schema SET sql=replace(sql,'CHECK(complete IN (0,1))','CHECK(complete IN (0,2))') WHERE name='operations'")
+                db.commit()
+            with self.assertRaises((ValueError,RuntimeError)):
+                with m.Journal(root): pass
+
+    def test_semantic_schema_integrity_and_foreign_key_checks_run_on_open(self):
+        m=self.module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve()
+            with m.Journal(root) as journal:
+                op=journal.begin('A','B','d1-old')
+                journal.db.execute("PRAGMA writable_schema=ON")
+                journal.db.execute("UPDATE sqlite_schema SET sql=sql||' ' WHERE name='operations'")
+                journal.db.commit()
+            with self.assertRaises((ValueError,RuntimeError)):
+                with m.Journal(root): pass
+
+    def test_ingress_allowed_rejects_journal_or_config_replacement_during_read(self):
+        m=self.module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve(); ingress=root/'proxy.cfg'; ingress.write_text('route B\\n'); maintenance=root/'maintenance'
+            with m.Journal(root) as journal:
+                op=journal.begin('A','B','d1-old')
+                for phase in m.PHASES:
+                    ev={'writer':'B','epoch':op['new_epoch'],'config_sha':hashlib.sha256(ingress.read_bytes()).hexdigest()} if phase=='route' else {}
+                    journal.step(phase,lambda ev=ev:ev)
+                journal.finish()
+            original=ingress.read_bytes(); ingress.write_bytes(original+b'changed')
+            self.assertFalse(m.ingress_allowed(root,maintenance,root/'permit',ingress,'boot'))
+            ingress.write_bytes(original)
+            replacement=root/'replacement'; replacement.write_bytes((root/'journal.db').read_bytes()); replacement.chmod(0o600)
+            (root/'journal.db').replace(root/'journal.db.old'); replacement.replace(root/'journal.db')
+            self.assertFalse(m.ingress_allowed(root,maintenance,root/'permit',ingress,'boot'))
+
     def test_fence_requires_exact_target_fresh_completed_observations(self):
         m = self.module()
         self.assertTrue(hasattr(m,'validate_fence'), 'missing completed fencing gate')
