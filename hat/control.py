@@ -889,6 +889,12 @@ def _open_held_inputs(expected, trusted_uids=None):
         raise
 
 
+class CommandCleanupUncertain(subprocess.TimeoutExpired):
+    """A timed-out command whose post-timeout cleanup was not proven."""
+    def __init__(self):
+        super().__init__('command cleanup uncertain', None)
+
+
 class ControlIO:
     """Shared command, node RPC, fence, ingress, and oracle I/O for a transition."""
     SSH_FLAGS = ('-i', '/etc/hat-control/id_ed25519', '-o', 'IdentitiesOnly=yes',
@@ -1113,15 +1119,90 @@ class ControlIO:
         return None
 
     def _stop_command(self, process):
-        """Do not leave an uncertain command running after communication failure."""
+        """Do not leave an uncertain command client running after communication failure."""
         if process.poll() is None:
             process.kill()
         process.wait(timeout=15)
 
-    def _record_command_outcome(self, path, argv, *, returncode, uncertain, error=None, preserve_failure=False):
+    @staticmethod
+    def _systemd_unit(argv):
+        if not argv or argv[0] != 'systemd-run':
+            return None
+        units = [item[7:] for item in argv if isinstance(item, str) and item.startswith('--unit=')]
+        if len(units) != 1 or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.:@-]{0,254}', units[0]):
+            return None
+        return units[0]
+
+    @staticmethod
+    def _cleanup_status(scope, **fields):
+        value = {'scope': scope}
+        value.update({key: str(item)[:32] for key, item in fields.items()})
+        return value
+
+    def _stop_systemd_unit(self, unit):
+        """Stop and independently verify a pinned transient unit without command recursion."""
+        status = self._cleanup_status('systemd-unit', stop='not-attempted', verify='not-attempted')
+        try:
+            stopped = subprocess.run(['systemctl', 'stop', '--wait', unit],
+                                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, timeout=15, check=False)
+            status['stop'] = 'ok' if getattr(stopped, 'returncode', 1) == 0 else 'failed'
+        except BaseException as exc:
+            status['stop'] = self._bounded_error_type(exc)
+        try:
+            checked = subprocess.run(
+                ['systemctl', 'show', '--property=LoadState', '--property=ActiveState',
+                 '--property=SubState', '--property=MainPID', unit],
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                timeout=15, check=False)
+            if getattr(checked, 'returncode', 1) != 0:
+                status['verify'] = 'failed'
+            else:
+                raw = getattr(checked, 'stdout', b'') or b''
+                if isinstance(raw, bytes):
+                    raw = raw[:65536].decode('ascii', 'replace')
+                fields = dict(line.split('=', 1) for line in str(raw)[:65536].splitlines()
+                              if '=' in line)
+                gone = fields.get('LoadState') == 'not-found' and fields.get('MainPID') == '0'
+                dead = (fields.get('LoadState') == 'loaded'
+                        and fields.get('ActiveState') == 'inactive'
+                        and fields.get('SubState') == 'dead'
+                        and fields.get('MainPID') == '0')
+                status['verify'] = 'inactive-dead-mainpid0' if dead else ('not-found-mainpid0' if gone else 'not-proven')
+        except BaseException as exc:
+            status['verify'] = self._bounded_error_type(exc)
+        return status, status['stop'] == 'ok' and status['verify'] in {
+            'inactive-dead-mainpid0', 'not-found-mainpid0'}
+
+    def _timeout_cleanup(self, process, argv):
+        unit = self._systemd_unit(argv)
+        if unit is not None:
+            return self._stop_systemd_unit(unit)
+        try:
+            self._stop_command(process)
+            return self._cleanup_status('client-process-only', client='terminated',
+                                        descendants='unverified'), True
+        except BaseException as exc:
+            return self._cleanup_status('client-process-only', client=self._bounded_error_type(exc),
+                                        descendants='unverified'), False
+
+    def _record_cleanup_uncertain(self, path, status):
+        try:
+            self._durable_json(path, {'schema': 'command-cleanup-uncertain-1',
+                                      'cleanup_uncertain': True, **status},
+                               label='command-cleanup-uncertain')
+        except BaseException:
+            pass
+
+    def _record_command_outcome(self, path, argv, *, returncode, uncertain, error=None,
+                                preserve_failure=False, cleanup=None, cleanup_uncertain=False):
         value = {'argv': argv, 'returncode': returncode, 'uncertain': uncertain}
         if error is not None:
             value['error_type'] = self._bounded_error_type(error)
+        if cleanup is not None:
+            value['cleanup'] = cleanup
+        if cleanup_uncertain:
+            value['cleanup_uncertain'] = True
         try:
             self.journal.check_authority()
             self._durable_json(path, value, label='command-outcome')
@@ -1139,46 +1220,57 @@ class ControlIO:
         self._before_command_spawn(argv)
         stdout = prefix.with_suffix('.stdout')
         stderr = prefix.with_suffix('.stderr')
-        out_fd = os.open(stdout, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-        err_fd = os.open(stderr, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        out_fd = err_fd = None
         process = None
         try:
-            with os.fdopen(out_fd, 'wb') as out, os.fdopen(err_fd, 'wb') as err:
-                try:
-                    process = subprocess.Popen(argv, stdin=subprocess.PIPE if data is not None else None,
-                                               stdout=out, stderr=err)
-                except BaseException as exc:
-                    self._record_command_outcome(prefix.with_suffix('.outcome.json'), argv,
-                                                 returncode=None, uncertain=False, error=exc,
-                                                 preserve_failure=True)
-                    raise
-                try:
-                    self._after_command_start(process)
-                    process.communicate(input=data, timeout=timeout)
-                except subprocess.TimeoutExpired as exc:
+            out_fd = os.open(stdout, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            err_fd = os.open(stderr, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(out_fd, 'wb') as out:
+                out_fd = None
+                with os.fdopen(err_fd, 'wb') as err:
+                    err_fd = None
                     try:
-                        self._before_command_timeout(process)
-                        self._stop_command(process)
-                    except BaseException:
-                        pass
-                    self._record_command_outcome(prefix.with_suffix('.outcome.json'), argv,
-                                                 returncode=None, uncertain=True, error=exc,
-                                                 preserve_failure=True)
-                    raise
-                except BaseException as exc:
-                    try: self._stop_command(process)
-                    except BaseException: pass
-                    self._record_command_outcome(prefix.with_suffix('.outcome.json'), argv,
-                                                 returncode=None, uncertain=True, error=exc,
-                                                 preserve_failure=True)
-                    raise
+                        process = subprocess.Popen(argv, stdin=subprocess.PIPE if data is not None else None,
+                                                   stdout=out, stderr=err)
+                    except BaseException as exc:
+                        self._record_command_outcome(prefix.with_suffix('.outcome.json'), argv,
+                                                     returncode=None, uncertain=False, error=exc,
+                                                     preserve_failure=True)
+                        raise
+                    try:
+                        self._after_command_start(process)
+                        process.communicate(input=data, timeout=timeout)
+                    except subprocess.TimeoutExpired as exc:
+                        try: self._before_command_timeout(process)
+                        except BaseException: pass
+                        cleanup, proven = self._timeout_cleanup(process, argv)
+                        if not proven:
+                            self._record_cleanup_uncertain(prefix.with_suffix('.cleanup-uncertain.json'), cleanup)
+                        self._record_command_outcome(prefix.with_suffix('.outcome.json'), argv,
+                                                     returncode=None, uncertain=True, error=exc,
+                                                     preserve_failure=True, cleanup=cleanup,
+                                                     cleanup_uncertain=not proven)
+                        if not proven:
+                            raise CommandCleanupUncertain() from exc
+                        raise
+                    except BaseException as exc:
+                        try: self._stop_command(process)
+                        except BaseException: pass
+                        self._record_command_outcome(prefix.with_suffix('.outcome.json'), argv,
+                                                     returncode=None, uncertain=True, error=exc,
+                                                     preserve_failure=True)
+                        raise
         finally:
+            if out_fd is not None:
+                os.close(out_fd)
+            if err_fd is not None:
+                os.close(err_fd)
             if process is not None and process.poll() is None:
                 try: self._stop_command(process)
                 except BaseException: pass
-        self.journal.check_authority()
         self._record_command_outcome(prefix.with_suffix('.outcome.json'), argv,
-                                     returncode=process.returncode, uncertain=False)
+                                     returncode=process.returncode, uncertain=False,
+                                     preserve_failure=bool(process.returncode))
         if process.returncode:
             raise RuntimeError('command failed; protected stdout/stderr retained')
         if stdout.stat().st_size > 4 * 1024 * 1024:
@@ -1577,8 +1669,19 @@ class ControlIO:
             account = pwd.getpwnam('hat-oracle')
             prefix = 'd2' if (self.operation['source'], self.operation['target']) == ('A', 'B') else 'd3'
             area = ORACLE_ROOT / (prefix + '-' + self.operation['id'] + '-' + phase)
-            oracle_directory(area); os.chown(area, ROOT_UID, account.pw_gid)
+            oracle_directory(area)
+            root_fd = os.open(ORACLE_ROOT, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                self._fsync(root_fd, 'oracle-root.dir', ORACLE_ROOT)
+            finally:
+                os.close(root_fd)
+            os.chown(area, ROOT_UID, account.pw_gid)
             output = area / 'work'; output.mkdir(mode=0o700); os.chown(output, account.pw_uid, account.pw_gid)
+            area_fd = os.open(area, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                self._fsync(area_fd, 'oracle-area.dir', area)
+            finally:
+                os.close(area_fd)
             # The config is already an authorized raw byte value; write it only after all preflight checks.
             replica_path = area / 'replica.yml'
             self._durable_bytes(replica_path, config_raw, label='oracle-replica-config',
@@ -1594,10 +1697,10 @@ class ControlIO:
                                  request['inputs']['fault_ledger_sha256'], label='oracle-fault-ledger')
             self._copy_bound(request_path, area / 'acceptance-request.json', 0o640, ROOT_UID, account.pw_gid,
                              hashlib.sha256(request_bytes).hexdigest(), label='oracle-request')
-            for directory in (area, output, self.work):
+            for directory in (output, self.work):
                 fd=os.open(directory, os.O_RDONLY|os.O_DIRECTORY)
                 try:
-                    label = 'oracle-area.dir' if directory == area else ('oracle-output.dir' if directory == output else 'acceptance-work.dir')
+                    label = 'oracle-output.dir' if directory == output else 'acceptance-work.dir'
                     self._fsync(fd, label, directory)
                 finally: os.close(fd)
             result = output / 'result.json'

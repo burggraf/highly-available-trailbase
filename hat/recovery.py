@@ -467,6 +467,8 @@ def _write_private(path, raw):
         view = memoryview(raw)
         while view:
             written = os.write(fd, view)
+            if written <= 0:
+                raise OSError('short durable write')
             view = view[written:]
         os.fsync(fd)
     finally:
