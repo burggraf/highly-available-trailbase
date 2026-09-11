@@ -373,7 +373,7 @@ def _main(argv):
             raise ValueError('result changed after write')
     finally:
         descriptor.close_all(published)
-    sys.stdout.write('PASS\\n')
+    sys.stdout.write('PASS\n')
     return 0
 
 
@@ -381,7 +381,7 @@ def main(argv=None):
     try:
         return _main(sys.argv[1:] if argv is None else argv)
     except Exception:
-        sys.stderr.write('FAIL: restore baseline failed\\n')
+        sys.stderr.write('FAIL: restore baseline failed\n')
         return 1
 
 
