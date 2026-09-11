@@ -43,6 +43,8 @@ class NodeRegressions(unittest.TestCase):
                     if name!='session':db.execute('CREATE TABLE hat_ops(id INTEGER,op_key TEXT,payload TEXT)')
                     db.execute('CREATE TABLE '+('_session' if name=='session' else '_user')+'(id BLOB)')
                 target.chmod(0o600)
+                position=args[args.index('-txid')+1]
+                return f'txid={position} to_txid={position} position=0x{position}'.encode(), b''
             m.run=fake_binary
             def step(action,config,payload):
                 request=dict(action=action,operation=operation,epoch=config['epoch'],boot_id='boot',payload=payload)

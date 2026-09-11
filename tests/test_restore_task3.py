@@ -106,7 +106,7 @@ class RestoreTask3Tests(unittest.TestCase):
         import restore_baseline
         with self.assertRaisesRegex(ValueError, 'restore position differs'):
             restore_baseline._verify_restore_position(b'{"txid":"0000000000000002"}', 1)
-        restore_baseline._verify_restore_position(b'{"txid":"0000000000000001"}', 1)
+        restore_baseline._verify_restore_position(b'txid=0000000000000001 to_txid=0000000000000001 position=1', 1)
         with self.assertRaisesRegex(ValueError, 'restore position differs'):
             restore_baseline._verify_restore_position(b'completed successfully', 1)
 

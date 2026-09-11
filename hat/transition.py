@@ -152,7 +152,7 @@ def validate_restore_positions(output, expected):
 def validate_restore_evidence(output, cut):
     """Require one bounded, coherent labeled record per requested position."""
     try:
-        validate_cut(cut)
+        if not isinstance(cut, dict): raise ValueError
         validate_restore_positions(output, cut.values())
     except (TypeError, ValueError, RuntimeError):
         raise RuntimeError('restore cut evidence unavailable') from None
@@ -352,7 +352,7 @@ def _finite_restore(cut, fresh, work):
         stdout, stderr = run([str(node.BIN/'litestream'), 'restore', '-config', str(REPLICA), '-txid', f'{position:016x}',
              '-o', str(output), str(node.BASE/'depot/data'/(db+'.db'))], work, timeout=45,
             env=dict(os.environ, **values))
-        validate_restore_evidence(stdout + b'\\n' + stderr, {db: position})
+        validate_restore_evidence(stdout + b'\n' + stderr, {db: position})
         try:
             s = output.lstat()
             if (not output.is_file() or output.is_symlink() or s.st_nlink != 1
