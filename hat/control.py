@@ -492,7 +492,7 @@ def current_writer(journal, ingress):
     return {'operation':ident,'writer':target,'epoch':epoch}
 
 
-def ingress_allowed(root, maintenance, permit, ingress, boot):
+def _ingress_allowed_body(root, maintenance, permit, ingress, boot):
     """Boot/restart gate for exact completed, live D2 route, or verified D3 route."""
     try:
         marker_present=maintenance.exists() or maintenance.is_symlink()
@@ -507,6 +507,7 @@ def ingress_allowed(root, maintenance, permit, ingress, boot):
         ingress_raw,ingress_identity=_stable_private_bytes(ingress,strict=False)
         ingress_digest=hashlib.sha256(ingress_raw).hexdigest()
         with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)) as db:
+            if db.execute('PRAGMA journal_mode').fetchone() != ('delete',): return False
             kind=_journal_schema(db)
             if kind==LEGACY_RESTORE_CONTRACT:
                 row=db.execute('SELECT id,source,target,complete,new_epoch FROM operations ORDER BY rowid DESC LIMIT 1').fetchone()
@@ -564,6 +565,58 @@ def ingress_allowed(root, maintenance, permit, ingress, boot):
                     and value['operation']==ident and value['boot_id']==boot and birth is not None
                     and value['birth']==birth and value['config_sha']==digest)
     except (OSError, RuntimeError, ValueError, KeyError, TypeError, sqlite3.Error): return False
+
+
+def _ingress_file_snapshot(root, paths):
+    root = Path(root)
+    parent = root.lstat()
+    if not stat.S_ISDIR(parent.st_mode) or parent.st_uid != os.geteuid() or parent.st_mode & 0o077:
+        raise ValueError('controller directory is unsafe')
+    snapshot = {'root': (parent.st_dev, parent.st_ino, parent.st_mode, parent.st_uid, parent.st_nlink)}
+    for path in paths:
+        try:
+            raw, identity = _stable_private_bytes(path, strict=False)
+        except FileNotFoundError:
+            snapshot[str(path)] = None
+        else:
+            snapshot[str(path)] = (identity, hashlib.sha256(raw).digest())
+    return snapshot
+
+
+def _ingress_file_finalize(root, paths, snapshot, allowed):
+    if _INGRESS_PRE_FINALIZE_HOOK is not None:
+        _INGRESS_PRE_FINALIZE_HOOK()
+    root_stat = Path(root).lstat()
+    if (root_stat.st_dev, root_stat.st_ino, root_stat.st_mode, root_stat.st_uid, root_stat.st_nlink) != snapshot['root']:
+        return False
+    for path in paths:
+        key = str(path)
+        try:
+            raw, identity = _stable_private_bytes(path, strict=False)
+        except FileNotFoundError:
+            if snapshot[key] is not None: return False
+        except (OSError, ValueError):
+            return False
+        else:
+            if snapshot[key] is None or snapshot[key] != (identity, hashlib.sha256(raw).digest()): return False
+    return bool(allowed)
+
+
+# Private test seam only; callers cannot supply an interleaving hook.
+_INGRESS_PRE_FINALIZE_HOOK = None
+
+
+def ingress_allowed(root, maintenance, permit, ingress, boot):
+    root = Path(root)
+    paths = [root/'journal.db', Path(ingress), Path(maintenance), Path(permit)]
+    paths += [root/('journal.db'+suffix) for suffix in ('-wal', '-shm', '-journal')]
+    try:
+        snapshot = _ingress_file_snapshot(root, paths)
+        if any(snapshot[str(path)] is not None for path in paths[-3:]): return False
+        allowed = _ingress_allowed_body(root, maintenance, permit, ingress, boot)
+        return _ingress_file_finalize(root, paths, snapshot, allowed)
+    except (OSError, RuntimeError, ValueError, KeyError, TypeError, sqlite3.Error):
+        return False
 
 
 def reconcile_existing(journal, maintenance, stop_ingress, ingress):
