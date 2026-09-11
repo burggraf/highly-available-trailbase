@@ -42,9 +42,33 @@ _STEPS_SQL = '''CREATE TABLE steps (
 _UNFINISHED_SQL = 'CREATE UNIQUE INDEX one_unfinished ON operations(complete) WHERE complete=0'
 
 
-def _normalized_sql(value):
+def _canonical_ddl(value):
     if not isinstance(value,str): return value
-    return ' '.join(value.split()).replace('( ','(').replace(' )',')')
+    out=[];i=0;quote=None
+    while i<len(value):
+        if quote:
+            if value[i]==quote:
+                if i+1<len(value) and value[i+1]==quote: out.append(value[i:i+2]);i+=2;continue
+                quote=None
+            out.append(value[i]);i+=1;continue
+        if value[i:i+2]=='--':
+            i=value.find('\\n',i)
+            if i<0: break
+            continue
+        if value[i:i+2]=='/*':
+            end=value.find('*/',i+2)
+            if end<0: raise ValueError('malformed journal DDL')
+            i=end+2;continue
+        if value[i] in "'\\\"`[": quote=']' if value[i]=='[' else value[i]; i+=1; continue
+        if value[i].isspace():
+            if out and out[-1]!=' ': out.append(' ')
+        else: out.append(value[i].lower())
+        i+=1
+    return ''.join(out).strip()
+
+
+def _normalized_sql(value):
+    return _canonical_ddl(value)
 
 
 _LEGACY_OP_COLUMNS=(('id','TEXT',0,None,1,0),('source','TEXT',1,None,0,0),('target','TEXT',1,None,0,0),('source_epoch','TEXT',1,None,0,0),('new_epoch','TEXT',1,None,0,0),('complete','INTEGER',1,'0',0,0))
@@ -226,7 +250,7 @@ class Journal:
         phase_plan(source,target)
         if not isinstance(source_epoch, str) or not re.fullmatch(r'd1-[a-z0-9-]+', source_epoch):
             raise ValueError('invalid source epoch')
-        if self.operation or self.db.execute('SELECT id FROM operations WHERE complete=0').fetchone():
+        if self.operation or self.db.execute("SELECT id,restore_contract FROM operations WHERE complete=0 AND restore_contract=?",(RESTORE_CONTRACT,)).fetchone() or self.db.execute("SELECT id,restore_contract FROM operations WHERE complete=0 AND restore_contract!=?",(RESTORE_CONTRACT,)).fetchone():
             raise RuntimeError('unfinished operation requires reconciliation; no retry or force')
         ident = uuid.uuid4().hex
         operation = dict(id=ident, source=source, target=target, source_epoch=source_epoch, new_epoch='d1-'+ident)
@@ -338,7 +362,8 @@ class Journal:
                 or row[3]!=RESTORE_CONTRACT or self.pending or self.next != len(plan) or steps!=expected):
             raise RuntimeError('cannot complete an unfinished transition')
         with self.db:
-            self.db.execute('UPDATE operations SET complete=1 WHERE id=?', (self.operation['id'],))
+            changed=self.db.execute('UPDATE operations SET complete=1 WHERE id=? AND restore_contract=?', (self.operation['id'],RESTORE_CONTRACT)).rowcount
+            if changed != 1: raise RuntimeError('operation restore contract differs')
         self.operation = None
 
 
@@ -427,7 +452,7 @@ def _exact_route(value, writer, epoch, digest):
 def current_writer(journal, ingress):
     """Return writer authority only from a complete operation and its exact live route."""
     journal.check_authority()
-    if journal.db.execute('SELECT 1 FROM operations WHERE complete=0').fetchone():
+    if journal.db.execute('SELECT id,restore_contract FROM operations WHERE complete=0').fetchone():
         raise RuntimeError('unfinished operation has no current writer authority')
     row=journal.db.execute('SELECT id,source,target,new_epoch,restore_contract FROM operations WHERE complete=1 ORDER BY rowid DESC LIMIT 1').fetchone()
     if not row or row[4] not in (LEGACY_RESTORE_CONTRACT,RESTORE_CONTRACT): raise RuntimeError('no completed writer authority')
@@ -450,7 +475,11 @@ def ingress_allowed(root, maintenance, permit, ingress, boot):
         marker_present=maintenance.exists() or maintenance.is_symlink()
         if marker_present: private_file(maintenance)
         path=root/'journal.db'
-        if not path.exists(): return not marker_present
+        if not path.exists():
+            root_before=root.lstat(); ingress_before=_stable_private_bytes(ingress,strict=False)[1]
+            root_after=root.lstat(); ingress_after=_stable_private_bytes(ingress,strict=False)[1]
+            stable=(root_before.st_dev,root_before.st_ino,root_before.st_mtime_ns)==(root_after.st_dev,root_after.st_ino,root_after.st_mtime_ns)
+            return stable and ingress_before==ingress_after and not marker_present
         journal_raw,journal_identity=_stable_private_bytes(path)
         ingress_raw,ingress_identity=_stable_private_bytes(ingress,strict=False)
         ingress_digest=hashlib.sha256(ingress_raw).hexdigest()
@@ -461,7 +490,8 @@ def ingress_allowed(root, maintenance, permit, ingress, boot):
                 operation=(*row,LEGACY_RESTORE_CONTRACT) if row else None
             else:
                 operation=db.execute('SELECT id,source,target,complete,new_epoch,restore_contract FROM operations ORDER BY rowid DESC LIMIT 1').fetchone()
-            if not operation: return not marker_present
+            if not operation:
+                return journal_identity==_stable_private_bytes(path)[1] and ingress_identity==_stable_private_bytes(ingress,strict=False)[1] and not marker_present
             ident,source,target,complete,epoch,contract=operation
             digest=ingress_digest
             if complete:
