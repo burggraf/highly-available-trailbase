@@ -58,7 +58,7 @@ class RestoreTask5Tests(unittest.TestCase):
                 elif boundary == 'post-start':
                     io._after_command_start = lambda child: (_ for _ in ()).throw(RuntimeError('post-start'))
                 with patch.object(control.subprocess, 'Popen', return_value=process) as spawn:
-                    with self.assertRaises((RuntimeError, OSError)):
+                    with self.assertRaises((RuntimeError, OSError, control.CommandCleanupUncertain)):
                         io.command([sys.executable, '-c', 'pass'], data=b'after-start')
                 if boundary == 'pre-spawn':
                     spawn.assert_not_called()
@@ -94,20 +94,22 @@ class RestoreTask5Tests(unittest.TestCase):
         self.assertTrue(outcome['uncertain'])
         self.assertTrue(outcome['cleanup_uncertain'])
 
-    def test_ssh_communication_failure_is_cleanup_uncertain(self):
-        io, root = self.io()
-        process = _Process()
-        process.communicate = lambda input=None, timeout=None: (_ for _ in ()).throw(
-            OSError('ssh communication failed'))
-        with patch.object(control.subprocess, 'Popen', return_value=process):
-            with self.assertRaises(control.CommandCleanupUncertain) as caught:
-                io.command(['ssh', 'remote', '--token=secret'])
-        self.assertTrue(process.killed)
-        self.assertTrue(process.waited)
-        self.assertIsInstance(caught.exception.__cause__, OSError)
-        uncertainty = next(root.glob('*.cleanup-uncertain.json'))
-        self.assertNotIn('secret', uncertainty.read_text())
-        self.assertNotIn('argv', uncertainty.read_text())
+    def test_ssh_and_provider_communication_failures_are_cleanup_uncertain(self):
+        for client in ('ssh', 'provider'):
+            with self.subTest(client=client):
+                io, root = self.io()
+                process = _Process()
+                process.communicate = lambda input=None, timeout=None: (_ for _ in ()).throw(
+                    OSError('communication failed'))
+                with patch.object(control.subprocess, 'Popen', return_value=process):
+                    with self.assertRaises(control.CommandCleanupUncertain) as caught:
+                        io.command([client, 'remote', '--token=secret'])
+                self.assertTrue(process.killed)
+                self.assertTrue(process.waited)
+                self.assertIsInstance(caught.exception.__cause__, OSError)
+                uncertainty = next(root.glob('*.cleanup-uncertain.json'))
+                self.assertNotIn('secret', uncertainty.read_text())
+                self.assertNotIn('argv', uncertainty.read_text())
 
     def test_durable_bytes_handles_partial_writes_and_reopens_exact_hash(self):
         io, root = self.io()

@@ -1180,8 +1180,10 @@ class ControlIO:
             return self._stop_systemd_unit(unit)
         try:
             self._stop_command(process)
+            # Killing the local client says nothing about descendants or remote
+            # effects.  Only the systemd unit path has an independent proof.
             return self._cleanup_status('client-process-only', client='terminated',
-                                        descendants='unverified'), True
+                                        descendants='unverified'), False
         except BaseException as exc:
             return self._cleanup_status('client-process-only', client=self._bounded_error_type(exc),
                                         descendants='unverified'), False
@@ -1239,6 +1241,14 @@ class ControlIO:
                         raise
                     try:
                         self._after_command_start(process)
+                    except BaseException as exc:
+                        try: self._stop_command(process)
+                        except BaseException: pass
+                        self._record_command_outcome(prefix.with_suffix('.outcome.json'), argv,
+                                                     returncode=None, uncertain=True, error=exc,
+                                                     preserve_failure=True)
+                        raise
+                    try:
                         process.communicate(input=data, timeout=timeout)
                     except subprocess.TimeoutExpired as exc:
                         try: self._before_command_timeout(process)
@@ -1254,11 +1264,15 @@ class ControlIO:
                             raise CommandCleanupUncertain() from exc
                         raise
                     except BaseException as exc:
-                        try: self._stop_command(process)
-                        except BaseException: pass
+                        cleanup, proven = self._timeout_cleanup(process, argv)
+                        if not proven:
+                            self._record_cleanup_uncertain(prefix.with_suffix('.cleanup-uncertain.json'), cleanup)
                         self._record_command_outcome(prefix.with_suffix('.outcome.json'), argv,
                                                      returncode=None, uncertain=True, error=exc,
-                                                     preserve_failure=True)
+                                                     preserve_failure=True, cleanup=cleanup,
+                                                     cleanup_uncertain=not proven)
+                        if not proven:
+                            raise CommandCleanupUncertain() from exc
                         raise
         finally:
             if out_fd is not None:
