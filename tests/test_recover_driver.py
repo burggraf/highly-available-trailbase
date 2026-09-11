@@ -359,6 +359,35 @@ class RecoverDriverTests(unittest.TestCase):
         with control.Journal(root) as journal:
             self.assertEqual(journal.db.execute('SELECT count(*) FROM operations WHERE complete=0').fetchone()[0], 0)
 
+    def test_recovery_input_refuses_noncanonical_or_unrelated_protected_ledger(self):
+        temporary, root, authority, args = self.fixture(); self.addCleanup(temporary.cleanup)
+        contract = json.loads(Path(args['input_path']).read_text())
+        with self.assertRaises(ValueError):
+            recovery._load_input(args['input_path'], root)
+        expected = root / authority['id'] / 'ledger.jsonl'
+        expected.parent.mkdir(exist_ok=True)
+        Path(contract['protected_ledger']).replace(expected)
+        contract['protected_ledger'] = str(expected)
+        private_json(args['input_path'], contract)
+        recovery._load_input(args['input_path'], root)
+
+    def test_recovery_input_refuses_unrelated_or_wrong_phase_protected_baseline(self):
+        for change in ('operation', 'phase'):
+            with self.subTest(change=change):
+                temporary, root, authority, args = self.fixture(); self.addCleanup(temporary.cleanup)
+                contract = json.loads(Path(args['input_path']).read_text())
+                report = json.loads(Path(contract['protected_baseline']).read_text())
+                if change == 'operation':
+                    report['request']['operation'] = 'f' * 32
+                    report['request']['inputs']['ledger_authority']['operation'] = 'f' * 32
+                else:
+                    report['request']['phase'] = 'verification-baseline'
+                report['request_sha256'] = hashlib.sha256(
+                    recovery.canonical_json(report['request'])).hexdigest()
+                Path(contract['protected_baseline']).write_bytes(recovery.canonical_json(report))
+                with self.assertRaises(ValueError):
+                    recovery._load_input(args['input_path'], root)
+
 
 if __name__ == '__main__':
     unittest.main()

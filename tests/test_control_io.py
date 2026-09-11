@@ -212,6 +212,46 @@ class ControlIOTests(unittest.TestCase):
                         io._acceptance_request('new-writes', 'config',
                             {'main': 1, 'session': 1, 'aux': 1}, fresh, None)
 
+    def test_reconciliation_request_requires_durable_boundary_and_unused_sidecar(self):
+        class Reached(Exception):
+            pass
+
+        for phase, position, filename, action in (
+                ('reconciled-compare', 5, 'reconciliation.json', 'accept-checked-comparison'),
+                ('verification-baseline', 9, 'verification-reconciliation.json', 'verification-only')):
+            with self.subTest(phase=phase):
+                io, root, journal = self.make_io()
+                journal.pending = False; journal.next = position
+                journal._boundary = Mock(return_value=(dict(io.operation), {}))
+                (root / filename).write_bytes(recovery.canonical_json({
+                    'operation': io.operation['id'], 'action': action, 'failure_sha': 'f' * 64}))
+                (root / filename).chmod(0o600)
+                with patch.object(control.pwd, 'getpwnam', side_effect=Reached):
+                    with self.assertRaises(Reached):
+                        io._acceptance_request(phase, 'config',
+                            {'main': 1, 'session': 1, 'aux': 1}, root / 'ledger.jsonl', None)
+                journal._boundary.assert_called_once_with(io.operation['id'], position)
+
+                for bad in ('pending', 'sidecar', 'request', 'result', 'later'):
+                    with self.subTest(bad=bad):
+                        journal.pending = bad == 'pending'
+                        journal._boundary.reset_mock()
+                        journal._boundary.side_effect = RuntimeError('later') if bad == 'later' else None
+                        journal._boundary.return_value = (dict(io.operation), {})
+                        sidecar = root / filename
+                        sidecar.write_bytes(recovery.canonical_json({
+                            'operation': '0' * 32 if bad == 'sidecar' else io.operation['id'],
+                            'action': action, 'failure_sha': 'f' * 64}))
+                        replay = root / (phase + '-acceptance-' + ('request' if bad == 'request' else 'result') + '.json')
+                        if bad in ('request', 'result'): replay.write_bytes(b'{}')
+                        reached = Mock(side_effect=Reached)
+                        with patch.object(control.pwd, 'getpwnam', reached):
+                            with self.assertRaises(RuntimeError):
+                                io._acceptance_request(phase, 'config',
+                                    {'main': 1, 'session': 1, 'aux': 1}, root / 'ledger.jsonl', None)
+                        reached.assert_not_called()
+                        if replay.exists(): replay.unlink()
+
     def _oracle_copy_fixture(self, fault=False):
         io, _, _ = self.make_io()
         positions = {'main': 1, 'session': 1, 'aux': 1}

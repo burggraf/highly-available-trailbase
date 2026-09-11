@@ -35,6 +35,34 @@ class DescriptorAuthorityTests(unittest.TestCase):
             source.write_bytes(b'changed')
             with self.assertRaises(ValueError): authority.recheck()
 
+    def test_close_all_attempts_every_authority_and_preserves_primary_failure(self):
+        class Held:
+            def __init__(self, name, failing=False):
+                self.name, self.failing, self.calls = name, failing, 0
+
+            def close(self):
+                self.calls += 1
+                order.append(self.name)
+                if self.failing:
+                    raise OSError(self.name)
+
+        order = []
+        authorities = [Held('first', True), Held('second', True), Held('third')]
+        with self.assertRaisesRegex(OSError, 'second'):
+            descriptor.close_all(authorities)
+        self.assertEqual(order, ['third', 'second', 'first'])
+        self.assertEqual([item.calls for item in authorities], [1, 1, 1])
+
+        order.clear()
+        authorities = [Held('first', True), Held('second', True)]
+        with self.assertRaisesRegex(RuntimeError, 'primary'):
+            try:
+                raise RuntimeError('primary')
+            finally:
+                descriptor.close_all(authorities)
+        self.assertEqual(order, ['second', 'first'])
+        self.assertEqual([item.calls for item in authorities], [1, 1])
+
     def test_exclusive_copy_is_descriptor_bound_and_reopened(self):
         root, _, source = self.make_tree()
         destination = root / 'destination'; destination.mkdir(mode=0o700)
