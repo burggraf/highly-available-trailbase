@@ -256,6 +256,12 @@ class TransitionTests(unittest.TestCase):
                         journal.pending=False
                         with self.assertRaises(RuntimeError):journal.finish()
 
+    def test_canonical_ddl_ignores_formatting_and_comments_but_preserves_literals(self):
+        m=self.module()
+        self.assertEqual(m._canonical_ddl('CREATE /*x*/ TABLE [Operations] ("ID" TEXT CHECK(status IN (\'intent\',\'done\')))'),
+                         "createtableoperations(idtextcheck(statusin('intent','done')))")
+        self.assertNotEqual(m._canonical_ddl("CHECK(x='A')"), m._canonical_ddl("CHECK(x='a')"))
+
     def test_semantic_schema_rejects_extra_objects_constraint_differences_and_corruption(self):
         m=self.module()
         with tempfile.TemporaryDirectory() as tmp:

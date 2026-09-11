@@ -43,28 +43,37 @@ _UNFINISHED_SQL = 'CREATE UNIQUE INDEX one_unfinished ON operations(complete) WH
 
 
 def _canonical_ddl(value):
-    if not isinstance(value,str): return value
-    out=[];i=0;quote=None
-    while i<len(value):
-        if quote:
-            if value[i]==quote:
-                if i+1<len(value) and value[i+1]==quote: out.append(value[i:i+2]);i+=2;continue
-                quote=None
-            out.append(value[i]);i+=1;continue
-        if value[i:i+2]=='--':
-            i=value.find('\\n',i)
-            if i<0: break
-            continue
-        if value[i:i+2]=='/*':
-            end=value.find('*/',i+2)
+    """Canonicalize SQL while distinguishing identifiers from string literals."""
+    if not isinstance(value, str): return value
+    out=[]; i=0
+    while i < len(value):
+        if value[i].isspace(): i += 1; continue
+        if value.startswith('--', i):
+            i=value.find('\\n', i+2); i=len(value) if i < 0 else i+1; continue
+        if value.startswith('/*', i):
+            end=value.find('*/', i+2)
+            if end < 0: raise ValueError('malformed journal DDL')
+            i=end+2; continue
+        ch=value[i]
+        if ch=="'":
+            end=i+1
+            while end<len(value):
+                if value[end]=="'":
+                    if end+1<len(value) and value[end+1]=="'": end+=2; continue
+                    end+=1; break
+                end+=1
+            if end > len(value) or end == 0 or value[end-1] != "'": raise ValueError('malformed journal DDL')
+            out.append(value[i:end]); i=end; continue
+        if ch in '\"`[':
+            close=']' if ch=='[' else ch; end=value.find(close,i+1)
             if end<0: raise ValueError('malformed journal DDL')
-            i=end+2;continue
-        if value[i] in "'\\\"`[": quote=']' if value[i]=='[' else value[i]; i+=1; continue
-        if value[i].isspace():
-            if out and out[-1]!=' ': out.append(' ')
-        else: out.append(value[i].lower())
-        i+=1
-    return ''.join(out).strip()
+            out.append(value[i+1:end].lower()); i=end+1; continue
+        if ch.isalnum() or ch=='_':
+            end=i+1
+            while end<len(value) and (value[end].isalnum() or value[end] in '_$'): end+=1
+            out.append(value[i:end].lower()); i=end; continue
+        out.append(ch); i+=1
+    return ''.join(out)
 
 
 def _normalized_sql(value):
@@ -122,6 +131,20 @@ def _check_constraints(db, contract):
 
 def _journal_schema(db):
     """Return exact semantic journal generation; unknown or corrupt state refuses."""
+    expected_sql = {
+        'operations': _OPERATIONS_LEGACY_SQL,
+        'steps': _STEPS_SQL,
+        'one_unfinished': _UNFINISHED_SQL,
+    }
+    actual_sql = {name: sql for name, sql in db.execute(
+        "SELECT name,sql FROM sqlite_schema WHERE name IN ('operations','steps','one_unfinished')")}
+    if any(name not in actual_sql or _canonical_ddl(actual_sql[name]) != _canonical_ddl(expected_sql[name])
+           for name in expected_sql):
+        # The new column is the sole intentional generation difference.
+        new_expected = dict(expected_sql, operations=_OPERATIONS_SQL)
+        if any(name not in actual_sql or _canonical_ddl(actual_sql[name]) != _canonical_ddl(new_expected[name])
+               for name in expected_sql):
+            raise ValueError('unrecognized or damaged journal; reconciliation required')
     if db.execute('PRAGMA integrity_check').fetchone()!=('ok',) or db.execute('PRAGMA foreign_key_check').fetchall():
         raise ValueError('unrecognized or damaged journal; reconciliation required')
     if _schema_objects(db)!={('table','operations'),('table','steps'),('index','one_unfinished')}:
