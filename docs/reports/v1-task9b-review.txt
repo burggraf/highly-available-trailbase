@@ -1,0 +1,26 @@
+Task 9B evidence/self-review
+
+Reviewer: self-review by the coding assistant; this is not an independent security approval.
+
+Scope reviewed:
+- `docs/reports/v1-task9b-preflight.txt`
+- `docs/reports/v1-task9b-e2e.txt`
+- `docs/reports/v1-task9b-rejoin-failures.txt`
+- current Rust CLI/proxy entrypoints and `rust/README.md`
+- active plan/status changes and the final dirty-file list
+
+Findings:
+1. The report does not claim native HAT failover/rejoin. It distinguishes the checked-out Rust proxy from the absent networked controller/node operation runtime.
+2. The remote action stayed within the owner-authorized one-cycle disposable scope. Test roots and transient test processes were cleaned. Existing historical `hat-demo` and fm3 ingress/tunnel services were not altered.
+3. The primary-unavailable observation and route switch are recorded as manual proxy route replacement, not as controller authority, fencing, quarantine, or writer-admission proof.
+4. The Litestream full-integrity-check failure and the later `integrity-check none` retry are both retained. The health result is not promoted to an integrity-qualified restore claim.
+5. Host identity (`localhost` on all three hosts), absent pinned binaries on fm3, independent standby initialization, absent application record/auth/SSE checks, and absent provider/fence evidence are explicit blockers.
+6. No generated admin password, private credential, raw service log, or application payload is present in the checked-in reports.
+
+Disposition:
+- T9B-AC1: blocked.
+- T9B-AC2: blocked.
+- T9B-AC3: blocked/partial.
+- T9B-AC4: blocked/partial.
+- T9B-AC5: pass for one-cycle evidence preservation and cleanup only.
+- No source-code fix or further remote action is justified by this probe. Full native acceptance requires a reviewed installable runtime/operation contract and a new bounded fixture run.

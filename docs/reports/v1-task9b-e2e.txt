@@ -1,0 +1,35 @@
+Task 9B one-cycle disposable VPS E2E report
+
+Scope and authorization
+- Owner authorized one bounded full failover/rejoin cycle on `fm1.zzzx.uk`, `fm2.zzzx.uk`, and `fm3.zzzx.uk`, confirmed all three are dedicated disposable fixtures, accepted possible loss of a few test transactions, and authorized required test cleanup/mutation.
+- The run used root over the existing approved SSH profile. No private credential was discovered or copied.
+- The test intentionally used fresh test roots and loopback-only TrailBase listeners reached through temporary SSH tunnels. Existing historical services were not reused as the HAT implementation.
+
+Pinned remote prerequisites observed
+- fm1/fm2: TrailBase `v0.33.11-0-gf24291b8` (2026-09-04), SQLite 3.53.2; Litestream `0.5.17`.
+- fm1 TrailBase SHA-256: `4d51d0a1fcce9c11d3470b5d5a330848cfd869bed1f237f0886f06794942b121`.
+- fm2 TrailBase SHA-256: same value.
+- fm1/fm2 Litestream SHA-256: `200e4248a4cc83da2ca52babe66774f1a71afa993d31373adb0ce0fe12154647`.
+- fm3 did not have the pinned TrailBase/Litestream binaries; no binary was copied there.
+- All three remote kernels reported Ubuntu 24.04 x86_64, but `hostname -f` reported `localhost` on every host. This remains an identity precondition for any real three-node qualification.
+
+Pre-existing state and isolation
+- fm1/fm2 had active historical `hat-demo.service` processes and loopback listeners on port 4000/4001. fm3 had `hat-ingress.service` and `hat-tunnel-a/b.service`.
+- Those services were left untouched because the fixture used fresh `/opt/hat-e2e` roots, TrailBase ports 4100/4101 bound to loopback, and local Rust proxy port 15000 through SSH tunnels 14100/14101.
+- Only test-owned transient TrailBase units were started/stopped. The test roots and transient processes were removed at cleanup; local proxy/tunnel processes were stopped.
+
+Observed checks
+1. Fresh TrailBase depots started on fm1:4100 and fm2:4101. Direct `/api/healthcheck` returned HTTP 200 from both.
+2. The checked-out Rust proxy binary forwarded `/api/healthcheck` through the fm1 tunnel and returned HTTP 200 with body `Ok`.
+3. The fm1 test-owned TrailBase unit was stopped. The direct primary tunnel failed and the stale Rust proxy route returned HTTP 502, showing the unavailable primary boundary.
+4. The proxy was restarted with a route record moving generation `1`/epoch `1`/node-a to generation `2`/epoch `2`/node-b. The same `/api/healthcheck` request returned HTTP 200 with body `Ok` from fm2.
+5. On fm2, the test-owned TrailBase unit was stopped and Litestream `0.5.17` performed a one-shot file replica of the fresh `main.db`, including a forced snapshot, with exit 0.
+6. The replica was copied to fm1's fresh test-only rejoin root. A restore with full integrity checking failed because the TrailBase-created schema references the `jsonschema()` function unavailable to the standalone Litestream/SQLite integrity check; the failure is preserved in `v1-task9b-rejoin-failures.txt`. A second restore with integrity checking disabled exited 0. TrailBase started from the restored main database and its health endpoint returned HTTP 200.
+7. The proxy was restarted with generation `3`/epoch `3`/node-a and returned HTTP 200 with body `Ok` through the restored fm1 process.
+
+Result and limits
+- This is a real remote TrailBase + Litestream + checked-out Rust proxy smoke/failover/restart probe, not a full HAT native qualification.
+- The failover route change was a manual proxy restart with a supplied route JSON. Current Rust has no networked node/controller operation endpoint or installable runtime; the checked-in service templates intentionally execute `/usr/bin/false`.
+- No application record write, authentication mutation, SSE stream, actual controller-driven fence, quarantine, writer-admission transition, or HAT `ManualFailover`/`reseed_rejoin` operation ran on the VPSs. fm2 was independently initialized rather than promoted from a continuously replicated application state.
+- The restored health result does not close the failed full-integrity check. No zero-loss, provider-fence, public-HTTPS, three-node, repeatability, or production-readiness claim is made.
+- T9B-AC1 through T9B-AC4 remain blocked/partial against their exact contract; T9B-AC5 evidence preservation/cleanup is complete for this one bounded attempt. A native runtime and exact application/fencing fixture are still required for full acceptance.

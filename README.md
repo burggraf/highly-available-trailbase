@@ -2,17 +2,17 @@
 
 An early-stage project for a single-writer [TrailBase](https://github.com/trailbaseio/trailbase) cluster, using [Litestream](https://github.com/benbjohnson/litestream) continuous backup and continuous restore through S3-compatible object storage.
 
-**No production-ready HA deployment is provided.** A bounded local qualification harness now exists; the remaining documents describe the intended system, feasibility gates, and work required.
+**No production-ready HA deployment is provided.** A bounded local qualification harness and one partial disposable VPS probe exist; the remaining documents describe the intended system, feasibility gates, and work required.
 
 ## Current development — Rust V1
 
-**Active scope:** one controller, primary-only proxies, manual fenced failover; no Raft or replica reads. **Current stage: Task 9 local artifact/contract subset accepted.** Tasks 2 through 8 are accepted only for local fixture behavior; Task 9's native/deployment acceptance remains blocked.
+**Active scope:** one controller, primary-only proxies, manual fenced failover; no Raft or replica reads. **Current stage: Task 9B VPS probe partial; native HAT qualification blocked.** Tasks 2 through 8 are accepted only for local fixture behavior; the Task 9B probe did not qualify the Rust controller/node operation boundary.
 
 - [Active plan and restart handoff](docs/plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance) — authoritative stage/acceptance tracker.
 - [Development workflow](AGENTS.md) — restart procedure, autonomous stage loop, evidence and approval rules.
 - [Current status](docs/status.md) and [Rust usage/limits](rust/README.md).
 
-Tasks 2 through 8 and the local Task 9 artifact subset are accepted on `main`; Task 8 is pushed and the Task 9 artifact checkpoint is local until separately pushed. No external effects are authorized.
+Tasks 2 through 8 and the local Task 9 artifact subset are accepted on `main`. One bounded, cleaned-up disposable probe used fresh test roots on fm1/fm2 and the checked-out Rust proxy; it did not qualify deployment, fencing, public HTTPS, or native failover/rejoin. See `docs/reports/v1-task9b-*`.
 
 Python `hat/`, `tests/`, `experiments/`, existing `deploy/`, and earlier plans are **historical implementation/evidence**, not instructions to resume old live operations or the current Rust roadmap. Preserve them; do not translate them wholesale or treat their checks as Rust qualification.
 

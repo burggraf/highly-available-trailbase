@@ -28,7 +28,7 @@ This section is the authoritative restart tracker. Follow [AGENTS.md](../../AGEN
 | Task 6 — restore/fence boundary | accepted | Local-only criteria T6-AC1 through T6-AC4 passed on `main`; fake adapters do not authorize live fencing, native execution, deployment, or VPS effects. |
 | Task 7 — planned switchover | accepted | Local-only criteria T7-AC1 through T7-AC4 passed on `main`; native/provider/deployment/disruptive effects remain unauthorized. |
 | Task 8 — failover/rejoin | accepted | Local-only criteria T8-AC1 through T8-AC5 passed on `main`; native/provider/deployment/disruptive effects remain unauthorized. |
-| Task 9 — deployment/native acceptance | in_progress | Local artifact/contract subset T9-AC1 through T9-AC5 passed; native execution, installation, provider, VPS, public HTTPS, and disruptive effects remain unauthorized. |
+| Task 9 — deployment/native acceptance | in_progress | Local artifact/contract subset T9-AC1 through T9-AC5 passed; owner now authorized one bounded disposable VPS E2E cycle on `fm1.zzzx.uk`, `fm2.zzzx.uk`, and `fm3.zzzx.uk`. Further cycles, permanent deployment, and unsupported/provider effects remain separately gated. |
 | Task 10 — fault/release qualification | pending | Not authorized; workload, attempt budget and soak approval required. |
 
 ### Task 2 completion contract — approved and accepted
@@ -497,19 +497,33 @@ Scope: reviewable local configuration, refusal-safe service templates, a read-on
 | T9-AC4 | No native/deployment action is executed; ignored native qualification remains blocked pending a separately approved disposable fixture. | gate report and handoff | pass — no service/native/provider/VPS/public/disruptive action occurred |
 | T9-AC5 | Behavioral RED, local gates, fresh review, accurate docs/handoff; no external/native claim. | `docs/reports/v1-task9-red.txt`, `docs/reports/v1-task9-gates.txt`, `docs/reports/v1-task9-review.txt` | pass — 58 locked tests, local gates, and fresh review pass |
 
-### Restart handoff — Task 9 artifact subset checkpoint
+### Restart handoff — Task 9 artifact subset checkpoint (superseded by T9B probe)
 
-- **State:** local artifact/contract subset accepted; the broader Task 9 native/deployment stage remains in progress and blocked.
-- **Authorization:** owner selected “Local-only Task 9 artifacts and contract.” No installation, service start, native test, provider, VPS, credential, public HTTPS, or disruptive effect was authorized or performed.
+- **State:** local artifact/contract subset accepted; the broader Task 9 native/deployment stage remains in progress and blocked. The later T9B probe was partial only; it did not qualify native HAT failover/rejoin.
+- **Authorization at that checkpoint:** owner selected “Local-only Task 9 artifacts and contract.” No installation, service start, native test, provider, VPS, credential, public HTTPS, or disruptive effect had yet been authorized or performed at that checkpoint.
 - **Implemented:** bounded read-only `hat doctor`, placeholder `.invalid` configuration, refusal-safe contract-only systemd templates, and `docs/v1-runbook.md` with explicit unresolved inputs and stop boundaries.
 - **Evidence:** `docs/reports/v1-task9-red.txt` plus retained RED logs, `docs/reports/v1-task9-gates.txt`, and `docs/reports/v1-task9-review.txt`.
-- **Source:** `main` at the containing local Task 9 artifact checkpoint (obtain the exact revision with `git rev-parse HEAD`), based on pushed Task 8 `68b38b7`; no active processes remain and the working tree is clean at handoff.
-- **Next safe action:** obtain a separate disposable-fixture/platform/fencing/front-door authorization before creating or running native tests, replacing refusal commands, installing units, or touching any host.
-- **Processes:** no active processes remain; no service or native process was started.
+- **Source at that checkpoint:** `main` at the containing local Task 9 artifact checkpoint, based on pushed Task 8 `68b38b7`; this handoff is historical to the later T9B probe.
+- **Next safe action at that checkpoint:** obtain a separate disposable-fixture/platform/fencing/front-door authorization before creating or running native tests, replacing refusal commands, installing units, or touching any host.
+- **Processes at that checkpoint:** no active processes remained; no service or native process had been started.
+
+### Task 9B one-cycle VPS E2E contract — approved for named disposable hosts
+
+**Restart handoff after the bounded probe:** T9B-AC1 through T9B-AC4 are blocked/partial, not accepted. The checked-out Rust proxy did forward real TrailBase health traffic and a manually supplied route reached a standby after a test-owned primary stop, but current Rust has no installable node/controller operation path. The next safe implementation is the native runtime/operation boundary and an explicit application/fencing fixture; do not repeat the remote cycle or broaden effects until that contract is reviewed.
+
+Scope: one bounded, evidence-preserving E2E cycle on `fm1.zzzx.uk`, `fm2.zzzx.uk`, and `fm3.zzzx.uk`, using root only through the existing approved SSH profile. The owner confirmed the hosts are dedicated disposable fixtures, accepted possible loss of a few test transactions, authorized required test cleanup/mutation, and requested a full failover/rejoin drill. Do not discover or copy private credentials, reuse historical deployment state, or claim provider fencing unless independently verified.
+
+| ID | Observable requirement, including refusal cases | Exact check/evidence | Result |
+| --- | --- | --- | --- |
+| T9B-AC1 | Read-only preflight verifies host identity/OS/architecture, SSH identity, disposable test-root availability, pinned binary/application prerequisites, and no conflicting test run. Unsupported/missing/ambiguous prerequisites stop the run. | `docs/reports/v1-task9b-preflight.txt` | blocked — all hosts reported `localhost`; fm3 lacked the pinned TrailBase/Litestream binaries; historical services remained present |
+| T9B-AC2 | Install only test-owned, pinned fixture state under a fresh root; exercise real application records/auth/SSE and main/session/aux through the Rust proxy/controller boundary. Existing services/data remain untouched unless the approved fixture root is isolated. | `docs/reports/v1-task9b-e2e.txt` | blocked — fresh TrailBase roots and real health/proxy forwarding passed, but no records/auth/SSE or Rust controller boundary ran |
+| T9B-AC3 | Execute one operator-controlled failover while the primary is unavailable, accepting possible write loss; exactly one candidate becomes writable and traffic reaches it. No overlapping writer or blind retry is accepted. | `docs/reports/v1-task9b-e2e.txt` | blocked/partial — primary outage produced 502 on the stale route and generation-2 manual route reached fm2 with HTTP 200; no HAT writer admission or controller failover ran |
+| T9B-AC4 | Reseed/rejoin the former primary into a fresh directory as a closed standby; preserve source/history evidence and refuse stale writable/upload behavior. | `docs/reports/v1-task9b-e2e.txt`, `docs/reports/v1-task9b-rejoin-failures.txt` | blocked/partial — Litestream file restore and post-restore health passed only with integrity checking disabled; no HAT quarantine/rejoin or stale-writer refusal ran |
+| T9B-AC5 | Preserve failed/partial transitions and sanitized evidence; stop after this one bounded cycle. No production-readiness, zero-loss, provider-fence, public-HTTPS, or repeatability claim. | `docs/reports/v1-task9b-*` | pass — one bounded cycle, failed restore evidence retained, test roots/processes cleaned, and limitations recorded |
 
 ### Task 9 — Installable disposable deployment and native acceptance
 
-**Files:** create `deploy/v1/hat-node.service`, `deploy/v1/hat-controller.service`, `deploy/v1/config.example.json`, `docs/v1-runbook.md`; keep the old demo units/configuration untouched. `rust/tests/native.rs` remains uncreated until a disposable fixture is separately approved.
+**Files:** create `deploy/v1/hat-node.service`, `deploy/v1/hat-controller.service`, `deploy/v1/config.example.json`, `docs/v1-runbook.md`; keep the old demo units/configuration untouched. `rust/tests/native.rs` remains uncreated because the T9B preflight found unresolved host identity/prerequisite gaps and the current Rust binary has no native node/controller operation runtime.
 
 1. Provide manual, deterministic installation steps, protected identities/secrets, directory ownership, network restrictions and read-only `hat doctor`. Do not build a cloud provisioner.
 2. Test clean installation, initial activation, unattended current-primary restart, former-primary quarantine, process-tree cleanup, browser access protection, certificate expiry/refusal and manual renewal on the chosen platform.

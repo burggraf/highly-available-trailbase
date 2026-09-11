@@ -1,0 +1,9 @@
+Task 9B bounded VPS E2E retained failures
+
+The following failures are retained and were not overwritten by later green steps:
+
+1. The first `litestream restore` invocation placed flags after the positional replica URL and exited with `Error: too many arguments`.
+2. A corrected restore with `-integrity-check full` exited with `post-restore integrity check: integrity check: SQL logic error: unknown function: jsonschema() (1)`. This is the TrailBase-created SQLite schema being checked by Litestream without TrailBase's extension function registration; it is not evidence of a clean integrity-qualified restore.
+3. The bounded retry used `-integrity-check none`. The restore exited 0, the restored main database was placed in a fresh test depot, TrailBase started, and `/api/healthcheck` returned HTTP 200. This proves only startup/health after the restore; it does not close the integrity-check limitation.
+
+No credential, generated admin password, application payload, or raw service log was copied into this report. The test-owned remote roots were removed after the cycle. Existing historical `hat-demo` and fm3 ingress/tunnel services were not stopped or altered.

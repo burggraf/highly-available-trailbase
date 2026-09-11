@@ -1,0 +1,15 @@
+Task 9B disposable VPS preflight (read-only)
+
+Authorization: owner confirmed fm1.zzzx.uk, fm2.zzzx.uk, and fm3.zzzx.uk are dedicated disposable fixtures and authorized one bounded full failover/rejoin cycle, with possible loss of a few test transactions. Root SSH was used through the existing approved SSH profile with BatchMode; no credentials were read or copied.
+
+Observed 2026-09-11 local run:
+- fm1.zzzx.uk: SSH root succeeded; remote hostname reported `localhost`; Ubuntu 24.04, Linux 6.8.0-139-generic, x86_64, root filesystem 27% used. `/usr/local/bin/hat` exists. `trailbase` and `litestream` were not found on PATH. `/opt/hat-e2e`, `/var/lib/hat-e2e`, and `/etc/hat-e2e` were absent.
+- fm2.zzzx.uk: SSH root succeeded; remote hostname reported `localhost`; Ubuntu 24.04, Linux 6.8.0-139-generic, x86_64, root filesystem 26% used. `/usr/local/bin/hat` exists. `trailbase` and `litestream` were not found on PATH. The proposed disposable roots were absent.
+- fm3.zzzx.uk: SSH root succeeded; remote hostname reported `localhost`; Ubuntu 24.04, Linux 6.8.0-134-generic, x86_64, root filesystem 24% used. `/usr/local/bin/hat` exists. `trailbase` and `litestream` were not found on PATH. The proposed disposable roots were absent.
+
+Conflicting/pre-existing state:
+- fm1: active `hat-demo.service`; hat-demo-owned `python3`, `trailbase`, and `litestream` processes; loopback listeners on 127.0.0.1:4000 and :4001.
+- fm2: active `hat-demo.service`; hat-demo-owned `python3` and three `litestream` processes; loopback listener on 127.0.0.1:4000.
+- fm3: no hat-demo process observed; pre-existing `hat-ingress.service`, `hat-tunnel-a.service`, and `hat-tunnel-b.service`, with loopback listeners on 127.0.0.1:18080 and :14000–:14003.
+
+No service was stopped, no process was killed, no file was changed, and no application payload or credential was read. The host `localhost` identity on all three machines and absent pinned TrailBase/Litestream binaries are unresolved preconditions; the test must not install or start a fixture until these are reconciled and the exact pinned fixture is available.
