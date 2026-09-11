@@ -1154,15 +1154,18 @@ class ControlIO:
                     try:
                         self._before_command_timeout(process)
                         self._stop_command(process)
-                    finally: self._record_command_outcome(prefix.with_suffix('.outcome.json'), argv,
-                                                          returncode=None, uncertain=True, error=exc,
-                                                          preserve_failure=True)
+                    except BaseException:
+                        pass
+                    self._record_command_outcome(prefix.with_suffix('.outcome.json'), argv,
+                                                 returncode=None, uncertain=True, error=exc,
+                                                 preserve_failure=True)
                     raise
                 except BaseException as exc:
                     try: self._stop_command(process)
-                    finally: self._record_command_outcome(prefix.with_suffix('.outcome.json'), argv,
-                                                          returncode=None, uncertain=True, error=exc,
-                                                          preserve_failure=True)
+                    except BaseException: pass
+                    self._record_command_outcome(prefix.with_suffix('.outcome.json'), argv,
+                                                 returncode=None, uncertain=True, error=exc,
+                                                 preserve_failure=True)
                     raise
         finally:
             if process is not None and process.poll() is None:
