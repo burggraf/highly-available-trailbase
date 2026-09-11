@@ -72,17 +72,42 @@ class RestoreTask5Tests(unittest.TestCase):
                     self.assertEqual(len(list(root.glob('*.stdout'))), 1)
                     self.assertEqual(len(list(root.glob('*.stderr'))), 1)
 
-    def test_command_timeout_kills_and_retains_uncertain_evidence(self):
+    def test_direct_timeout_kills_child_but_cleanup_remains_uncertain(self):
         io, root = self.io()
         process = _Process()
         process.communicate = lambda input=None, timeout=None: (_ for _ in ()).throw(
-            subprocess.TimeoutExpired(['command'], timeout))
+            subprocess.TimeoutExpired(['ssh', 'remote', '--token=secret'], timeout))
         with patch.object(control.subprocess, 'Popen', return_value=process):
-            with self.assertRaises(subprocess.TimeoutExpired): io.command(['command'])
+            with self.assertRaises(control.CommandCleanupUncertain) as caught:
+                io.command(['ssh', 'remote', '--token=secret'])
         self.assertTrue(process.killed)
         self.assertTrue(process.waited)
+        self.assertIsInstance(caught.exception.__cause__, subprocess.TimeoutExpired)
+        uncertainty = next(root.glob('*.cleanup-uncertain.json'))
+        value = json.loads(uncertainty.read_text())
+        self.assertTrue(value['cleanup_uncertain'])
+        self.assertEqual(value['scope'], 'client-process-only')
+        self.assertEqual(value['descendants'], 'unverified')
+        self.assertNotIn('secret', uncertainty.read_text())
+        self.assertNotIn('argv', uncertainty.read_text())
         outcome = json.loads(next(root.glob('*.outcome.json')).read_text())
         self.assertTrue(outcome['uncertain'])
+        self.assertTrue(outcome['cleanup_uncertain'])
+
+    def test_ssh_communication_failure_is_cleanup_uncertain(self):
+        io, root = self.io()
+        process = _Process()
+        process.communicate = lambda input=None, timeout=None: (_ for _ in ()).throw(
+            OSError('ssh communication failed'))
+        with patch.object(control.subprocess, 'Popen', return_value=process):
+            with self.assertRaises(control.CommandCleanupUncertain) as caught:
+                io.command(['ssh', 'remote', '--token=secret'])
+        self.assertTrue(process.killed)
+        self.assertTrue(process.waited)
+        self.assertIsInstance(caught.exception.__cause__, OSError)
+        uncertainty = next(root.glob('*.cleanup-uncertain.json'))
+        self.assertNotIn('secret', uncertainty.read_text())
+        self.assertNotIn('argv', uncertainty.read_text())
 
     def test_durable_bytes_handles_partial_writes_and_reopens_exact_hash(self):
         io, root = self.io()
