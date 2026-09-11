@@ -29,7 +29,7 @@ class ControlIOTests(unittest.TestCase):
         journal = JournalStub()
         config = config or {'nodes': {'A': {'address': 'fm1.example'}}}
         operation = operation or {'id': 'a' * 32, 'source': 'A', 'target': 'B',
-                                 'source_epoch': 'd1-source'}
+                                 'source_epoch': 'd1-source', 'new_epoch': 'd1-' + 'a' * 32}
         return control.ControlIO(journal, config, operation, root,
                                  state or {'A': {'boot_id': 'boot-a'}}), root, journal
 
@@ -53,18 +53,22 @@ class ControlIOTests(unittest.TestCase):
         io, _, _ = self.make_io()
         self.assertEqual(io.command([sys.executable, '-c', 'print("safe")']), b'safe\n')
 
-    def test_remote_uses_source_epoch_boot_and_pinned_dispatcher(self):
+    def test_remote_derives_epoch_from_fixed_action(self):
         io, _, _ = self.make_io({'nodes': {'A': {'address': 'logical-a'}}})
         calls = []
         io.command = lambda argv, data=None, timeout=180: calls.append((argv, data, timeout)) or b'{"ok": true}'
-        self.assertEqual(io.remote('A', 'probe', epoch=None), {'ok': True})
-        argv, data, timeout = calls[0]
-        request = json.loads(data)
-        self.assertEqual(request['epoch'], 'd1-source')
-        self.assertEqual(request['boot_id'], 'boot-a')
-        self.assertEqual(argv[-2:], ['root@logical-a', 'hat-node'])
-        self.assertIn('StrictHostKeyChecking=yes', argv)
-        self.assertEqual(timeout, 180)
+        self.assertEqual(io.remote('A', 'probe-source'), {'ok': True})
+        self.assertEqual(io.remote('A', 'probe-new'), {'ok': True})
+        source_request = json.loads(calls[0][1])
+        new_request = json.loads(calls[1][1])
+        self.assertEqual((source_request['action'], source_request['epoch']), ('probe', 'd1-source'))
+        self.assertEqual((new_request['action'], new_request['epoch']), ('probe', 'd1-' + 'a' * 32))
+        self.assertEqual(source_request['boot_id'], 'boot-a')
+        self.assertEqual(calls[0][0][-2:], ['root@logical-a', 'hat-node'])
+        self.assertIn('StrictHostKeyChecking=yes', calls[0][0])
+        self.assertEqual(calls[0][2], 180)
+        with self.assertRaises(ValueError):
+            io.remote('A', 'unknown-action')
 
     def test_wait_reachable_uses_pinned_address_and_closes_probe_socket(self):
         io, _, journal = self.make_io({'nodes': {'B': {'address': '192.0.2.2'}}},
