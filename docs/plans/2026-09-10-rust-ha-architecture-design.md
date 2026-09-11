@@ -78,6 +78,12 @@ A controller leader is a coordinator, not sole authority. It may propose state c
 
 If one controller fails, the other two retain quorum. If two fail, the existing writer may continue serving according to policy, but no promotion, route change, membership change, or new administrative operation is allowed.
 
+### 3.1 Approved controller trust model
+
+V0.1 targets crash/partition fault tolerance, not Byzantine fault tolerance. Controllers may crash, restart, become unreachable, or encounter delayed/reordered messages. Safety assumes controller software follows the protocol and durable storage meets the qualified persistence contract.
+
+A compromised controller deliberately lying or violating the protocol is outside the v0.1 safety guarantee. mTLS authenticates peer identity, not correct software behavior. Privilege separation reduces exposure but does not turn Raft into Byzantine consensus. Suspected controller compromise requires a separately documented containment/recovery procedure, not ordinary failover. Additional signatures alone do not change this fault model.
+
 ## 4. One binary, multiple isolated roles
 
 The same installed executable exposes role-specific subcommands:
