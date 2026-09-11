@@ -21,7 +21,7 @@ This section is the authoritative restart tracker. Follow [AGENTS.md](../../AGEN
 | Stage | State | Acceptance/authorization |
 | --- | --- | --- |
 | Task 1 — contracts/prerequisites | in_progress | Owner architecture decisions captured; action/security/native gates still open. Not a blocker to the explicitly authorized inert Task 2 slice. |
-| Task 2 — package/config/routing | accepted | Owner approved T2-AC1 through T2-AC7 in this session. Local inert implementation accepted at checkpoint `c51e0f0`; no Task 3 or external effects started. |
+| Task 2 — package/config/routing | accepted | Owner approved T2-AC1 through T2-AC7 in this session. Local inert implementation accepted at checkpoint `3d262a3`; no Task 3 or external effects started. |
 | Task 3 — proxy/peer transport | pending | Not authorized; requires accepted Task 2 and approved stage criteria. |
 | Task 4 — lifecycle/replication | pending | Not authorized; native/process qualification separately scoped. |
 | Task 5 — controller/dashboard/restart | pending | Not authorized; action/security contracts must be approved first. |
@@ -43,22 +43,22 @@ Scope: inert configuration and route validation/selection only. No listener, net
 | T2-AC4 | Strict versioned route wire record binds cluster, primary node, writer epoch, incarnation and release/config digests. Generations use validated decimal strings with numeric comparison; endpoints are resolved only from validated inventory, never supplied by a route. Config hints alone cannot create active authority. | `rust/src/routing.rs` route-wire tests; `rust/README.md` route format; gate log | pass — private validated route fields, exact wire schema, u64 boundary, decimal parsing, duplicate/unknown/wrong-cluster/unknown-node refusal |
 | T2-AC5 | GET, POST, GET logout, auth, SSE, admin, and unknown/custom requests all choose the active primary independently of forwarding. No route refuses as unavailable; no expiry on controller disconnect, retry or fallback. | `routing::tests::every_application_request_selects_the_active_primary`; `rust/README.md`; gate log | pass — selection is in-memory and method/path independent; no network/controller/retry/fallback behavior exists |
 | T2-AC6 | Lower generation and conflicting equal generation refuse without altering active state; exact duplicate is idempotent; valid higher generation installs as one replacement. | `routing::tests::rollback_and_conflicting_equal_generation_leave_active_route_unchanged`; route-wire tests; gate log | pass — rollback/conflict preserve active route, exact duplicate is idempotent, and validated higher generation replaces once |
-| T2-AC7 | Meaningful failing-first evidence, all local gates green, criterion-by-criterion review, accurate docs and restart handoff. | `docs/reports/v1-task2-red.txt`, `docs/reports/v1-task2-gates.txt`, fresh read-only review recorded below, checkpoint `c51e0f0` | pass — behavioral RED retained; fmt/test/clippy/locked release/diff gates passed; docs and handoff updated |
+| T2-AC7 | Meaningful failing-first evidence, all local gates green, criterion-by-criterion review, accurate docs and restart handoff. | `docs/reports/v1-task2-red.txt`, `docs/reports/v1-task2-gates.txt`, `docs/reports/v1-task2-final-gates-3.txt`, fresh read-only review recorded below, checkpoint `3d262a3` | pass — behavioral RED retained; fmt/test/clippy/locked release/diff gates passed; docs and handoff updated |
 
 `not_run` means the complete criterion has not been verified, not that no related code exists. Existing partial code is not grandfathered into acceptance. Before starting each later stage, expand its numbered requirements and Exit into the same ID/check/result table, get approval of scope/criteria, then execute without seeking approval for each routine local iteration. Native or external gates remain separate and cannot be marked passed by mocks.
 
 ### Restart handoff — Task 2 acceptance checkpoint
 
-- **Location:** branch `hat-v1-task2`, worktree `.worktrees/v1-task2` relative to the main checkout; accepted source checkpoint `c51e0f0`. No merge/push/deployment performed.
+- **Location:** branch `hat-v1-task2`, worktree `.worktrees/v1-task2` relative to the main checkout; accepted source checkpoint `3d262a3`. No merge/push/deployment performed.
 - **Current authorization:** Task 2 is accepted under the owner's explicit approval of T2-AC1 through T2-AC7. Stop here; Task 3 and all external effects remain unauthorized.
 - **Implemented:** Cargo package/lock, bounded `hat config check` stdin CLI, exact configuration validation, strict inventory-bound route wire records, primary-only in-memory selection, and route replacement/refusal guards. The binary never opens referenced paths or starts services.
 - **Evidence:** `docs/reports/v1-task2-red.txt` retains behavioral CLI RED; `docs/reports/v1-task2-gates.txt` records fmt, 16-test package suite, clippy `-D warnings`, locked release build, and diff-check exits 0.
 - **Retained failure history:** the initial real-binary CLI test failed 0/3 before implementation and is preserved in `docs/reports/v1-task2-red.txt`; a later review found missing epoch/incarnation/digest conflict assertions, which were added before final verification. No Python files were changed and no historical live/native harness was run.
 - **Review disposition:** fresh read-only reviewer found the implementation security boundaries sound, identified stale docs and incomplete conflict coverage, and returned FAIL. The conflict coverage was corrected; root README, status, Rust README, and this handoff now describe the accepted binary. Filesystem ownership/permissions/symlink safety, database existence/schema, endpoint reachability, proxying, activation, persistence, and failover remain intentionally deferred.
-- **Next safe action:** none for this authorized stage. Preserve checkpoint `c51e0f0`; before any later stage, obtain its separate authorization and expand that stage's acceptance table. Task 3 must not start from this handoff.
+- **Next safe action:** none for this authorized stage. Preserve checkpoint `3d262a3`; before any later stage, obtain its separate authorization and expand that stage's acceptance table. Task 3 must not start from this handoff.
 - **Processes:** no runtime services started by the Rust slice; the managed gate process exited 0 and no active processes remain.
-- **Documentation verification:** `rust/README.md`, root `README.md`, `docs/status.md`, this plan, and retained reports match the source checkpoint; `git diff --check` passed after documentation edits. Fresh review identity: read-only `reviewer` subagent run `6326f027-2d1e-47e7-80db-bc7ba6ce6e66`; reviewer commands were intentionally none, while the retained gate log records independent local commands.
-- **Integration:** local task-owned checkpoint commit `c51e0f0`; documentation follow-up and the review-coverage correction are pending in the current dirty worktree until final checks and a second local checkpoint. Merge, push, deployment, and worktree deletion remain unapproved.
+- **Documentation verification:** `rust/README.md`, root `README.md`, `docs/status.md`, this plan, and retained reports match the source checkpoint; `git diff --check` passed after documentation edits. Fresh reviews: initial read-only `reviewer` run `6326f027-2d1e-47e7-80db-bc7ba6ce6e66` found stale docs and missing conflict coverage; follow-up `reviewer` run `5b149332-98f4-4c73-9f7b-7d8e5c6389ad` returned PASS after fixes. Reviewer commands were intentionally none; retained gate logs record independent local commands.
+- **Integration:** source checkpoint `3d262a3`; this handoff/status documentation is the task-owned follow-up commit after that source checkpoint. Merge, push, deployment, and worktree deletion remain unapproved.
 
 ## 1. Decisions and scope
 
@@ -265,7 +265,7 @@ All must exit zero before a milestone is described as locally passing. Use the p
 
 ### Task 2 — Package, configuration and primary-only routing
 
-**Execution: in_progress, not accepted.** See [completion criteria and handoff](#execution-state-and-acceptance); passing the initial unit suite did not complete this task.
+**Execution: accepted at checkpoint `3d262a3`.** See [completion criteria and handoff](#execution-state-and-acceptance). Task 3 remains unauthorized.
 
 **Files:** create `rust/Cargo.toml`, `rust/Cargo.lock`, `rust/src/main.rs`, `rust/src/config.rs`, `rust/src/routing.rs`; tests alongside modules.
 

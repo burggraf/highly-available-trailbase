@@ -5,7 +5,7 @@
 The [active plan's execution state and acceptance](plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance) is the authoritative tracker and restart handoff. Follow [AGENTS.md](../AGENTS.md); [rust/README.md](../rust/README.md) describes actual executable behavior.
 
 - **Scope:** single controller, all traffic to the primary, manual failover; no Raft or qualified replica reads.
-- **Current branch/worktree:** `hat-v1-task2` / `.worktrees/v1-task2`; checkpoint `c51e0f0`; not merged into `main`.
+- **Current branch/worktree:** `hat-v1-task2` / `.worktrees/v1-task2`; checkpoint `3d262a3`; not merged into `main`.
 - **Task 2 accepted:** the Rust binary validates bounded configuration via `hat config check` and selects primary-only routes from a strict inventory-bound route record. Local evidence is in `docs/reports/v1-task2-red.txt` and `docs/reports/v1-task2-gates.txt`; the fresh read-only review found no implementation security defects after the documented test-coverage correction.
 - **Not implemented:** proxy, activation, controller, failover, deployment, and native qualification. Task 3 is not authorized or started.
 - **Autonomy:** owner approved local test/fix/review iterations through one authorized stage and local checkpoint commits; merge/push and all external effects remain separately gated.

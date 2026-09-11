@@ -12,7 +12,7 @@ An early-stage project for a single-writer [TrailBase](https://github.com/trailb
 - [Development workflow](AGENTS.md) — restart procedure, autonomous stage loop, evidence and approval rules.
 - [Current status](docs/status.md) and [Rust usage/limits](rust/README.md).
 
-Task 2 is accepted at local checkpoint `c51e0f0`; Task 3 is not authorized or started. Current changes are isolated on `hat-v1-task2`, not merged into `main`.
+Task 2 is accepted at local checkpoint `3d262a3`; Task 3 is not authorized or started. Current changes are isolated on `hat-v1-task2`, not merged into `main`.
 
 Python `hat/`, `tests/`, `experiments/`, existing `deploy/`, and earlier plans are **historical implementation/evidence**, not instructions to resume old live operations or the current Rust roadmap. Preserve them; do not translate them wholesale or treat their checks as Rust qualification.
 
