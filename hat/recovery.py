@@ -263,7 +263,9 @@ def _validate_acceptance_request(request, operation, controller_root=None):
         raise ValueError('invalid restore positions')
     inputs=request['inputs']
     required={'replica_config_sha256','ledger_sha256','ledger_authority','restore_points','support','binaries'}
-    if not isinstance(inputs,dict) or not required <= set(inputs):
+    fault={'fault_ledger_sha256','fault_operations','fault_operation_count','fault_operations_sha256'}
+    expected = required | fault if profile == 'recovery-comparison' else required
+    if not isinstance(inputs,dict) or set(inputs) != expected:
         raise ValueError('invalid restore request inputs')
     if not _HEX64.fullmatch(inputs['replica_config_sha256']) or not _HEX64.fullmatch(inputs['ledger_sha256']):
         raise ValueError('invalid restore input hashes')
@@ -276,15 +278,12 @@ def _validate_acceptance_request(request, operation, controller_root=None):
         if set(points[db]) != {'source','position'} or points[db]['source'] != '/var/lib/hat-demo/depot/data/'+db+'.db' or points[db]['position'] != positions[db]:
             raise ValueError('restore point binding differs')
     if profile == 'recovery-comparison':
-        extra={'fault_ledger_sha256','fault_operations','fault_operation_count','fault_operations_sha256'}
-        if set(inputs) != required|extra or not isinstance(inputs['fault_operations'],list) or type(inputs['fault_operation_count']) is not int or inputs['fault_operation_count'] != len(inputs['fault_operations']):
+        if not isinstance(inputs['fault_operations'],list) or type(inputs['fault_operation_count']) is not int or inputs['fault_operation_count'] != len(inputs['fault_operations']):
             raise ValueError('invalid fault request binding')
         if inputs['fault_operations'] != sorted(set(inputs['fault_operations'])) or any(not isinstance(v,str) or not re.fullmatch(r'(?:main|aux)_ops/d3-[A-Za-z0-9-]{1,125}',v) for v in inputs['fault_operations']):
             raise ValueError('invalid fault request operations')
         if not _HEX64.fullmatch(inputs['fault_ledger_sha256']) or hashlib.sha256(canonical_json(inputs['fault_operations'])).hexdigest() != inputs['fault_operations_sha256']:
             raise ValueError('invalid fault request hashes')
-    elif set(inputs) != required:
-        raise ValueError('unexpected fault request fields')
     return request
 
 
@@ -782,26 +781,102 @@ def _writer(value, epoch, boot, source):
     return value
 
 
+_FAULT_IDENTITY_FIELDS = ('device','inode','mode','uid','gid','links','bytes')
+
+
+def _fault_identity(authority):
+    value = authority.identity
+    return dict(zip(_FAULT_IDENTITY_FIELDS,
+                    (value[0], value[1], stat.S_IMODE(value[2]), *value[3:])))
+
+
+def _open_fault(path, root, identity=None, digest=None):
+    expected = identity or {}
+    authority = descriptor.DescriptorAuthority.open_file(
+        path, trusted_root=Path(root).absolute(), trusted_uids={os.geteuid()},
+        expected_uid=expected.get('uid', os.geteuid()), expected_gid=expected.get('gid'),
+        expected_mode=expected.get('mode', 0o600), expected_nlink=expected.get('links', 1),
+        expected_size=expected.get('bytes'), expected_sha256=digest, limit=MAX_ARTIFACT)
+    try:
+        if any(os.fstat(fd).st_uid != os.geteuid() or stat.S_IMODE(os.fstat(fd).st_mode) & 0o077
+               for _, fd, _, trusted in authority._directories if trusted):
+            raise ValueError('fault ledger ancestry is not private and owned')
+        if identity is not None and (_fault_identity(authority) != identity
+                or set(identity) != set(_FAULT_IDENTITY_FIELDS)):
+            raise ValueError('fault ledger descriptor identity differs')
+        return authority
+    except BaseException:
+        descriptor.close_all([authority])
+        raise
+
+
+def _create_private_at(directory, name, raw):
+    fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                 0o600, dir_fd=directory.directory_fd)
+    try:
+        view = memoryview(raw)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0: raise OSError('short durable write')
+            view = view[written:]
+        os.fchmod(fd, 0o600); os.fchown(fd, os.geteuid(), os.getegid()); os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.fsync(directory.directory_fd)
+
+
 def _seal_fault(root, input_value, raw):
     run_id = _PRODUCER.fullmatch(input_value['producer_unit']).group(1)
-    intake = Path(root) / ('recovery-intake-' + run_id)
-    intake.mkdir(mode=0o700)
-    sealed = intake / 'fault-ledger.jsonl'
-    _write_private(sealed, raw)
-    seal = {'sha256': hashlib.sha256(raw).hexdigest(), 'bytes': len(raw),
-            'source_epoch': input_value['source_epoch'], 'producer_unit': input_value['producer_unit']}
-    _write_json(intake / 'fault-seal.json', seal)
-    return intake, sealed, seal
+    root = Path(root).absolute(); intake_name = 'recovery-intake-' + run_id
+    authorities = []
+    try:
+        source = _open_fault(input_value['fault_ledger'], root); authorities.append(source)
+        if source.read() != raw:
+            raise ValueError('fault ledger changed before sealing')
+        root_authority = descriptor.DescriptorAuthority.open_directory(
+            root, trusted_root=root, trusted_uids={os.geteuid()}); authorities.append(root_authority)
+        if (os.fstat(root_authority.directory_fd).st_uid != os.geteuid()
+                or stat.S_IMODE(os.fstat(root_authority.directory_fd).st_mode) & 0o077):
+            raise ValueError('recovery root is not private and owned')
+        os.mkdir(intake_name, 0o700, dir_fd=root_authority.directory_fd)
+        os.fsync(root_authority.directory_fd)
+        intake = root / intake_name
+        intake_authority = descriptor.DescriptorAuthority.open_directory(
+            intake, trusted_root=root, trusted_uids={os.geteuid()}); authorities.append(intake_authority)
+        copied = source.copy_to(intake_authority, 'fault-ledger.jsonl', mode=0o600,
+                                uid=os.geteuid(), gid=os.getegid()); authorities.append(copied)
+        seal = {'schema':'hat-d3-fault-seal-1', 'sha256':source.sha256, 'bytes':len(raw),
+                'source_epoch':input_value['source_epoch'], 'producer_unit':input_value['producer_unit'],
+                'source':_fault_identity(source), 'destination':_fault_identity(copied)}
+        _create_private_at(intake_authority, 'fault-seal.json',
+                           json.dumps(seal, separators=(',', ':'), allow_nan=False).encode())
+        source.recheck(); intake_authority.recheck(); copied.recheck()
+        return intake, intake / 'fault-ledger.jsonl', seal
+    finally:
+        descriptor.close_all(authorities)
 
 
 def _recheck_fault(input_value, root, sealed, seal):
-    raw = _owned_bytes(input_value['fault_ledger'], MAX_ARTIFACT, root)
-    copy = _owned_bytes(sealed, MAX_ARTIFACT, root)
-    if (len(raw) != seal['bytes'] or raw != copy
-            or hashlib.sha256(raw).hexdigest() != seal['sha256']):
-        raise RuntimeError('fault ledger changed after sealing')
-    client.read_closed_ledger(input_value['fault_ledger'], input_value['source_epoch'])
-    return seal['sha256']
+    expected={'schema','sha256','bytes','source_epoch','producer_unit','source','destination'}
+    authorities=[]
+    try:
+        if (not isinstance(seal,dict) or set(seal)!=expected or seal['schema']!='hat-d3-fault-seal-1'
+                or seal['source_epoch']!=input_value['source_epoch']
+                or seal['producer_unit']!=input_value['producer_unit']
+                or type(seal['bytes']) is not int or not 0 < seal['bytes'] <= MAX_ARTIFACT
+                or not isinstance(seal['sha256'],str) or not _HEX64.fullmatch(seal['sha256'])):
+            raise ValueError
+        source=_open_fault(input_value['fault_ledger'],root,seal['source'],seal['sha256']); authorities.append(source)
+        copied=_open_fault(sealed,root,seal['destination'],seal['sha256']); authorities.append(copied)
+        if len(source.read()) != seal['bytes'] or source.read() != copied.read(): raise ValueError
+        source.recheck(); copied.recheck()
+        client.read_closed_ledger(sealed, input_value['source_epoch'])
+        source.recheck(); copied.recheck()
+        return seal['sha256']
+    except (KeyError,TypeError,ValueError,OSError):
+        raise RuntimeError('fault ledger changed after sealing') from None
+    finally:
+        descriptor.close_all(authorities)
 
 
 def recover(config, *, control_module=None, io_factory=None,
@@ -847,11 +922,13 @@ def recover(config, *, control_module=None, io_factory=None,
         intake, sealed_fault, seal = _seal_fault(root, input_value, fault_raw)
         provisional = {'id': authority['operation'], 'source': 'B', 'target': 'A',
                        'source_epoch': authority['epoch']}
-        state = {'ingress_touched': False, 'A': {'boot_id': input_value['candidate_boot'], 'epoch': input_value['candidate_epoch']}}
+        state = {'ingress_touched': False, 'fault_seal': seal,
+                 'A': {'boot_id': input_value['candidate_boot'], 'epoch': input_value['candidate_epoch']}}
         guard_io = io_factory(journal, config, provisional, intake, state, maintenance, ingress)
         death = _producer_proof(guard_io.producer_stopped(input_value['producer_unit'],
                                                          input_value['producer_cgroup']),
                                 input_value['producer_unit'])
+        _recheck_fault(input_value, root, sealed_fault, seal)
         operation = journal.begin('B', 'A', input_value['source_epoch'])
         if operation['new_epoch'] == input_value['source_epoch']:
             raise RuntimeError('recovery epoch was not freshly reserved')
@@ -884,7 +961,8 @@ def recover(config, *, control_module=None, io_factory=None,
             return {'authority_operation': authority['operation'], 'source_epoch': authority['epoch'],
                     'source_boot': input_value['source_boot'], 'candidate_boot': input_value['candidate_boot'],
                     'candidate_epoch': input_value['candidate_epoch'], 'producer': death,
-                    'fault_ledger_sha256': seal['sha256'], 'protected_baseline': protected,
+                    'fault_ledger_sha256': seal['sha256'], 'fault_seal': seal,
+                    'protected_baseline': protected,
                     'source_health': input_value['source_health'], 'ledger_authority': ledger_authority}
 
         def close_ingress():
@@ -928,6 +1006,7 @@ def recover(config, *, control_module=None, io_factory=None,
             return restored
 
         def compare():
+            _recheck_fault(input_value, root, sealed_fault, seal)
             compared = io.oracle('compare', input_value['source_replica'], state['cut'],
                                  Path(input_value['protected_ledger']), fault_ledger=sealed_fault)
             _cut_report(compared)

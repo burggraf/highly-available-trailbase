@@ -102,6 +102,10 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(raw,m.canonical_json(json.loads(raw)))
         self.assertEqual(m.validate_acceptance_request(request,operation),request)
         self.assertEqual(m.parse_acceptance_request(raw,operation),request)
+        for extra in ('fault_ledger_sha256', 'arbitrary'):
+            changed=json.loads(json.dumps(request)); changed['inputs'][extra]='f'*64
+            with self.assertRaises(ValueError): m.validate_acceptance_request(changed,operation)
+            with self.assertRaises(ValueError): m.parse_acceptance_request(m.canonical_json(changed),operation)
         self.assertNotIn('payload-value',m.canonical_json(request).decode())
 
     def test_replica_config_and_authority_mapping_are_strict(self):
@@ -156,6 +160,36 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(m.validate_fault_outcomes(empty,empty_events),empty)
         for bad in (result|{'recovered':[{}]},result|{'recovered':['main_ops/not-d3']},result|{'recovered':[1]}):
             with self.assertRaises(ValueError):m.validate_fault_outcomes(bad,events)
+
+    def test_fault_seal_binds_source_and_copy_descriptor_identity_durably(self):
+        m=self.module()
+        start={'event':'start','run_id':'d3-'+'a'*32,'source_epoch':'d1-source','time_ns':1,'utc':'2026-01-01T00:00:00Z'}
+        stop={'event':'stop','submitted':0,'acknowledged':0,'rejected':0,'uncertain':0,'time_ns':2,'utc':'2026-01-01T00:00:01Z'}
+        raw=b''.join(m.canonical_json(row)+b'\n' for row in (start,stop))
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve(); root.chmod(0o700)
+            source=root/'fault.jsonl'; source.write_bytes(raw); source.chmod(0o600)
+            value={'producer_unit':'hat-d3-client-'+'a'*32+'.service',
+                   'source_epoch':'d1-source','fault_ledger':str(source)}
+            intake,sealed,seal=m._seal_fault(root,value,raw)
+            persisted=json.loads((intake/'fault-seal.json').read_text())
+            self.assertEqual(seal,persisted)
+            self.assertEqual(m._recheck_fault(value,root,sealed,persisted),seal['sha256'])
+            replacement=root/'replacement'; replacement.write_bytes(raw); replacement.chmod(0o600)
+            replacement.replace(source)
+            with self.assertRaises(RuntimeError): m._recheck_fault(value,root,sealed,persisted)
+
+    def test_fault_seal_rejects_unsafe_owner_mode_link_and_changed_copy_identity(self):
+        m=self.module(); raw=b'x\n'
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp).resolve(); root.chmod(0o700)
+            source=root/'fault.jsonl'; source.write_bytes(raw); source.chmod(0o600)
+            value={'producer_unit':'hat-d3-client-'+'a'*32+'.service',
+                   'source_epoch':'d1-source','fault_ledger':str(source)}
+            linked=root/'linked'; os.link(source,linked)
+            with self.assertRaises(ValueError): m._seal_fault(root,value,raw)
+            linked.unlink(); source.chmod(0o640)
+            with self.assertRaises(ValueError): m._seal_fault(root,value,raw)
 
     def test_fault_ledger_bounds_ids_times_and_semantics(self):
         m=self.module(); start={'event':'start','run_id':'d3-'+'a'*32,'source_epoch':'d1-source','time_ns':1,'utc':'2026-01-01T00:00:00Z'}

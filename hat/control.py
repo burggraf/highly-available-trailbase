@@ -1629,12 +1629,14 @@ class ControlIO:
             inputs = {'replica_config_sha256': hashlib.sha256(replica_config.encode() if isinstance(replica_config,str) else bytes(replica_config)).hexdigest(), 'ledger_sha256': authority['ledger']['sha256'], 'ledger_authority': authority, 'restore_points': {db: {'source':'/var/lib/hat-demo/depot/data/'+db+'.db','position': positions[db]} for db in positions}, 'support': support, 'binaries': binaries}
             if profile == 'recovery-comparison':
                 from client import read_closed_ledger
-                events = read_closed_ledger(fault_ledger, self.operation['source_epoch'])
-                operations = recovery.fault_operations(events)
-                with descriptor.DescriptorAuthority.open_file(
-                        fault_ledger, trusted_root='/', trusted_uids={0, os.geteuid()},
-                        expected_uid=os.geteuid(), expected_mode=0o600, expected_nlink=1,
-                        limit=4 << 20) as fault:
+                seal = self.state.get('fault_seal')
+                if not isinstance(seal, dict):
+                    raise ValueError('sealed fault authority is unavailable')
+                with recovery._open_fault(fault_ledger, self.work.parent,
+                                          seal.get('destination'), seal.get('sha256')) as fault:
+                    events = read_closed_ledger(fault_ledger, self.operation['source_epoch'])
+                    fault.recheck()
+                    operations = recovery.fault_operations(events)
                     inputs.update(fault_ledger_sha256=fault.sha256, fault_operations=operations,
                                   fault_operation_count=len(operations),
                                   fault_operations_sha256=hashlib.sha256(recovery.canonical_json(operations)).hexdigest())
@@ -1710,11 +1712,12 @@ class ControlIO:
             oracle_fault = None
             fault_identity = None
             if fault_ledger is not None:
-                # Bind the sidecar to the descriptor identity as well as its bytes.
-                with descriptor.DescriptorAuthority.open_file(
-                        fault_ledger, trusted_root='/', trusted_uids={0, os.geteuid()},
-                        expected_sha256=request['inputs']['fault_ledger_sha256'],
-                        expected_nlink=1, limit=4 << 20) as fault:
+                # Rebind every reopen and copy to the descriptor sealed before begin().
+                seal = self.state.get('fault_seal')
+                if not isinstance(seal, dict):
+                    raise ValueError('sealed fault authority is unavailable')
+                with recovery._open_fault(fault_ledger, self.work.parent,
+                                          seal.get('destination'), seal.get('sha256')) as fault:
                     fault_identity = fault.identity
                 oracle_fault = area / 'fault-ledger.jsonl'
                 self._copy_bound(fault_ledger, oracle_fault, 0o600, account.pw_uid, account.pw_gid,
