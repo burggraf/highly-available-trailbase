@@ -1,0 +1,16 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.81s
+     Running tests/cli.rs (rust/target/debug/deps/cli-875adc05fe1fd7a6)
+
+running 2 tests
+
+thread 'doctor_accepts_schema_without_opening_paths_or_endpoints' (52493634) panicked at tests/cli.rs:60:5:
+assertion failed: output.status.success()
+test doctor_accepts_schema_without_opening_paths_or_endpoints ... FAILED
+test doctor_refuses_invalid_input_without_echoing_content ... ok
+
+failures:
+    doctor_accepts_schema_without_opening_paths_or_endpoints
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.60s
+
+error: test failed, to rerun pass `--test cli`

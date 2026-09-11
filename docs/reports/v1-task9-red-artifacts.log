@@ -1,0 +1,16 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.15s
+     Running tests/cli.rs (rust/target/debug/deps/cli-875adc05fe1fd7a6)
+
+running 1 test
+
+thread 'local_task9_artifacts_are_placeholder_only_and_not_installable' (52495784) panicked at tests/cli.rs:80:86:
+called `Result::unwrap()` on an `Err` value: Os { code: 2, kind: NotFound, message: "No such file or directory" }
+
+test local_task9_artifacts_are_placeholder_only_and_not_installable ... FAILED
+
+failures:
+    local_task9_artifacts_are_placeholder_only_and_not_installable
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--test cli`

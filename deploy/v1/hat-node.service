@@ -1,0 +1,24 @@
+[Unit]
+Description=HAT V1 node contract-only template (refuses by design)
+ConditionPathExists=/etc/hat/v1/ENABLE-LOCAL-DISPOSABLE-FIXTURE
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=hat
+Group=hat
+UMask=0077
+RuntimeDirectory=hat-v1
+RuntimeDirectoryMode=0700
+StateDirectory=hat-v1-node
+StateDirectoryMode=0700
+ExecStart=/usr/bin/false
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/hat/v1 /run/hat-v1
+
+# Contract-only placeholder. No [Install] section by design.
+# The current Rust package has no installable node agent; do not enable this unit.

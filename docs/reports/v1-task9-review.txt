@@ -1,0 +1,15 @@
+Task 9 local artifact subset review
+
+Reviewer: fresh read-only `spec-reviewer` subagent, mission `5287c4cf-6e48-40a4-8bc3-b62fe448268e` (no edits)
+Scope: T9-AC1 through T9-AC4 local artifact/contract subset.
+
+Disposition: pass for the approved local-only subset.
+
+Findings:
+- `hat doctor` reads bounded stdin, performs pure schema validation, and does not open configured paths, sockets, endpoints, services, or secrets. Invalid input is fixed and non-echoing.
+- The example configuration uses `.invalid` endpoints and placeholder paths with no secrets. Both service templates lack an actual `[Install]` section and use `/usr/bin/false` behind a fixture marker, so they cannot claim an installable runtime.
+- The runbook explicitly forbids installation, enablement, native/provider/VPS/public-HTTPS/credential/disruptive actions and lists unresolved platform, TLS, fencing, ownership, and binary inputs.
+
+Residual scope:
+- Static checks are intentionally shallow and do not prove systemd, filesystem ownership, TLS, native runtime, or provider behavior.
+- Native tests remain uncreated and blocked pending a separately approved disposable fixture. No deployment or production-readiness claim is made.

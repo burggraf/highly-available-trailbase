@@ -1,0 +1,20 @@
+Task 9 local artifact/contract subset gates
+
+Scope: bounded read-only `hat doctor`, placeholder config/service templates, and a refusal-focused runbook. No installation, systemd enable/start, native/ignored test, provider, VPS, credential, public HTTPS, or disruptive action occurred.
+
+Focused checks:
+- `cargo test --manifest-path rust/Cargo.toml --test cli -- --nocapture`: exit 0; 6 tests.
+- `cargo run --manifest-path rust/Cargo.toml -- doctor < deploy/v1/config.example.json`: exit 0; `doctor: configuration valid`.
+- Static artifact test verifies `.invalid` endpoints, no password text, no systemd `[Install]` section, `/usr/bin/false` refusal commands, and runbook authorization warning.
+
+Full gates:
+- `cargo fmt --manifest-path rust/Cargo.toml --check`: exit 0.
+- `cargo test --manifest-path rust/Cargo.toml --locked`: exit 0; 29 library tests, 0 binary tests, 6 CLI, 1 controller, 1 dashboard, 1 node, 8 operations, 8 proxy, 4 recovery-boundary tests = 58 passing tests (plus 0 doc tests).
+- `cargo clippy --manifest-path rust/Cargo.toml --all-targets -- -D warnings`: exit 0.
+- `cargo build --manifest-path rust/Cargo.toml --release --locked`: exit 0.
+- `git diff --check`: exit 0.
+
+Review:
+- Fresh read-only review passed the local artifact subset. It found no implementation blocker and confirmed doctor is pure/bounded and templates/runbook are refusal-safe.
+
+Result: local Task 9 artifact/contract subset passes. Native/deployment acceptance remains blocked and unclaimed.

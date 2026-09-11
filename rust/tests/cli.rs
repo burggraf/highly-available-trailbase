@@ -54,6 +54,42 @@ fn config_check_refuses_invalid_input_without_echoing_supplied_content() {
 }
 
 #[test]
+fn doctor_accepts_schema_without_opening_paths_or_endpoints() {
+    let output = run(&["doctor"], VALID_CONFIG.as_bytes());
+
+    assert!(output.status.success());
+    assert_eq!(output.stdout, b"doctor: configuration valid\n");
+    assert!(output.stderr.is_empty());
+}
+
+#[test]
+fn doctor_refuses_invalid_input_without_echoing_content() {
+    let input = VALID_CONFIG.replace("node-a", "not a valid node DO-NOT-ECHO");
+    let output = run(&["doctor"], input.as_bytes());
+
+    assert_eq!(output.status.code(), Some(2));
+    let combined = [output.stdout, output.stderr].concat();
+    assert!(!String::from_utf8_lossy(&combined).contains("DO-NOT-ECHO"));
+}
+
+#[test]
+fn local_task9_artifacts_are_placeholder_only_and_not_installable() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("rust parent");
+    let config = std::fs::read_to_string(root.join("deploy/v1/config.example.json")).unwrap();
+    assert!(config.contains(".invalid"));
+    assert!(!config.contains("password"));
+    for name in ["hat-controller.service", "hat-node.service"] {
+        let unit = std::fs::read_to_string(root.join("deploy/v1").join(name)).unwrap();
+        assert!(!unit.lines().any(|line| line.trim() == "[Install]"));
+        assert!(unit.contains("/usr/bin/false"));
+    }
+    let runbook = std::fs::read_to_string(root.join("docs/v1-runbook.md")).unwrap();
+    assert!(runbook.contains("not authorized"));
+}
+
+#[test]
 fn unknown_command_and_oversized_input_are_refused_without_echoing_content() {
     let unknown = run(&["config", "unknown"], VALID_CONFIG.as_bytes());
     assert_eq!(unknown.status.code(), Some(2));

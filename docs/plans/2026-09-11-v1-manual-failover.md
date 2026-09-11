@@ -28,7 +28,7 @@ This section is the authoritative restart tracker. Follow [AGENTS.md](../../AGEN
 | Task 6 — restore/fence boundary | accepted | Local-only criteria T6-AC1 through T6-AC4 passed on `main`; fake adapters do not authorize live fencing, native execution, deployment, or VPS effects. |
 | Task 7 — planned switchover | accepted | Local-only criteria T7-AC1 through T7-AC4 passed on `main`; native/provider/deployment/disruptive effects remain unauthorized. |
 | Task 8 — failover/rejoin | accepted | Local-only criteria T8-AC1 through T8-AC5 passed on `main`; native/provider/deployment/disruptive effects remain unauthorized. |
-| Task 9 — deployment/native acceptance | pending | Not authorized; explicit disposable infrastructure and deployment approvals required. |
+| Task 9 — deployment/native acceptance | in_progress | Local artifact/contract subset T9-AC1 through T9-AC5 passed; native execution, installation, provider, VPS, public HTTPS, and disruptive effects remain unauthorized. |
 | Task 10 — fault/release qualification | pending | Not authorized; workload, attempt budget and soak approval required. |
 
 ### Task 2 completion contract — approved and accepted
@@ -485,9 +485,31 @@ Scope: one in-memory/SQLite fixture manual-failover, same-operation reconciliati
 
 **Exit:** a disposable failover/rejoin demonstration reports observed loss honestly and returns to one writer plus healthy standbys.
 
+### Task 9 local artifact/contract subset — approved
+
+Scope: reviewable local configuration, refusal-safe service templates, a read-only `hat doctor` command, and a runbook describing gates. Do not install, enable, start, execute native/ignored tests, access credentials/VPSs, contact providers, expose public HTTPS, or run disruptive effects. The original native/deployment acceptance remains separately blocked.
+
+| ID | Observable requirement | Exact check/evidence | Result |
+| --- | --- | --- | --- |
+| T9-AC1 | `hat doctor` accepts bounded config input, reports only local schema/preflight validity, and never opens configured paths, starts services, or contacts endpoints. | `rust/tests/cli.rs` doctor tests; `docs/reports/v1-task9-gates.txt` | pass — valid/invalid bounded stdin paths pass with fixed output |
+| T9-AC2 | Example config and service templates contain placeholders only, no secrets/real targets, no enablement section, and explicit refusal-safe preconditions. | `deploy/v1/config.example.json`; service-template test/review | pass — `.invalid` config, no `[Install]`, marker plus `/usr/bin/false` refusal |
+| T9-AC3 | Runbook documents manual preflight, ownership/TLS/fencing inputs, refusal boundaries, and exact commands without claiming installation or qualification. | `docs/v1-runbook.md` and review | pass — local doctor/gate commands and blocked native/deployment boundaries documented |
+| T9-AC4 | No native/deployment action is executed; ignored native qualification remains blocked pending a separately approved disposable fixture. | gate report and handoff | pass — no service/native/provider/VPS/public/disruptive action occurred |
+| T9-AC5 | Behavioral RED, local gates, fresh review, accurate docs/handoff; no external/native claim. | `docs/reports/v1-task9-red.txt`, `docs/reports/v1-task9-gates.txt`, `docs/reports/v1-task9-review.txt` | pass — 58 locked tests, local gates, and fresh review pass |
+
+### Restart handoff — Task 9 artifact subset checkpoint
+
+- **State:** local artifact/contract subset accepted; the broader Task 9 native/deployment stage remains in progress and blocked.
+- **Authorization:** owner selected “Local-only Task 9 artifacts and contract.” No installation, service start, native test, provider, VPS, credential, public HTTPS, or disruptive effect was authorized or performed.
+- **Implemented:** bounded read-only `hat doctor`, placeholder `.invalid` configuration, refusal-safe contract-only systemd templates, and `docs/v1-runbook.md` with explicit unresolved inputs and stop boundaries.
+- **Evidence:** `docs/reports/v1-task9-red.txt` plus retained RED logs, `docs/reports/v1-task9-gates.txt`, and `docs/reports/v1-task9-review.txt`.
+- **Source:** `main` at the containing local Task 9 artifact checkpoint (obtain the exact revision with `git rev-parse HEAD`), based on pushed Task 8 `68b38b7`; no active processes remain and the working tree is clean at handoff.
+- **Next safe action:** obtain a separate disposable-fixture/platform/fencing/front-door authorization before creating or running native tests, replacing refusal commands, installing units, or touching any host.
+- **Processes:** no active processes remain; no service or native process was started.
+
 ### Task 9 — Installable disposable deployment and native acceptance
 
-**Files:** create `deploy/v1/hat-node.service`, `deploy/v1/hat-controller.service`, `deploy/v1/config.example.json`, `docs/v1-runbook.md`, `rust/tests/native.rs`. Keep the old demo units/configuration untouched.
+**Files:** create `deploy/v1/hat-node.service`, `deploy/v1/hat-controller.service`, `deploy/v1/config.example.json`, `docs/v1-runbook.md`; keep the old demo units/configuration untouched. `rust/tests/native.rs` remains uncreated until a disposable fixture is separately approved.
 
 1. Provide manual, deterministic installation steps, protected identities/secrets, directory ownership, network restrictions and read-only `hat doctor`. Do not build a cloud provisioner.
 2. Test clean installation, initial activation, unattended current-primary restart, former-primary quarantine, process-tree cleanup, browser access protection, certificate expiry/refusal and manual renewal on the chosen platform.

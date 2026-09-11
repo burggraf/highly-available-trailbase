@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "cluster_id": "00000000-0000-4000-8000-000000000001",
+  "primary": "node-a",
+  "state_dir": "/var/lib/hat/v1/controller",
+  "replica_reads": false,
+  "required_databases": ["main", "session", "aux"],
+  "nodes": [
+    {
+      "id": "node-a",
+      "endpoint": "https://node-a.example.invalid:443",
+      "data_dir": "/var/lib/hat/v1/node-a"
+    },
+    {
+      "id": "node-b",
+      "endpoint": "https://node-b.example.invalid:443",
+      "data_dir": "/var/lib/hat/v1/node-b"
+    }
+  ]
+}

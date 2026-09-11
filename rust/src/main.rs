@@ -9,6 +9,7 @@ async fn main() -> ExitCode {
     let _program = args.next();
     match (args.next().as_deref(), args.next().as_deref()) {
         (Some("config"), Some("check")) if args.next().is_none() => config_check(),
+        (Some("doctor"), None) => doctor_check(),
         (Some("proxy"), Some("serve")) => proxy_serve(&mut args).await,
         (Some("node"), Some("status")) if args.next().is_none() => {
             println!("node status: admission closed");
@@ -21,13 +22,13 @@ async fn main() -> ExitCode {
         (Some("controller"), Some("serve")) => controller_serve(&mut args).await,
         (Some("controller"), Some("account")) => controller_account(&mut args),
         _ => {
-            eprintln!("usage: hat config check | proxy serve --listen HOST:PORT | node status | controller status | controller serve --listen HOST:PORT --journal PATH --origin ORIGIN | controller account add --journal PATH --account NAME");
+            eprintln!("usage: hat config check | hat doctor | proxy serve --listen HOST:PORT | node status | controller status | controller serve --listen HOST:PORT --journal PATH --origin ORIGIN | controller account add --journal PATH --account NAME");
             ExitCode::from(2)
         }
     }
 }
 
-fn config_check() -> ExitCode {
+fn read_config() -> Result<config::Config, ()> {
     let mut input = Vec::new();
     if io::stdin()
         .take((config::CONFIG_LIMIT + 1) as u64)
@@ -35,21 +36,33 @@ fn config_check() -> ExitCode {
         .is_err()
         || input.len() > config::CONFIG_LIMIT
     {
-        eprintln!("invalid configuration");
-        return ExitCode::from(2);
+        return Err(());
     }
-    let Ok(input) = String::from_utf8(input) else {
-        eprintln!("invalid configuration");
-        return ExitCode::from(2);
-    };
+    let input = String::from_utf8(input).map_err(|_| ())?;
+    config::Config::from_json(&input).map_err(|_| ())
+}
 
-    match config::Config::from_json(&input) {
+fn config_check() -> ExitCode {
+    match read_config() {
         Ok(_) => {
             println!("configuration valid");
             ExitCode::SUCCESS
         }
-        Err(_) => {
+        Err(()) => {
             eprintln!("invalid configuration");
+            ExitCode::from(2)
+        }
+    }
+}
+
+fn doctor_check() -> ExitCode {
+    match read_config() {
+        Ok(_) => {
+            println!("doctor: configuration valid");
+            ExitCode::SUCCESS
+        }
+        Err(()) => {
+            eprintln!("doctor refused");
             ExitCode::from(2)
         }
     }

@@ -1,6 +1,6 @@
-# HAT Rust V1 — local Tasks 2–8
+# HAT Rust V1 — local Tasks 2–9 subset
 
-This package implements the accepted local slices from the [single-controller V1 plan](../docs/plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance): bounded configuration validation, primary-only routing/proxying, fixture node/controller state, restore/fence boundaries, planned switchover, and manual failover/reconciliation/reseed. It does not perform native TrailBase/Litestream work, provider fencing, deployment, public traffic, or live qualification.
+This package implements the accepted local slices from the [single-controller V1 plan](../docs/plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance): bounded configuration validation, primary-only routing/proxying, fixture node/controller state, restore/fence boundaries, planned switchover, manual failover/reconciliation/reseed, and refusal-safe Task 9 artifacts. It does not perform native TrailBase/Litestream work, provider fencing, installation, deployment, public traffic, or live qualification.
 
 ## Configuration checker
 
@@ -9,6 +9,8 @@ printf '%s\n' '<JSON configuration>' | cargo run --manifest-path rust/Cargo.toml
 ```
 
 `hat config check` reads one UTF-8 JSON document from stdin, capped at 64 KiB. Success prints `configuration valid` and exits 0. Invalid UTF-8, oversized input, invalid configuration, missing input, and every other command/argument exit 2 with a fixed refusal message; supplied configuration content is not printed. The checker never opens `state_dir`, `data_dir`, database paths, endpoints, or secrets.
+
+`hat doctor` uses the same bounded, pure schema check and prints `doctor: configuration valid` on success. It is a read-only preflight diagnostic, not a reachability check or permission to start a service.
 
 The exact version-1 configuration object is:
 
@@ -96,4 +98,10 @@ The operation tests use disposable `sh` children and fixture JSON only. Route st
 
 `ManualFailover` requires explicit possible-loss acceptance and settled fence identity, retaining `LossBound::Unknown` rather than inventing a loss estimate. It reuses the restore/activation/route path, durably binds the failover policy, refuses active/uncertain replay, and supports same-operation inspect/reconcile after journal and node-state reconstruction. Exact fence, candidate, route, quarantine, and child-containment observations are required before a blocked operation can complete; repeated reconciliation is idempotent.
 
-`reseed_rejoin` validates a quarantined former primary, restores into a fresh directory, preserves the original source/history, and returns a closed standby. Both the former primary and the new standby refuse writable activation. This remains fixture-only; native/provider settlement, deployment, VPS, public HTTPS, live failover, and disruptive qualification are not claimed. Task 9 remains separately authorization-gated.
+`reseed_rejoin` validates a quarantined former primary, restores into a fresh directory, preserves the original source/history, and returns a closed standby. Both the former primary and the new standby refuse writable activation. This remains fixture-only; native/provider settlement, deployment, VPS, public HTTPS, live failover, and disruptive qualification are not claimed.
+
+## Local Task 9 artifact/contract subset
+
+`deploy/v1/config.example.json` uses `.invalid` endpoints and placeholder paths. The two `deploy/v1/*.service` files are contract-only refusal templates: they have no systemd `[Install]` section, require an explicit disposable-fixture marker, and execute `/usr/bin/false`. `docs/v1-runbook.md` records the local doctor/gate commands and the unresolved Linux, ownership, TLS, fencing, binary, and fixture inputs.
+
+No service unit was installed/enabled/started, no native test was run, and no provider, VPS, credential, public HTTPS, or disruptive action was used. Replacing the refusal command or creating `rust/tests/native.rs` requires separate disposable-fixture and deployment approval.

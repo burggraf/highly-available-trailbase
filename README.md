@@ -6,13 +6,13 @@ An early-stage project for a single-writer [TrailBase](https://github.com/trailb
 
 ## Current development — Rust V1
 
-**Active scope:** one controller, primary-only proxies, manual fenced failover; no Raft or replica reads. **Current stage: Task 8 local failover/reconciliation/rejoin accepted.** Task 2 through Task 8 are accepted only for local fixture behavior. Live fencing, deployment, TLS peer identity, public HTTPS, and native qualification remain later stages.
+**Active scope:** one controller, primary-only proxies, manual fenced failover; no Raft or replica reads. **Current stage: Task 9 local artifact/contract subset accepted.** Tasks 2 through 8 are accepted only for local fixture behavior; Task 9's native/deployment acceptance remains blocked.
 
 - [Active plan and restart handoff](docs/plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance) — authoritative stage/acceptance tracker.
 - [Development workflow](AGENTS.md) — restart procedure, autonomous stage loop, evidence and approval rules.
 - [Current status](docs/status.md) and [Rust usage/limits](rust/README.md).
 
-Task 2 through Task 8 are accepted only for local fixture behavior on `main`; Task 7 is pushed and the Task 8 checkpoint is local until separately pushed. No external effects are authorized.
+Tasks 2 through 8 and the local Task 9 artifact subset are accepted on `main`; Task 8 is pushed and the Task 9 artifact checkpoint is local until separately pushed. No external effects are authorized.
 
 Python `hat/`, `tests/`, `experiments/`, existing `deploy/`, and earlier plans are **historical implementation/evidence**, not instructions to resume old live operations or the current Rust roadmap. Preserve them; do not translate them wholesale or treat their checks as Rust qualification.
 

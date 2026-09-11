@@ -1,0 +1,13 @@
+Task 9 local artifact subset RED evidence
+
+Scope: local-only `hat doctor`, placeholder configuration/service artifacts, and refusal runbook. No installation, service start, native test, provider, VPS, credential, public HTTPS, or disruptive action occurred.
+
+Behavioral RED:
+  cargo test --manifest-path rust/Cargo.toml --test cli doctor -- --nocapture
+Result: exit 101 before implementation. The new valid-doctor test ran and failed because the command was not recognized; the invalid-input refusal test passed through the existing fixed refusal path.
+
+Artifact RED:
+  cargo test --manifest-path rust/Cargo.toml --test cli local_task9 -- --nocapture
+Result: exit 101 before the local artifacts existed; the test failed at the missing example configuration path. The service/runbook artifacts were then added.
+
+Exact failed outputs are retained in `docs/reports/v1-task9-red-doctor.log` and `docs/reports/v1-task9-red-artifacts.log`.
