@@ -37,7 +37,7 @@ This section is the authoritative restart tracker. Follow [AGENTS.md](../../AGEN
 | Task 9H — ephemeral local Unix listener | accepted | One-request local Unix listener passed T9H-AC1 through T9H-AC4. Temporary private-directory socket binding/cleanup and bounded frame delivery are accepted; daemons, persistent listeners, TLS/mTLS, remote, native, process, backup, fence, and disruptive effects remain out of scope. |
 | Task 9I — persistent local Unix listener | accepted | Persistent local lifecycle passed T9I-AC1 through T9I-AC4. Explicit bind/receive/shutdown/rebind behavior is accepted; production call sites, daemons, TLS/mTLS, remote, native, process, backup, fence, and disruptive effects remain out of scope. |
 | Task 9J — authenticated transport-to-executor boundary | accepted | Authenticated local transport-to-injected-executor integration passed T9J-AC1 through T9J-AC4. Valid transport invokes only the supplied `NodeExecutor`; refusal/outcome behavior is accepted. Default/native, controller, production, remote, process, backup, fence, and disruptive effects remain out of scope. |
-| Task 9K — local response contract | in_progress | Owner said continue; the bounded local request/response slice is authorized. Strict outcome/refusal responses over the existing injected executor boundary are in scope; default/native, controller, production, remote, process, backup, fence, and disruptive effects remain out of scope. |
+| Task 9K — local response contract | accepted | Strict local outcome/refusal responses over the injected executor boundary passed T9K-AC1 through T9K-AC4. Default/native, controller, production, remote, process, backup, fence, and disruptive effects remain out of scope. |
 | Task 10 — fault/release qualification | pending | Not authorized; workload, attempt budget and soak approval required. |
 
 ### Task 2 completion contract — approved and accepted
@@ -652,10 +652,12 @@ Design reference: [Task 9K local response](2026-09-11-task9k-local-response-desi
 
 | ID | Observable requirement, including refusal cases | Exact check/evidence | Result |
 | --- | --- | --- | --- |
-| T9K-AC1 | A valid command reaches the injected executor and writes one strict versioned response preserving the bounded action outcome. | response codec/listener tests; design doc | not_run |
-| T9K-AC2 | Transport/authentication refusal occurs before executor invocation and writes no response; malformed/oversized/duplicate/unknown response frames refuse. | refusal/invocation-count/codec tests | not_run |
-| T9K-AC3 | Executor errors map only to bounded refusal, response output is length-limited and detail-free, and no external/native effect exists. | error mapping tests; package gates | not_run |
-| T9K-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no external-effect claim. | `docs/reports/v1-task9k-*` | not_run |
+| T9K-AC1 | A valid command reaches the injected executor and writes one strict versioned response preserving the bounded action outcome. | `rust/src/local_transport.rs` response/listener tests; `docs/reports/v1-task9k-review.txt` | pass |
+| T9K-AC2 | Transport/authentication refusal occurs before executor invocation and writes no response; malformed/oversized/duplicate/unknown response frames refuse. | response refusal/codec tests; `docs/reports/v1-task9k-gates.txt` | pass |
+| T9K-AC3 | Executor errors map only to bounded refusal, response output is length-limited and detail-free, and no external/native effect exists. | error mapping tests; package gates | pass |
+| T9K-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no external-effect claim. | `docs/reports/v1-task9k-*` | pass |
+
+**Task 9K handoff:** source/tests are in checkpoint `ff1f7208717f084941a2216290e068cf8f60bbf9`; final release SHA-256 is `eff62d01eb9ad00d60a9707e474a6cd9ff931e9244efa54f68cd608d52d85bb8`. Final gates are in `docs/reports/v1-task9k-gates.txt`; final review `03adb8a4-737c-48d9-82b9-d2b6e4829126` returned PASS. The response contract is library/test-only, strict, bounded, detail-free, and connected only to injected executors; no default/native/controller/production/remote effect exists.
 
 ### Task 9 — Installable disposable deployment and native acceptance
 

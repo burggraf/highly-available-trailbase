@@ -1,0 +1,24 @@
+# Task 9K gates
+
+## Scope
+
+Bounded local request/response contract only. A validated command is executed by an injected `NodeExecutor`; the listener writes one strict versioned response frame preserving the bounded action outcome or refusal class. Transport refusals happen before executor invocation and write no response. No default/native executor, controller wiring, production call site, daemon, service unit, TCP/HTTP/TLS/mTLS, credential provisioning, remote host, process, backup/restore, fencing, route publication, deployment, or disruptive effect ran.
+
+## Final checks
+
+Source revision: `ff1f7208717f084941a2216290e068cf8f60bbf9` (Task 9K source checkpoint; later acceptance bookkeeping is docs-only).
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Behavioral response RED | pass | `docs/reports/v1-task9k-red.txt`; `/tmp/task9k-red-response.log`; `/tmp/task9k-green-final-focused.log` |
+| Focused transport/response tests | pass — 17 tests | `/tmp/task9k-fix-focused.log` |
+| Full locked package suite | pass — 86 tests, 0 failures, 0 doctests | `/tmp/task9k-full-test-final.log` |
+| `cargo clippy --locked --all-targets -- -D warnings` | pass | `/tmp/task9k-clippy-final.log` |
+| `cargo fmt --manifest-path rust/Cargo.toml --check` | pass | command exit 0 |
+| `cargo build --release --locked` | pass | `/tmp/task9k-release-final.log` |
+| Release binary SHA-256 | `eff62d01eb9ad00d60a9707e474a6cd9ff931e9244efa54f68cd608d52d85bb8` | `/tmp/task9k-release-sha-final.txt` |
+| `git diff --check` | pass | command exit 0 |
+
+## Coverage
+
+Tests cover strict response outcome/refusal codec, valid response delivery, no response on authentication refusal, exactly-once injected execution, uncertainty preservation, lifecycle cleanup/rebind, bounded framing, duplicate/unknown/schema refusal, and nested command validation. No production or external effect is claimed.

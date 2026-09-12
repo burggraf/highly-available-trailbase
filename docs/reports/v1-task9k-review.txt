@@ -1,0 +1,17 @@
+# Task 9K review record
+
+## Review sequence
+
+1. Fresh read-only review `33401ee5-9612-41e3-9b56-184e0ac510f5` returned BLOCK for stale acceptance bookkeeping, missing direct response-frame refusal cases, and no combined zero-invocation/zero-response regression. Direct response tests and the counting-executor refusal test were added; final gates were rerun.
+2. Fresh final read-only review `03adb8a4-737c-48d9-82b9-d2b6e4829126` returned PASS. It confirmed strict response bounds/mapping, direct refusal coverage, transport-before-executor behavior, final gates, and no external/native effect.
+
+## Criterion review
+
+- T9K-AC1: pass — valid commands reach the injected executor and write one strict response preserving bounded outcomes.
+- T9K-AC2: pass — transport refusal happens before invocation and writes no response; response duplicate/unknown/schema/length cases refuse.
+- T9K-AC3: pass — executor errors map to bounded detail-free classes; no retry, default executor, controller wiring, or external effect exists.
+- T9K-AC4: pass — RED, 17 focused tests, 86-test locked suite, Clippy, fmt, locked release, SHA-256, diff check, docs, and final PASS review are retained.
+
+## Residual risks
+
+The response contract remains library/test-only. No production listener integration, default/native executor, controller wiring, TLS/mTLS, remote forwarding, deployment, or disruptive qualification is claimed.

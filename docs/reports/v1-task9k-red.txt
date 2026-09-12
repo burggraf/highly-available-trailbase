@@ -1,0 +1,5 @@
+# Task 9K RED evidence
+
+A mutation removed the response write while leaving executor dispatch intact. `listener_writes_executor_response_frame` then failed with `TransportError::Truncated` while decoding the empty client response (`/tmp/task9k-red-response.log`, exit 101). Restoring the write made the 17 focused local transport/response tests pass (`/tmp/task9k-green-final-focused.log`).
+
+The first fresh review `33401ee5-9612-41e3-9b56-184e0ac510f5` also found missing direct response-frame refusal cases and no single test proving both zero invocation and zero response. Direct response tests now cover duplicate/unknown fields, unsupported schema, truncation, trailing bytes, and oversize; the refusal-response test uses a counting executor and proves zero invocation plus an empty response. No default/native executor, controller wiring, production call site, daemon, service unit, TCP/HTTP/TLS/mTLS, credential provisioning, remote host, process, backup/restore, fencing, route publication, deployment, or disruptive effect ran.
