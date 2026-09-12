@@ -6,7 +6,7 @@ Local in-memory forwarding boundary only. `InMemoryNodeAdapter` converts a contr
 
 ## Final checks
 
-Source revision: obtain with `git rev-parse HEAD` at the containing Task 9F source checkpoint commit.
+Source revision: `cbe62d0d6bad11c4077f5d5d0018921d32de31c1` (Task 9F source checkpoint; later acceptance bookkeeping is docs-only).
 
 | Check | Result | Evidence |
 | --- | --- | --- |
