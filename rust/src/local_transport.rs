@@ -12,6 +12,7 @@ use std::{
         net::{UnixListener, UnixStream},
     },
     path::Path,
+    time::Duration,
 };
 
 const SCHEMA_VERSION: u8 = 1;
@@ -302,7 +303,10 @@ pub fn request_once(
     stream
         .shutdown(std::net::Shutdown::Write)
         .map_err(|_| LocalRequesterError::Io)?;
-    let response = read_one_frame(&mut stream).map_err(LocalRequesterError::Transport)?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(1)))
+        .map_err(|_| LocalRequesterError::Io)?;
+    let response = read_closed_frame(&mut stream).map_err(LocalRequesterError::Transport)?;
     decode_response(&response).map_err(LocalRequesterError::Transport)
 }
 
@@ -315,6 +319,28 @@ pub fn receive_one(path: &Path, expected_token: &str) -> Result<NodeActionComman
         (Ok(command), Ok(())) => Ok(command),
         (Ok(_), Err(_)) | (Err(_), Err(_)) => Err(TransportError::Io),
         (Err(error), Ok(())) => Err(error),
+    }
+}
+
+#[cfg(unix)]
+fn read_closed_frame(stream: &mut UnixStream) -> Result<Vec<u8>, TransportError> {
+    let mut frame = Vec::new();
+    let mut buffer = [0u8; 1024];
+    loop {
+        let count = stream.read(&mut buffer).map_err(|error| {
+            if error.kind() == ErrorKind::UnexpectedEof {
+                TransportError::Truncated
+            } else {
+                TransportError::Io
+            }
+        })?;
+        if count == 0 {
+            return Ok(frame);
+        }
+        if frame.len().saturating_add(count) > FRAME_LIMIT + 4 {
+            return Err(TransportError::TooLarge);
+        }
+        frame.extend_from_slice(&buffer[..count]);
     }
 }
 
@@ -682,6 +708,61 @@ mod tests {
         assert_eq!(server.join().unwrap(), (Ok(()), Ok(())));
         assert!(!path.exists());
         std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn requester_rejects_malformed_and_delayed_trailing_responses() {
+        use std::{io::Write, os::unix::net::UnixListener, thread, time::Duration};
+
+        let (directory, path) = private_socket_path("bad");
+        let socket = UnixListener::bind(&path).unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = socket.accept().unwrap();
+            let _ = read_one_frame(&mut stream);
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .write_all(&raw_frame(br#"{"schema_version":1,"result":"bad"}"#))
+                .unwrap();
+        });
+        assert_eq!(
+            request_once(&path, TOKEN, &command()),
+            Err(LocalRequesterError::Transport(
+                TransportError::InvalidEnvelope
+            ))
+        );
+        server.join().unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+
+        let (directory, path) = private_socket_path("delay");
+        let socket = UnixListener::bind(&path).unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = socket.accept().unwrap();
+            let _ = read_one_frame(&mut stream);
+            stream.set_nonblocking(false).unwrap();
+            stream
+                .write_all(&encode_response(Ok(ActionOutcome::Succeeded)).unwrap())
+                .unwrap();
+            thread::sleep(Duration::from_millis(20));
+            stream.write_all(&[0]).unwrap();
+        });
+        assert_eq!(
+            request_once(&path, TOKEN, &command()),
+            Err(LocalRequesterError::Transport(
+                TransportError::TrailingBytes
+            ))
+        );
+        server.join().unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+
+        let (directory, path) = private_socket_path("missing");
+        std::fs::remove_dir(directory).unwrap();
+        assert_eq!(
+            request_once(&path, TOKEN, &command()),
+            Err(LocalRequesterError::Io)
+        );
     }
 
     #[cfg(unix)]
