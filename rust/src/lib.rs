@@ -3,6 +3,7 @@ pub mod config;
 pub mod controller;
 pub mod fence;
 pub mod journal;
+pub mod local_transport;
 pub mod node;
 pub mod node_agent;
 pub mod operations;

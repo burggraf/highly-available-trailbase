@@ -1,0 +1,5 @@
+# Task 9G RED evidence
+
+The focused transport test suite covers the real local framing/authentication boundary. A mutation removed the constant-time peer-token check; `valid_frame_round_trips_and_wrong_token_refuses` then returned the command instead of `Err(Unauthorized)` and failed at `rust/src/local_transport.rs:155` with exit 101 (`/tmp/task9g-red-auth.log`). Restoring the check made all four focused transport tests pass (`/tmp/task9g-green-transport.log`).
+
+No persistent listener, TLS/mTLS, credential provisioning, remote host, native process, backup/restore, fencing, route publication, or disruptive effect ran.

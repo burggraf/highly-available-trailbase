@@ -1,6 +1,6 @@
 # HAT Rust V1 — local Tasks 2–9 subset
 
-This package implements the accepted local slices from the [single-controller V1 plan](../docs/plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance): bounded configuration validation, primary-only routing/proxying, fixture node/controller state, restore/fence boundaries, planned switchover, manual failover/reconciliation/reseed, refusal-safe Task 9 artifacts, the accepted local Task 9D action-adapter contract, the accepted local Task 9E node boundary contract, and the accepted local Task 9F forwarding boundary. It does not perform native TrailBase/Litestream work, provider fencing, installation, deployment, public traffic, or live qualification.
+This package implements the accepted local slices from the [single-controller V1 plan](../docs/plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance): bounded configuration validation, primary-only routing/proxying, fixture node/controller state, restore/fence boundaries, planned switchover, manual failover/reconciliation/reseed, refusal-safe Task 9 artifacts, the accepted local Task 9D action-adapter contract, the accepted local Task 9E node boundary contract, the accepted local Task 9F forwarding boundary, and the in-progress local Task 9G transport contract. It does not perform native TrailBase/Litestream work, provider fencing, installation, deployment, public traffic, or live qualification.
 
 ## Configuration checker
 
@@ -98,6 +98,10 @@ This is a library boundary only. It opens no listener, uses no transport, starts
 ## Local forwarding boundary (Task 9F, accepted locally)
 
 Task 9F provides `InMemoryNodeAdapter`, which converts a controller action into a `NodeActionCommand`, validates the selected observation, and calls only an injected executor. Unknown, stale, or mismatched observations refuse before invocation. The normal controller still uses an unavailable adapter; no transport or native executor is installed.
+
+## Local authenticated transport (Task 9G, local-only)
+
+Task 9G frames the validated node command with a bounded length prefix and strict versioned JSON envelope. A printable per-channel token is checked with bounded constant-time comparison; wrong tokens, malformed frames, duplicate/unknown fields, oversized input, and invalid nested commands refuse. Unix socket pairs are used only in tests; no persistent listener or TLS/mTLS identity is configured.
 
 ## Local restore/fence boundary (Task 6, accepted locally)
 

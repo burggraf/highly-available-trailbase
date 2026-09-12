@@ -1,0 +1,24 @@
+# Task 9G gates
+
+## Scope
+
+Local authenticated transport contract only. The implementation provides bounded four-byte length-prefixed frames, a strict versioned JSON envelope, constant-time bounded peer-token comparison, and nested Task 9E command validation. Unix-socket-pair tests use in-memory local bytes. No persistent listener, TLS/mTLS, credential provisioning, process, remote host, backup/restore, fencing, route publication, deployment, or disruptive effect ran.
+
+## Final checks
+
+Source revision: obtain with `git rev-parse HEAD` at the containing Task 9G source checkpoint commit.
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Behavioral/authentication RED | pass | `docs/reports/v1-task9g-red.txt`; `/tmp/task9g-red-auth.log`; `/tmp/task9g-green-transport.log` |
+| Focused transport tests | pass — 4 tests | `/tmp/task9g-transport-test.log` |
+| Full locked package suite | pass — 73 tests, 0 failures, 0 doctests | `/tmp/task9g-full-test.log` |
+| `cargo clippy --locked --all-targets -- -D warnings` | pass | `/tmp/task9g-clippy.log` |
+| `cargo fmt --manifest-path rust/Cargo.toml --check` | pass | command exit 0 |
+| `cargo build --release --locked` | pass | `/tmp/task9g-release.log` |
+| Release binary SHA-256 | `6e8b1046fd2c83983ceac76b0cb6dfe7964b74af4ff7fa1cfddca60a4a01867f` | `/tmp/task9g-release-sha.txt` |
+| `git diff --check` | pass | command exit 0 |
+
+## Coverage
+
+Tests cover valid round-trip, Unix socket-pair byte transfer, wrong/short token, truncated/trailing/oversized frame, duplicate/unknown envelope fields, unsupported schema, and invalid nested node command. The normal controller behavior remains unchanged and fail-closed.
