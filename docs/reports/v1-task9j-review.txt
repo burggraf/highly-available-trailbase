@@ -1,0 +1,16 @@
+# Task 9J review record
+
+## Review sequence
+
+1. Final fresh read-only review `735b43d4-363c-4fa6-952e-fe69c2c9ff1f` returned PASS. It confirmed transport-first validation, exactly-once injected dispatch, wrong-token zero-invocation behavior, uncertainty preservation, lifecycle coverage, gate evidence, and no production/native/remote effect.
+
+## Criterion review
+
+- T9J-AC1: pass — valid authenticated frames reach the supplied executor exactly once with the validated `NodeActionCommand`.
+- T9J-AC2: pass — transport errors are returned before executor invocation; malformed/unauthenticated/nested-invalid requests refuse safely.
+- T9J-AC3: pass — injected action outcomes/errors are preserved; there is no retry, synthesized action, default executor, controller wiring, or external effect.
+- T9J-AC4: pass — RED, 14 focused tests, 83-test locked suite, Clippy, fmt, locked release, SHA-256, diff check, docs, and final PASS review are retained.
+
+## Residual risks
+
+The transport-to-executor boundary remains library/test-only. No production listener integration, default/native executor, controller wiring, TLS/mTLS, remote forwarding, deployment, or disruptive qualification is claimed.

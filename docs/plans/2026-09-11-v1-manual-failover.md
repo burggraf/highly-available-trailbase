@@ -36,7 +36,7 @@ This section is the authoritative restart tracker. Follow [AGENTS.md](../../AGEN
 | Task 9G — local authenticated transport contract | accepted | Bounded token-authenticated framing around the validated node envelope passed T9G-AC1 through T9G-AC4. Persistent listeners, TLS/mTLS, remote, native, process, backup, fence, and disruptive effects remain out of scope. |
 | Task 9H — ephemeral local Unix listener | accepted | One-request local Unix listener passed T9H-AC1 through T9H-AC4. Temporary private-directory socket binding/cleanup and bounded frame delivery are accepted; daemons, persistent listeners, TLS/mTLS, remote, native, process, backup, fence, and disruptive effects remain out of scope. |
 | Task 9I — persistent local Unix listener | accepted | Persistent local lifecycle passed T9I-AC1 through T9I-AC4. Explicit bind/receive/shutdown/rebind behavior is accepted; production call sites, daemons, TLS/mTLS, remote, native, process, backup, fence, and disruptive effects remain out of scope. |
-| Task 9J — authenticated transport-to-executor boundary | in_progress | Owner said continue; the local injected-executor integration slice is authorized. Valid transport may invoke only the supplied `NodeExecutor`; refusal/outcome behavior is in scope. Default/native, controller, production, remote, process, backup, fence, and disruptive effects remain out of scope. |
+| Task 9J — authenticated transport-to-executor boundary | accepted | Authenticated local transport-to-injected-executor integration passed T9J-AC1 through T9J-AC4. Valid transport invokes only the supplied `NodeExecutor`; refusal/outcome behavior is accepted. Default/native, controller, production, remote, process, backup, fence, and disruptive effects remain out of scope. |
 | Task 10 — fault/release qualification | pending | Not authorized; workload, attempt budget and soak approval required. |
 
 ### Task 2 completion contract — approved and accepted
@@ -638,10 +638,12 @@ Design reference: [Task 9J transport executor](2026-09-11-task9j-transport-execu
 
 | ID | Observable requirement, including refusal cases | Exact check/evidence | Result |
 | --- | --- | --- | --- |
-| T9J-AC1 | A valid authenticated frame is decoded and delivered exactly once to the injected executor with the bound `NodeActionCommand`. | local transport/executor tests; design doc | not_run |
-| T9J-AC2 | Transport refusal occurs before executor invocation; malformed, unauthenticated, oversized, invalid nested, and cleanup-failed requests do not invoke it. | refusal/invocation-count tests | not_run |
-| T9J-AC3 | Injected executor outcomes/errors are preserved; no retry, synthesized action, default executor, controller wiring, or external/native effect exists. | outcome/error tests; package gates | not_run |
-| T9J-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no external-effect claim. | `docs/reports/v1-task9j-*` | not_run |
+| T9J-AC1 | A valid authenticated frame is decoded and delivered exactly once to the injected executor with the bound `NodeActionCommand`. | `rust/src/local_transport.rs` tests; `docs/reports/v1-task9j-review.txt` | pass |
+| T9J-AC2 | Transport refusal occurs before executor invocation; malformed, unauthenticated, oversized, invalid nested, and cleanup-failed requests do not invoke it. | refusal/invocation-count tests; `docs/reports/v1-task9j-gates.txt` | pass |
+| T9J-AC3 | Injected executor outcomes/errors are preserved; no retry, synthesized action, default executor, controller wiring, or external/native effect exists. | outcome/error tests; package gates | pass |
+| T9J-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no external-effect claim. | `docs/reports/v1-task9j-*` | pass |
+
+**Task 9J handoff:** source/tests are in checkpoint `f10fdafdc853d77843c9c01cdf19c2ed683c4d94`; final release SHA-256 is `abe67dcc6832b929d55c00c36c2f3de1a9096b657419c1dc49be88e18d53fda6`. Final gates are in `docs/reports/v1-task9j-gates.txt`; final review `735b43d4-363c-4fa6-952e-fe69c2c9ff1f` returned PASS. The transport remains library/test-only, requires the accepted local listener lifecycle, and invokes only an injected executor; no default/native/controller/production/remote effect exists.
 
 ### Task 9 — Installable disposable deployment and native acceptance
 

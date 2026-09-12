@@ -1,0 +1,5 @@
+# Task 9J RED evidence
+
+A bounded behavioral test was added with a temporary stub implementation of `receive_and_execute` that refused every request. `authenticated_transport_dispatches_to_injected_executor_once` then failed with `Err(Transport(Io))` instead of `Ok(Succeeded)` (`/tmp/task9j-red-dispatch.log`, exit 101). The implementation now decodes through the authenticated listener, invokes the supplied `NodeExecutor` exactly once, preserves executor outcomes/errors, and refuses before invocation on transport errors. The focused suite passes (`/tmp/task9j-green-focused.log`).
+
+No default/native executor, controller wiring, production call site, daemon, service unit, TCP/HTTP/TLS/mTLS, credential provisioning, remote host, process, backup/restore, fencing, route publication, deployment, or disruptive effect ran.

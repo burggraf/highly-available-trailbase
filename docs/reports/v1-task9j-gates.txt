@@ -1,0 +1,24 @@
+# Task 9J gates
+
+## Scope
+
+Authenticated local transport-to-injected-executor boundary only. A valid frame is decoded and delivered exactly once to a supplied `NodeExecutor`; transport refusals happen before invocation, and executor outcomes/errors are preserved. No default/native executor, controller wiring, production call site, daemon, service unit, TCP/HTTP/TLS/mTLS, credential provisioning, remote host, process, backup/restore, fencing, route publication, deployment, or disruptive effect ran.
+
+## Final checks
+
+Source revision: `f10fdafdc853d77843c9c01cdf19c2ed683c4d94` (Task 9J source checkpoint; later acceptance bookkeeping is docs-only).
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Behavioral transport/executor RED | pass | `docs/reports/v1-task9j-red.txt`; `/tmp/task9j-red-dispatch.log`; `/tmp/task9j-green-focused.log` |
+| Focused transport/executor tests | pass — 14 tests | `/tmp/task9j-green-focused.log` |
+| Full locked package suite | pass — 83 tests, 0 failures, 0 doctests | `/tmp/task9j-full-test.log` |
+| `cargo clippy --locked --all-targets -- -D warnings` | pass | `/tmp/task9j-clippy.log` |
+| `cargo fmt --manifest-path rust/Cargo.toml --check` | pass | command exit 0 |
+| `cargo build --release --locked` | pass | `/tmp/task9j-release.log` |
+| Release binary SHA-256 | `abe67dcc6832b929d55c00c36c2f3de1a9096b657419c1dc49be88e18d53fda6` | `/tmp/task9j-release-sha.txt` |
+| `git diff --check` | pass | command exit 0 |
+
+## Coverage
+
+Tests cover valid exactly-once injected dispatch, wrong-token refusal before invocation, executor uncertainty preservation, persistent listener lifecycle, cleanup uncertainty, bounded framing, nested command validation, and the existing local refusal cases. No production or external effect is claimed.
