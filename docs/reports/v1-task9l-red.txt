@@ -1,0 +1,5 @@
+# Task 9L RED evidence
+
+A mutation made `request_once` connect/write the request but return `LocalRequesterError::Io` without reading/decoding the response. `requester_round_trips_one_response_without_retry` then failed with `Err(Io)` instead of `Ok(Ok(FailedSafe))` (`/tmp/task9l-red-requester.log`, exit 101). Restoring the response read/decode made the 18 focused local transport tests pass (`/tmp/task9l-green-final-focused.log`).
+
+The first fresh review `0c4e3cbc-17e4-4f4a-b6ca-2ed26151306e` also found timing-dependent trailing-byte acceptance and insufficient requester-level refusal coverage. The requester now requires a bounded response stream close, reads through EOF with a frame cap, and has malformed-response, delayed-trailing, and missing-socket tests. No production call site, controller wiring, default/native executor, daemon, service unit, TCP/HTTP/TLS/mTLS, credential provisioning, remote host, process, backup/restore, fencing, route publication, deployment, or disruptive effect ran.

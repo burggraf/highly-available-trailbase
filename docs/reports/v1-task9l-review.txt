@@ -1,0 +1,17 @@
+# Task 9L review record
+
+## Review sequence
+
+1. Fresh read-only review `0c4e3cbc-17e4-4f4a-b6ca-2ed26151306e` returned BLOCK for timing-dependent trailing-byte acceptance, incomplete requester-level refusal coverage, and missing acceptance bookkeeping. The requester now uses a bounded close-synchronized response read with timeout, tests malformed/delayed-trailing/missing-socket cases, and the plan/docs were updated.
+2. Fresh final read-only review `635dd0a8-7421-497e-97a2-53a6ba187bbd` returned PASS. It confirmed one connect/write/read request, strict bounded response decoding, requester refusal coverage, final gates, and no external/native effect.
+
+## Criterion review
+
+- T9L-AC1: pass — one valid command/request reaches the listener and the client decodes the bounded response.
+- T9L-AC2: pass — connect refusal, malformed response, delayed trailing bytes, bounded read failures, and strict response cases refuse without retry/fallback.
+- T9L-AC3: pass — the helper performs one request, exposes typed bounded errors only, and has no production/controller/native/external effect.
+- T9L-AC4: pass — RED, 19 focused tests, 88-test locked suite, Clippy, fmt, locked release, SHA-256, diff check, docs, and final PASS review are retained.
+
+## Residual risks
+
+The requester remains library/test-only. No production client, controller wiring, TLS/mTLS, remote forwarding, native execution, deployment, or disruptive qualification is claimed.

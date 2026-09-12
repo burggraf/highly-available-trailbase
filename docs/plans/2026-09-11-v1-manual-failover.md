@@ -38,7 +38,7 @@ This section is the authoritative restart tracker. Follow [AGENTS.md](../../AGEN
 | Task 9I — persistent local Unix listener | accepted | Persistent local lifecycle passed T9I-AC1 through T9I-AC4. Explicit bind/receive/shutdown/rebind behavior is accepted; production call sites, daemons, TLS/mTLS, remote, native, process, backup, fence, and disruptive effects remain out of scope. |
 | Task 9J — authenticated transport-to-executor boundary | accepted | Authenticated local transport-to-injected-executor integration passed T9J-AC1 through T9J-AC4. Valid transport invokes only the supplied `NodeExecutor`; refusal/outcome behavior is accepted. Default/native, controller, production, remote, process, backup, fence, and disruptive effects remain out of scope. |
 | Task 9K — local response contract | accepted | Strict local outcome/refusal responses over the injected executor boundary passed T9K-AC1 through T9K-AC4. Default/native, controller, production, remote, process, backup, fence, and disruptive effects remain out of scope. |
-| Task 9L — local authenticated requester | in_progress | Owner said continue; the one-request local client slice is authorized. Unix connect/write/read and bounded response decoding are in scope; controller, production, default/native, remote, process, backup, fence, and disruptive effects remain out of scope. |
+| Task 9L — local authenticated requester | accepted | One-request local authenticated client passed T9L-AC1 through T9L-AC4. Unix connect/write/read and bounded response decoding are accepted; controller, production, default/native, remote, process, backup, fence, and disruptive effects remain out of scope. |
 | Task 10 — fault/release qualification | pending | Not authorized; workload, attempt budget and soak approval required. |
 
 ### Task 2 completion contract — approved and accepted
@@ -666,10 +666,12 @@ Design reference: [Task 9L local requester](2026-09-11-task9l-local-requester-de
 
 | ID | Observable requirement, including refusal cases | Exact check/evidence | Result |
 | --- | --- | --- | --- |
-| T9L-AC1 | A valid command reaches the local listener and the client decodes the bounded response outcome/error. | requester/listener round-trip tests; design doc | not_run |
-| T9L-AC2 | Invalid token/command, connect/write/read failure, malformed/truncated/oversized/trailing response, and unknown schema/result refuse without retry or fallback. | requester refusal/codec tests | not_run |
-| T9L-AC3 | The helper performs one request only, exposes no raw response detail, and has no production/controller/native/external effect. | no-retry tests; package gates | not_run |
-| T9L-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no external-effect claim. | `docs/reports/v1-task9l-*` | not_run |
+| T9L-AC1 | A valid command reaches the local listener and the client decodes the bounded response outcome/error. | `rust/src/local_transport.rs` requester/listener tests; `docs/reports/v1-task9l-review.txt` | pass |
+| T9L-AC2 | Invalid token/command, connect/write/read failure, malformed/truncated/oversized/trailing response, and unknown schema/result refuse without retry or fallback. | requester refusal/codec tests; `docs/reports/v1-task9l-gates.txt` | pass |
+| T9L-AC3 | The helper performs one request only, exposes no raw response detail, and has no production/controller/native/external effect. | no-retry tests; package gates | pass |
+| T9L-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no external-effect claim. | `docs/reports/v1-task9l-*` | pass |
+
+**Task 9L handoff:** source/tests are in checkpoint `a8028f7bc7866685601ea1887b44435ba37a53e2`; final release SHA-256 is `717ddb5002e36b759e592385b4c8deeb651c78d1117a5a87fe698f06a363971a`. Final gates are in `docs/reports/v1-task9l-gates.txt`; final review `635dd0a8-7421-497e-97a2-53a6ba187bbd` returned PASS. The requester is library/test-only, performs one close-synchronized bounded request with no retry/fallback, and has no production/controller/native/remote effect.
 
 ### Task 9 — Installable disposable deployment and native acceptance
 

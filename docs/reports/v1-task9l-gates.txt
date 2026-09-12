@@ -1,0 +1,24 @@
+# Task 9L gates
+
+## Scope
+
+One-request local authenticated requester only. `request_once` connects once, writes one validated command frame, half-closes, reads one bounded response frame, and returns the decoded outcome/error without retry or fallback. No production call site, controller wiring, default/native executor, daemon, service unit, TCP/HTTP/TLS/mTLS, credential provisioning, remote host, process, backup/restore, fencing, route publication, deployment, or disruptive effect ran.
+
+## Final checks
+
+Source revision: `a8028f7bc7866685601ea1887b44435ba37a53e2` (Task 9L source checkpoint; later acceptance bookkeeping is docs-only).
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Behavioral requester RED | pass | `docs/reports/v1-task9l-red.txt`; `/tmp/task9l-red-requester.log`; `/tmp/task9l-green-final-focused.log` |
+| Focused transport/requester tests | pass — 19 tests | `/tmp/task9l-fix-focused.log` |
+| Full locked package suite | pass — 88 tests, 0 failures, 0 doctests | `/tmp/task9l-full-test-final.log` |
+| `cargo clippy --locked --all-targets -- -D warnings` | pass | `/tmp/task9l-clippy-final.log` |
+| `cargo fmt --manifest-path rust/Cargo.toml --check` | pass | command exit 0 |
+| `cargo build --release --locked` | pass | `/tmp/task9l-release-final.log` |
+| Release binary SHA-256 | `717ddb5002e36b759e592385b4c8deeb651c78d1117a5a87fe698f06a363971a` | `/tmp/task9l-release-sha-final.txt` |
+| `git diff --check` | pass | command exit 0 |
+
+## Coverage
+
+Tests cover one valid request/response round trip, no retry/fallback implementation, connect refusal, malformed response refusal, delayed trailing-byte refusal after protocol close, response strictness, transport refusal before executor, bounded read/write framing, and existing listener lifecycle/refusal boundaries. No production or external effect is claimed.
