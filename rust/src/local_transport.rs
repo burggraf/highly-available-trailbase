@@ -273,6 +273,12 @@ pub enum LocalExecutionError {
     Executor(ActionAdapterError),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalRequesterError {
+    Io,
+    Transport(TransportError),
+}
+
 #[cfg(unix)]
 impl Drop for LocalUnixListener {
     fn drop(&mut self) {
@@ -280,6 +286,24 @@ impl Drop for LocalUnixListener {
             let _ = self.cleanup();
         }
     }
+}
+
+#[cfg(unix)]
+pub fn request_once(
+    path: &Path,
+    peer_token: &str,
+    command: &NodeActionCommand,
+) -> Result<Result<ActionOutcome, ActionAdapterError>, LocalRequesterError> {
+    let frame = encode_frame(peer_token, command).map_err(LocalRequesterError::Transport)?;
+    let mut stream = UnixStream::connect(path).map_err(|_| LocalRequesterError::Io)?;
+    stream
+        .write_all(&frame)
+        .map_err(|_| LocalRequesterError::Io)?;
+    stream
+        .shutdown(std::net::Shutdown::Write)
+        .map_err(|_| LocalRequesterError::Io)?;
+    let response = read_one_frame(&mut stream).map_err(LocalRequesterError::Transport)?;
+    decode_response(&response).map_err(LocalRequesterError::Transport)
 }
 
 #[cfg(unix)]
@@ -627,6 +651,36 @@ mod tests {
             Ok(ActionOutcome::FailedSafe)
         );
         listener.shutdown().unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn requester_round_trips_one_response_without_retry() {
+        use std::thread;
+
+        struct FailedSafeExecutor;
+
+        impl NodeExecutor for FailedSafeExecutor {
+            fn execute(
+                &self,
+                _command: &NodeActionCommand,
+            ) -> Result<ActionOutcome, ActionAdapterError> {
+                Ok(ActionOutcome::FailedSafe)
+            }
+        }
+
+        let (directory, path) = private_socket_path("requester");
+        let listener = LocalUnixListener::bind(&path, TOKEN).unwrap();
+        let server = thread::spawn(move || {
+            let result = listener.receive_and_respond(&FailedSafeExecutor);
+            let cleanup = listener.shutdown();
+            (result, cleanup)
+        });
+        let result = request_once(&path, TOKEN, &command());
+        assert_eq!(result, Ok(Ok(ActionOutcome::FailedSafe)));
+        assert_eq!(server.join().unwrap(), (Ok(()), Ok(())));
+        assert!(!path.exists());
         std::fs::remove_dir(directory).unwrap();
     }
 
