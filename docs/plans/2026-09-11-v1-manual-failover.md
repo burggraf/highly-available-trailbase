@@ -39,7 +39,7 @@ This section is the authoritative restart tracker. Follow [AGENTS.md](../../AGEN
 | Task 9J — authenticated transport-to-executor boundary | accepted | Authenticated local transport-to-injected-executor integration passed T9J-AC1 through T9J-AC4. Valid transport invokes only the supplied `NodeExecutor`; refusal/outcome behavior is accepted. Default/native, controller, production, remote, process, backup, fence, and disruptive effects remain out of scope. |
 | Task 9K — local response contract | accepted | Strict local outcome/refusal responses over the injected executor boundary passed T9K-AC1 through T9K-AC4. Default/native, controller, production, remote, process, backup, fence, and disruptive effects remain out of scope. |
 | Task 9L — local authenticated requester | accepted | One-request local authenticated client passed T9L-AC1 through T9L-AC4. Unix connect/write/read and bounded response decoding are accepted; controller, production, default/native, remote, process, backup, fence, and disruptive effects remain out of scope. |
-| Task 9M — local action-adapter client | in_progress | Owner said continue; the library/test-only `ActionAdapter` client slice is authorized. It may use only the supplied local requester and injected incarnation; normal controller wiring, default/native, production, remote, process, backup, fence, and disruptive effects remain out of scope. |
+| Task 9M — local action-adapter client | accepted | Library/test-only `ActionAdapter` client passed T9M-AC1 through T9M-AC4. It uses only the supplied local requester and injected incarnation; normal controller wiring, default/native, production, remote, process, backup, fence, and disruptive effects remain out of scope. |
 | Task 10 — fault/release qualification | pending | Not authorized; workload, attempt budget and soak approval required. |
 
 ### Task 2 completion contract — approved and accepted
@@ -680,10 +680,12 @@ Design reference: [Task 9M local action adapter](2026-09-11-task9m-local-action-
 
 | ID | Observable requirement, including refusal cases | Exact check/evidence | Result |
 | --- | --- | --- | --- |
-| T9M-AC1 | A valid `ActionCommand` derives a bound node command and reaches the local requester/executor, preserving the response outcome. | adapter/requester/listener tests; design doc | not_run |
-| T9M-AC2 | Invalid action identity/token/incarnation refuses before transport; requester/response errors do not claim success or safe refusal. | refusal/uncertainty tests | not_run |
-| T9M-AC3 | Post-command transport uncertainty maps to `ActionAdapterError::Uncertain`; no retry/fallback, normal-controller wiring, or external/native effect exists. | uncertainty tests; package gates | not_run |
-| T9M-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no external-effect claim. | `docs/reports/v1-task9m-*` | not_run |
+| T9M-AC1 | A valid `ActionCommand` derives a bound node command and reaches the local requester/executor, preserving the response outcome. | `rust/src/local_transport.rs` adapter tests; `docs/reports/v1-task9m-review.txt` | pass |
+| T9M-AC2 | Invalid action identity/token/incarnation refuses before transport; requester/response errors do not claim success or safe refusal. | refusal/uncertainty tests; `docs/reports/v1-task9m-gates.txt` | pass |
+| T9M-AC3 | Post-command transport uncertainty maps to `ActionAdapterError::Uncertain`; no retry/fallback, normal-controller wiring, or external/native effect exists. | uncertainty tests; package gates | pass |
+| T9M-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no external-effect claim. | `docs/reports/v1-task9m-*` | pass |
+
+**Task 9M handoff:** source/tests are in checkpoint `141e261e1048f8268f1a6c058fc99760ab1a4318`; final release SHA-256 is `c2d7e0a5bfb42e803d4f2f6458dce1b4eee150b2ab87d86dce9d36e7736e446a`. Final gates are in `docs/reports/v1-task9m-gates.txt`; final review `dda571b4-4fe8-4517-a0f6-4a8b29684db7` returned PASS for implementation and gates after the sequential suite rerun. The adapter remains library/test-only, maps requester uncertainty conservatively, and is not wired to the normal controller.
 
 ### Task 9 — Installable disposable deployment and native acceptance
 

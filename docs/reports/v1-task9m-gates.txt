@@ -1,0 +1,26 @@
+# Task 9M gates
+
+## Scope
+
+Library/test-only `LocalActionAdapter` over the accepted local requester. It derives a validated node command from an injected incarnation, sends one authenticated request, preserves response outcomes/errors, and maps requester uncertainty conservatively to `ActionAdapterError::Uncertain`. The normal controller remains unavailable-adapter. No production/native/external effect ran.
+
+## Final checks
+
+Source revision: `141e261e1048f8268f1a6c058fc99760ab1a4318` (Task 9M source checkpoint; later acceptance bookkeeping is docs-only).
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Behavioral adapter RED | pass | `docs/reports/v1-task9m-red.txt`; `/tmp/task9m-red-adapter.log`; `/tmp/task9m-green-final-focused.log` |
+| Focused transport/adapter tests | pass — 20 tests | `/tmp/task9m-green-final-focused.log` |
+| Full locked package suite | pass — 89 tests, 0 failures, 0 doctests | `RUST_TEST_THREADS=1 cargo test --locked --manifest-path rust/Cargo.toml`; `/tmp/task9m-full-test-final3.log` |
+| `cargo clippy --locked --all-targets -- -D warnings` | pass | `/tmp/task9m-clippy-final2.log` |
+| `cargo fmt --manifest-path rust/Cargo.toml --check` | pass | command exit 0 |
+| `cargo build --release --locked` | pass | `/tmp/task9m-release-final2.log` |
+| Release binary SHA-256 | `c2d7e0a5bfb42e803d4f2f6458dce1b4eee150b2ab87d86dce9d36e7736e446a` | `/tmp/task9m-release-sha-final2.txt` |
+| `git diff --check` | pass | command exit 0 |
+
+Failure history is retained accurately: `/tmp/task9m-full-test.log` failed in `local_transport::tests::ephemeral_listener_accepts_one_frame_and_cleans_its_path` with `NotConnected`; `/tmp/task9m-full-test-final2.log` failed in `dashboard_shows_cluster_overview_and_refuses_unavailable_native_actions` with `account setup failed: account refused`; the isolated dashboard rerun passed at `/tmp/task9m-dashboard-rerun.log`. The final sequential locked suite passed 89/89 at `/tmp/task9m-full-test-final3.log`.
+
+## Coverage
+
+Tests cover valid adapter outcome preservation, uncertainty on missing requester path, invalid digest/token/incarnation refusal, one-request transport behavior, and the existing listener/request/response refusal boundaries. No controller wiring or production/external effect is claimed.

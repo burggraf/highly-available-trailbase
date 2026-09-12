@@ -1,0 +1,17 @@
+# Task 9M review record
+
+## Review sequence
+
+1. Fresh review `9a52e398-26e7-478b-89e6-0c67c3d38ce3` returned BLOCK because the first full-suite evidence was contradictory. The retained failures were corrected and accurately attributed: local listener `NotConnected`, dashboard account refusal, isolated dashboard rerun, then a sequential 89-test green suite.
+2. Fresh final review `dda571b4-4fe8-4517-a0f6-4a8b29684db7` returned PASS for implementation and gates. It then identified stale acceptance bookkeeping; the plan, README, status, Rust README, and this report are now updated.
+
+## Criterion review
+
+- T9M-AC1: pass — valid action commands bind to an injected incarnation and reach the local requester/executor, preserving outcomes.
+- T9M-AC2: pass — invalid identity/token/incarnation refuses; requester/response errors never claim success or safe refusal.
+- T9M-AC3: pass — requester transport errors map to `ActionAdapterError::Uncertain`; no retry/fallback or normal-controller wiring exists.
+- T9M-AC4: pass — RED, 20 focused tests, sequential 89-test locked suite, Clippy, fmt, locked release, SHA-256, diff check, docs, and final PASS review are retained.
+
+## Residual risks
+
+The adapter remains library/test-only. No normal controller integration, default/native executor, production listener, TLS/mTLS, remote forwarding, deployment, or disruptive qualification is claimed.
