@@ -2,7 +2,7 @@
 
 **Status:** Owner decisions captured, including controller-dependent unattended restart, public HTTPS dashboard access and individual local operator accounts. Implementation contracts below are a design draft for review, not an implemented or qualified protocol and not permission to deploy. See the [implementation plan](plans/2026-09-11-v1-manual-failover.md).
 
-**Implementation tracking:** this contract is not the progress ledger. Tasks 2–8 and the local Task 9C console/status/authority/refusal slice are accepted only within their recorded local boundaries; the active acceptance tracker is authoritative. See the [active acceptance tracker](plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance). The console remains loopback/SSH-tunnel friendly and does not qualify deployment TLS, peer identity, controller forwarding, native actions, or public HTTPS.
+**Implementation tracking:** this contract is not the progress ledger. Tasks 2–8 and the local Task 9C console/status/authority/refusal slice are accepted only within their recorded local boundaries; the active acceptance tracker is authoritative. See the [active acceptance tracker](plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance). The console remains loopback/SSH-tunnel friendly and does not qualify deployment TLS, peer identity, controller forwarding, native actions, or public HTTPS. Task 9D separately documents the local injected action-adapter boundary; it does not authorize native effects.
 
 ## Confirmed requirements
 

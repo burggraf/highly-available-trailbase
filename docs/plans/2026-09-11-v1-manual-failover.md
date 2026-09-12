@@ -30,7 +30,7 @@ This section is the authoritative restart tracker. Follow [AGENTS.md](../../AGEN
 | Task 8 — failover/rejoin | accepted | Local-only criteria T8-AC1 through T8-AC5 passed on `main`; native/provider/deployment/disruptive effects remain unauthorized. |
 | Task 9 — deployment/native acceptance | in_progress | Local artifact/contract subset T9-AC1 through T9-AC5 passed; owner authorized one bounded disposable VPS E2E cycle and a temporary remote UI demo. Further cycles, permanent deployment, and unsupported/provider effects remain separately gated. |
 | Task 9C — cluster console/authority slice | accepted | Local console/status/authority slice accepted: the configured `controller_node` plus local node identity selects the sole mutation authority; all other dashboards are read-only, observations stay unknown until supplied, and native actions refuse safely. Remote process/backup/fence execution remains the next native slice. |
-| Task 9D — local action-adapter contract | in_progress | Owner selected the local adapter-contract-first slice. Typed action identity/outcomes and injected fake tests are authorized; native node, backup, fence, forwarding, remote, and disruptive effects remain out of scope. |
+| Task 9D — local action-adapter contract | accepted | Local typed action identity/outcomes, durable replay/conflict handling, injected fake tests, and refusal-safe default behavior passed T9D-AC1 through T9D-AC4. Native node, backup, fence, forwarding, remote, and disruptive effects remain out of scope. |
 | Task 10 — fault/release qualification | pending | Not authorized; workload, attempt budget and soak approval required. |
 
 ### Task 2 completion contract — approved and accepted
@@ -554,10 +554,12 @@ Design reference: [Task 9D action-adapter contract](2026-09-11-task9d-action-ada
 
 | ID | Observable requirement, including refusal cases | Exact check/evidence | Result |
 | --- | --- | --- | --- |
-| T9D-AC1 | A typed action command binds cluster, authority, operation/request identity, action kind, target, exact route generation, expected role/admission, and possible-loss policy; the server derives the digest from validated fields. | action-adapter integration/unit tests; design doc | not_run |
-| T9D-AC2 | A newly accepted command is journaled once; exact replay returns its retained receipt without redispatch; identity/parameter conflicts refuse; bounded adapter outcomes map to succeeded, failed_safe, or blocked_uncertain. | action-adapter integration tests; journal evidence | not_run |
-| T9D-AC3 | Unavailable adapters refuse before journal insertion; non-authority dashboards cannot submit; uncertain outcomes block later mutations. | dashboard/action tests and refusal tests | not_run |
-| T9D-AC4 | Behavioral RED, package gates, fresh authority/action review, and accurate docs/handoff pass with no native-effect claim. | `docs/reports/v1-task9d-*` | not_run |
+| T9D-AC1 | A typed action command binds cluster, authority, operation/request identity, action kind, target, exact route generation, expected role/admission, and possible-loss policy; the server derives the digest from validated fields. | `rust/src/controller.rs`, `rust/tests/action_adapter.rs`, `docs/reports/v1-task9d-review.txt` | pass |
+| T9D-AC2 | A newly accepted command is journaled once; exact replay returns its retained receipt without redispatch; identity/parameter conflicts refuse; bounded adapter outcomes map to succeeded, failed_safe, or blocked_uncertain. | `rust/tests/action_adapter.rs`, `docs/reports/v1-task9d-gates.txt` | pass |
+| T9D-AC3 | Unavailable adapters refuse before journal insertion; non-authority dashboards cannot submit; uncertain outcomes block later mutations. | `rust/tests/dashboard.rs`, `rust/tests/action_adapter.rs`, `docs/reports/v1-task9d-review.txt` | pass |
+| T9D-AC4 | Behavioral RED, package gates, fresh authority/action review, and accurate docs/handoff pass with no native-effect claim. | `docs/reports/v1-task9d-*` | pass |
+
+**Task 9D handoff:** source/tests/docs are accepted locally in the containing checkpoint after final review `81561d9b-59ba-48fc-a0da-abd741fead76`. Final gates are retained in `docs/reports/v1-task9d-gates.txt`; the release SHA-256 is `1628e35a513470782e3fbd38e48a3807c39e2983e9727079b96b92647036e62b`. The default server remains fail-closed and no native or remote effect ran. The next safe step is a separately authorized native observation/node-agent/forwarding design; do not enable the injected adapter or repeat VPS qualification from this checkpoint.
 
 ### Task 9 — Installable disposable deployment and native acceptance
 

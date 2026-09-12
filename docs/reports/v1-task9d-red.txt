@@ -1,0 +1,30 @@
+# Task 9D RED evidence
+
+Source: working tree after pushed Task 9C checkpoint `f029256` (final Task 9D changes are in the containing checkpoint).
+
+## Behavioral RED
+
+Command:
+
+```text
+cargo test --locked --manifest-path rust/Cargo.toml --test dashboard dashboard_shows_cluster_overview_and_refuses_unavailable_native_actions
+```
+
+Result: failed, exit 101, before the Task 9D action identity validation was implemented.
+
+Failure:
+
+```text
+rust/tests/dashboard.rs:260
+assertion failed: read_response(&mut missing_identity).starts_with("HTTP/1.1 400")
+```
+
+The existing action endpoint accepted the request far enough to return its old unavailable-adapter response instead of refusing a request without durable request/operation identity. The test was then made green by requiring those fields and validating their bounded identity shape.
+
+## Review-found RED
+
+The first digest implementation joined fields with `|`. The regression test `controller::tests::action_digest_separates_identity_fields` initially failed with equal SHA-256 values for `request_id=a|b, operation_id=c` and `request_id=a, operation_id=b|c` (exit 101; `/tmp/task9d-red-digest2.log`). The fix uses versioned JSON tuple serialization before hashing; the focused regression then passed (`/tmp/task9d-green-digest.log`).
+
+## Retained distinct gate attempt
+
+The first full package run after adding the integration test also returned exit 101 because the parallel dashboard test's temporary account setup reported `account refused` at `rust/tests/dashboard.rs:377`. The isolated test and a subsequent full run passed; the failed attempt is retained rather than overwritten.

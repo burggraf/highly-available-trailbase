@@ -1,6 +1,6 @@
 # HAT Rust V1 — local Tasks 2–9 subset
 
-This package implements the accepted local slices from the [single-controller V1 plan](../docs/plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance): bounded configuration validation, primary-only routing/proxying, fixture node/controller state, restore/fence boundaries, planned switchover, manual failover/reconciliation/reseed, and refusal-safe Task 9 artifacts. It does not perform native TrailBase/Litestream work, provider fencing, installation, deployment, public traffic, or live qualification.
+This package implements the accepted local slices from the [single-controller V1 plan](../docs/plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance): bounded configuration validation, primary-only routing/proxying, fixture node/controller state, restore/fence boundaries, planned switchover, manual failover/reconciliation/reseed, refusal-safe Task 9 artifacts, and the accepted local Task 9D action-adapter contract. It does not perform native TrailBase/Litestream work, provider fencing, installation, deployment, public traffic, or live qualification.
 
 ## Configuration checker
 
@@ -73,7 +73,7 @@ Task 4 adds process-local node lifecycle state and replication observations. Nod
 
 `hat node status` reports the inert process-local starting state. This slice does not start TrailBase or Litestream, open configured data paths, use systemd, perform native restore, activate real writers, or claim deployment/process-group qualification.
 
-## Local controller slice (Tasks 5 and 9C, accepted locally)
+## Local controller slice (Tasks 5, 9C, and 9D, accepted locally)
 
 The local controller has a bundled SQLite journal with `foreign_keys=ON`, `synchronous=FULL`, one-owner locking, durable operation intent, exact duplicate receipts, conflict refusal, unfinished-operation reopen, Argon2id account/session primitives, and incarnation-bound restart waiting. Serve the dashboard with an explicit configuration and local identity:
 
@@ -87,7 +87,7 @@ hat controller serve --listen 127.0.0.1:18083 \
 
 `controller_node` in the validated config, not a `--read-only` toggle, determines which configured node is the mutation authority. A node with another identity serves authenticated read-only status; missing/unknown observations remain `unknown`, and action controls are disabled. Login, CSRF, Origin/Host, target identity, exact route-generation, role/admission confirmation, and possible-loss checks are bounded at the API. The native node-action adapter is intentionally absent: failover, restart, shutdown, and rejoin requests are refused with a clear reason and never simulated. Durable operation submissions replay the same receipt and non-authority dashboards refuse them.
 
-This local slice is accepted against T5-AC1 through T5-AC5 and T9C-AC1 through T9C-AC5. It is not public HTTPS, production TLS, remote forwarding, a deployment, a fencing/controller action system, a native restart workflow, or a VPS qualification. No real node action is claimed.
+This local slice is accepted against T5-AC1 through T5-AC5 and T9C-AC1 through T9C-AC5. Task 9D adds `ActionCommand`, bounded adapter outcomes, server-derived action digests, exact replay/conflict handling, and injected fake-adapter tests; the default server still uses an unavailable adapter and refuses before journal insertion. It is not public HTTPS, production TLS, remote forwarding, a deployment, a fencing/controller action system, a native restart workflow, or a VPS qualification. No real node action is claimed.
 
 ## Local restore/fence boundary (Task 6, accepted locally)
 

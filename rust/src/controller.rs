@@ -13,6 +13,7 @@ use axum::{
 };
 use getrandom::fill;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     net::SocketAddr,
     sync::{Arc, Mutex},
@@ -66,6 +67,52 @@ impl RestartGuard {
 pub struct Controller {
     pub journal: Journal,
     pub auth: AuthStore,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActionCommand {
+    pub cluster_id: String,
+    pub controller_node_id: String,
+    pub request_id: String,
+    pub operation_id: String,
+    pub digest: String,
+    pub kind: String,
+    pub target_node_id: String,
+    pub expected_generation: String,
+    pub expected_role: String,
+    pub expected_admission: String,
+    pub accept_possible_loss: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionOutcome {
+    Succeeded,
+    FailedSafe,
+    Uncertain,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionAdapterError {
+    Unavailable,
+    Refused,
+    Uncertain,
+}
+
+pub trait ActionAdapter: Send + Sync {
+    fn available(&self) -> bool;
+    fn execute(&self, command: &ActionCommand) -> Result<ActionOutcome, ActionAdapterError>;
+}
+
+struct UnavailableActionAdapter;
+
+impl ActionAdapter for UnavailableActionAdapter {
+    fn available(&self) -> bool {
+        false
+    }
+
+    fn execute(&self, _command: &ActionCommand) -> Result<ActionOutcome, ActionAdapterError> {
+        Err(ActionAdapterError::Unavailable)
+    }
 }
 
 impl Controller {
@@ -179,6 +226,7 @@ pub struct DashboardState {
     csrf: Arc<str>,
     cluster: Arc<ClusterView>,
     local_node_id: Option<Arc<str>>,
+    adapter: Arc<dyn ActionAdapter>,
 }
 
 #[derive(Deserialize)]
@@ -196,6 +244,8 @@ struct OperationRequest {
 
 #[derive(Deserialize)]
 struct ActionRequest {
+    request_id: String,
+    operation_id: String,
     kind: String,
     target_node_id: String,
     expected_generation: String,
@@ -234,6 +284,22 @@ pub fn dashboard_with_cluster(
     cluster: ClusterView,
     local_node_id: Option<&str>,
 ) -> Result<Router, JournalError> {
+    dashboard_with_cluster_and_adapter(
+        controller,
+        origin,
+        cluster,
+        local_node_id,
+        Arc::new(UnavailableActionAdapter),
+    )
+}
+
+pub fn dashboard_with_cluster_and_adapter(
+    controller: Controller,
+    origin: &str,
+    cluster: ClusterView,
+    local_node_id: Option<&str>,
+    adapter: Arc<dyn ActionAdapter>,
+) -> Result<Router, JournalError> {
     let mut csrf_bytes = [0u8; 32];
     fill(&mut csrf_bytes).map_err(|_| JournalError::InvalidInput)?;
     let csrf: String = csrf_bytes
@@ -246,6 +312,7 @@ pub fn dashboard_with_cluster(
         csrf: Arc::from(csrf),
         cluster: Arc::new(cluster),
         local_node_id: local_node_id.map(Arc::from),
+        adapter,
     };
     Ok(Router::new()
         .route("/", get(index))
@@ -572,7 +639,7 @@ document.querySelectorAll('[data-action]').forEach((button) => button.addEventLi
   const node = (snapshot.cluster.nodes || []).find((item) => item.id === target);
   const phrase = kind === 'failover' ? 'This may lose recent writes. Continue?' : `Request ${kind} for ${target}?`;
   if (!window.confirm(phrase)) return;
-  const response = await fetch('/api/v1/actions', { method: 'POST', headers: {'Content-Type': 'application/json', 'Origin': location.origin, 'X-CSRF-Token': csrf}, body: JSON.stringify({kind, target_node_id: target, expected_generation: snapshot.cluster.route_generation || '0', expected_role: node?.role || '', expected_admission: node?.admission || '', accept_possible_loss: kind === 'failover'}) });
+  const response = await fetch('/api/v1/actions', { method: 'POST', headers: {'Content-Type': 'application/json', 'Origin': location.origin, 'X-CSRF-Token': csrf}, body: JSON.stringify({request_id: crypto.randomUUID(), operation_id: crypto.randomUUID(), kind, target_node_id: target, expected_generation: snapshot.cluster.route_generation || '0', expected_role: node?.role || '', expected_admission: node?.admission || '', accept_possible_loss: kind === 'failover'}) });
   const body = await response.text();
   setNotice(response.ok ? 'Operation accepted.' : body || 'Action refused.', response.ok ? 'success' : 'danger');
 }));
@@ -699,6 +766,9 @@ async fn action(State(state): State<DashboardState>, request: Request) -> Respon
     if authenticate(&mut controller, &session).is_err() {
         return refused(StatusCode::UNAUTHORIZED, "authentication required");
     }
+    if !valid_action_identity(&body.request_id) || !valid_action_identity(&body.operation_id) {
+        return refused(StatusCode::BAD_REQUEST, "invalid action identity");
+    }
     if !matches!(
         body.kind.as_str(),
         "failover" | "restart" | "shutdown" | "rejoin"
@@ -736,10 +806,116 @@ async fn action(State(state): State<DashboardState>, request: Request) -> Respon
             "controller authority is configured elsewhere",
         );
     }
-    refused(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "native action adapter unavailable",
-    )
+    let digest = action_digest(&state.cluster, &body);
+    let failover = body.kind == "failover";
+    match controller
+        .journal
+        .retained(&body.request_id, &body.operation_id, &digest, failover)
+    {
+        Ok(Some(receipt)) => return action_receipt(receipt, StatusCode::ACCEPTED),
+        Ok(None) => {}
+        Err(JournalError::Conflict | JournalError::PolicyConflict) => {
+            return refused(StatusCode::CONFLICT, "request identity conflict")
+        }
+        Err(_) => return refused(StatusCode::INTERNAL_SERVER_ERROR, "operation unavailable"),
+    }
+    if !state.adapter.available() {
+        return refused(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "native action adapter unavailable",
+        );
+    }
+    let receipt = match controller.journal.submit_with_policy(
+        &body.request_id,
+        &body.operation_id,
+        &digest,
+        failover,
+    ) {
+        Ok(receipt) => receipt,
+        Err(JournalError::Conflict | JournalError::PolicyConflict) => {
+            return refused(StatusCode::CONFLICT, "request identity conflict")
+        }
+        Err(JournalError::Uncertain) => {
+            return refused(StatusCode::CONFLICT, "operation blocked by uncertainty")
+        }
+        Err(JournalError::InvalidInput) => {
+            return refused(StatusCode::BAD_REQUEST, "invalid action")
+        }
+        Err(JournalError::AlreadyOwned | JournalError::Sql(_)) => {
+            return refused(StatusCode::INTERNAL_SERVER_ERROR, "operation unavailable")
+        }
+    };
+    let command = ActionCommand {
+        cluster_id: state.cluster.cluster_id.clone(),
+        controller_node_id: state.cluster.controller_node_id.clone(),
+        request_id: body.request_id.clone(),
+        operation_id: body.operation_id.clone(),
+        digest,
+        kind: body.kind.clone(),
+        target_node_id: body.target_node_id.clone(),
+        expected_generation: body.expected_generation.clone(),
+        expected_role: body.expected_role.clone(),
+        expected_admission: body.expected_admission.clone(),
+        accept_possible_loss: body.accept_possible_loss,
+    };
+    let terminal_state = match state.adapter.execute(&command) {
+        Ok(ActionOutcome::Succeeded) => "succeeded",
+        Ok(ActionOutcome::FailedSafe) | Err(ActionAdapterError::Refused) => "failed_safe",
+        Ok(ActionOutcome::Uncertain)
+        | Err(ActionAdapterError::Unavailable | ActionAdapterError::Uncertain) => {
+            "blocked_uncertain"
+        }
+    };
+    if controller
+        .journal
+        .finish(&body.operation_id, terminal_state)
+        .is_err()
+    {
+        let _ = controller.journal.block_uncertain(&body.operation_id);
+        return refused(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "operation result unavailable",
+        );
+    }
+    let mut settled = receipt;
+    settled.state = terminal_state.to_owned();
+    let status = if terminal_state == "blocked_uncertain" {
+        StatusCode::CONFLICT
+    } else {
+        StatusCode::ACCEPTED
+    };
+    action_receipt(settled, status)
+}
+
+fn valid_action_identity(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 128 && value.bytes().all(|byte| byte.is_ascii_graphic())
+}
+
+fn action_digest(cluster: &ClusterView, body: &ActionRequest) -> String {
+    let canonical = serde_json::to_vec(&(
+        "hat-action-v1",
+        &cluster.cluster_id,
+        &cluster.controller_node_id,
+        &body.request_id,
+        &body.operation_id,
+        &body.kind,
+        &body.target_node_id,
+        &body.expected_generation,
+        &body.expected_role,
+        &body.expected_admission,
+        body.accept_possible_loss,
+    ))
+    .expect("action digest fields are serializable");
+    Sha256::digest(canonical)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn action_receipt(receipt: OperationReceipt, status: StatusCode) -> Response<Body> {
+    let mut response = Json(receipt).into_response();
+    *response.status_mut() = status;
+    response
 }
 
 async fn operation(State(state): State<DashboardState>, request: Request) -> Response<Body> {
@@ -882,5 +1058,37 @@ mod tests {
         assert_eq!(restart.state(), &RestartState::Authorized);
         restart.block_uncertain();
         assert!(!restart.authorize("incarnation-a"));
+    }
+
+    #[test]
+    fn action_digest_separates_identity_fields() {
+        let cluster = ClusterView::empty();
+        let base = ActionRequest {
+            request_id: String::new(),
+            operation_id: String::new(),
+            kind: "restart".into(),
+            target_node_id: "node-b".into(),
+            expected_generation: "0".into(),
+            expected_role: "standby".into(),
+            expected_admission: "unknown".into(),
+            accept_possible_loss: false,
+        };
+        let mut first = base;
+        first.request_id = "a|b".into();
+        first.operation_id = "c".into();
+        let second = ActionRequest {
+            request_id: "a".into(),
+            operation_id: "b|c".into(),
+            kind: "restart".into(),
+            target_node_id: "node-b".into(),
+            expected_generation: "0".into(),
+            expected_role: "standby".into(),
+            expected_admission: "unknown".into(),
+            accept_possible_loss: false,
+        };
+        assert_ne!(
+            action_digest(&cluster, &first),
+            action_digest(&cluster, &second)
+        );
     }
 }

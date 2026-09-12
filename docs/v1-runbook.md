@@ -34,6 +34,10 @@ hat controller serve --listen 127.0.0.1:18083 \
 
 The console shows config-bound inventory and `unknown` observations until a native observation channel exists. Failover, restart, shutdown, rejoin, remote forwarding, restore, and fencing remain refused; this command is not a deployment or native qualification.
 
+### Task 9D local action-adapter boundary
+
+The controller now defines a typed `ActionCommand` boundary for a future node adapter. It derives the operation digest from validated target/state fields, journals each new command once, replays exact identities without redispatch, and records only `succeeded`, `failed_safe`, or `blocked_uncertain` outcomes. The normal server still installs an unavailable adapter, so no action is journaled or simulated. Injected fake adapters are test-only and have no process, SSH, backup, fence, or remote effect.
+
 ## Inputs required before any installation decision
 
 A later owner-approved native/deployment stage must freeze all of these before touching a host:
@@ -55,4 +59,4 @@ Do not infer any of these from the example JSON. Static config validation is not
 - Do not run `cargo test --ignored`, `rust/tests/native.rs`, a provider adapter, a fence command, or a public listener without the matching approval and disposable fixture.
 - A valid config does not authorize a writer, route, restore, promotion, rejoin, or deployment.
 
-The next authorized step is a new, explicitly scoped native/disposable qualification decision. This local artifact slice makes no deployment or production-readiness claim.
+The next authorized step after this local contract is a separately scoped native/disposable qualification decision. This local artifact slice makes no deployment or production-readiness claim.

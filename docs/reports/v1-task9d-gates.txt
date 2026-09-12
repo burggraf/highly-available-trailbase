@@ -1,0 +1,28 @@
+# Task 9D gates
+
+## Scope
+
+Local-only action-adapter contract. The normal controller installs an unavailable adapter and refuses native actions before journal insertion. The injected adapter exists only for tests; no process, SSH, TrailBase, Litestream, restore, fence, forwarding, remote, or disruptive effect was run.
+
+## Final checks
+
+Source revision: obtain with `git rev-parse HEAD` at the containing Task 9D checkpoint commit.
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Behavioral RED | pass | `docs/reports/v1-task9d-red.txt` |
+| Focused dashboard identity/refusal test | pass | `rust/tests/dashboard.rs`; `/tmp/task9d-dashboard-unavailable.log` |
+| Digest ambiguity regression | pass | `rust/src/controller.rs`; `/tmp/task9d-green-digest.log` |
+| Injected action-adapter integration test | pass | `rust/tests/action_adapter.rs`; `/tmp/task9d-adapter-test2.log` |
+| Full locked package suite | pass — 63 tests, 0 failures, 0 doctests | `/tmp/task9d-full-test-final2.log` |
+| `cargo clippy --locked --all-targets -- -D warnings` | pass | `/tmp/task9d-clippy-final2.log` |
+| `cargo fmt --manifest-path rust/Cargo.toml --check` | pass | command exit 0 |
+| `cargo build --release --locked` | pass | `/tmp/task9d-release-final2.log` |
+| Release binary SHA-256 | `1628e35a513470782e3fbd38e48a3807c39e2983e9727079b96b92647036e62b` | `/tmp/task9d-release-sha2.txt` |
+| `git diff --check` | pass | command exit 0 |
+
+## Coverage
+
+The real HTTP router with an injected fake adapter verifies command identity binding, server-derived digest, exact replay without a second dispatch, parameter conflict refusal, `succeeded`, `failed_safe`, and `blocked_uncertain` outcomes, and refusal of later mutations after uncertainty. The controller regression verifies delimiter-safe digest binding. The default dashboard test verifies missing action identity, unavailable-adapter refusal, and no journal insertion; existing authority tests remain green.
+
+No native-effect or production-readiness claim is made.

@@ -1,0 +1,17 @@
+# Task 9D review record
+
+## Review sequence
+
+1. Fresh read-only review `221181a7-fe0c-4854-87cd-043607a05358` returned BLOCK. It found a delimiter-ambiguous action digest in `rust/src/controller.rs` and pending acceptance-table results. The regression test `controller::tests::action_digest_separates_identity_fields` reproduced the collision; the digest now uses versioned JSON tuple serialization, and the final plan results are recorded below.
+2. Final read-only review `81561d9b-59ba-48fc-a0da-abd741fead76` returned PASS after the digest fix and final gate rerun. It found no remaining issue and confirmed the local-only refusal boundary, no-journal unavailable path, replay/conflict/outcome/uncertainty tests, and retained 63-test gate evidence.
+
+## Criterion review
+
+- T9D-AC1: pass — `ActionCommand` binds cluster, authority, operation/request identity, action kind, target, generation, expected state, and loss policy; the server derives a versioned JSON-tuple SHA-256 digest. Covered by `rust/src/controller.rs:894-910` and the collision regression.
+- T9D-AC2: pass — exact journal replay returns the retained receipt without redispatch; identity/parameter conflicts refuse; injected outcomes settle to `succeeded`, `failed_safe`, or `blocked_uncertain`. Covered by `rust/tests/action_adapter.rs` and `docs/reports/v1-task9d-gates.txt`.
+- T9D-AC3: pass — authority, target/state, generation, and loss checks precede dispatch; unavailable adapters refuse before insertion; uncertainty blocks later mutations. Covered by `rust/src/controller.rs:774-875`, `rust/tests/dashboard.rs`, and `rust/tests/action_adapter.rs`.
+- T9D-AC4: pass — RED evidence, 63-test locked suite, Clippy, fmt, locked release build, digest evidence, diff check, docs, and fresh PASS review are retained. No native effect is claimed.
+
+## Residual risks
+
+The adapter is only a local typed boundary. No node-agent transport, process execution, observation channel, remote forwarding, backup/restore adapter, fencing adapter, native failover/rejoin execution, public HTTPS, deployment, or production qualification exists. The default controller continues to fail closed.

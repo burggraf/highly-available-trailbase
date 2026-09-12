@@ -1,3 +1,4 @@
+use hat::journal::Journal;
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
@@ -248,21 +249,26 @@ fn dashboard_shows_cluster_overview_and_refuses_unavailable_native_actions() {
     assert!(duplicate_response.contains("operation-1"));
 
     let mut unknown_action = TcpStream::connect(&address).unwrap();
-    let unknown_body = br#"{"kind":"restart","target_node_id":"node-z","expected_generation":"0","expected_role":"standby","expected_admission":"unknown","accept_possible_loss":false}"#;
+    let unknown_body = br#"{"request_id":"unknown-request","operation_id":"unknown-operation","kind":"restart","target_node_id":"node-z","expected_generation":"0","expected_role":"standby","expected_admission":"unknown","accept_possible_loss":false}"#;
     write_request(&mut unknown_action, &format!("POST /api/v1/actions HTTP/1.1\r\nHost: {address}\r\nOrigin: {origin}\r\nContent-Type: application/json\r\nCookie: {cookie}\r\nX-CSRF-Token: {csrf}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", unknown_body.len()), unknown_body);
     let unknown_response = read_response(&mut unknown_action);
     assert!(unknown_response.starts_with("HTTP/1.1 400"));
     assert!(unknown_response.contains("unknown target node"));
 
+    let mut missing_identity = TcpStream::connect(&address).unwrap();
+    let missing_identity_body = br#"{"kind":"restart","target_node_id":"node-b","expected_generation":"0","expected_role":"standby","expected_admission":"unknown","accept_possible_loss":false}"#;
+    write_request(&mut missing_identity, &format!("POST /api/v1/actions HTTP/1.1\r\nHost: {address}\r\nOrigin: {origin}\r\nContent-Type: application/json\r\nCookie: {cookie}\r\nX-CSRF-Token: {csrf}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", missing_identity_body.len()), missing_identity_body);
+    assert!(read_response(&mut missing_identity).starts_with("HTTP/1.1 400"));
+
     let mut stale_action = TcpStream::connect(&address).unwrap();
-    let stale_body = br#"{"kind":"restart","target_node_id":"node-b","expected_generation":"1","expected_role":"standby","expected_admission":"unknown","accept_possible_loss":false}"#;
+    let stale_body = br#"{"request_id":"stale-request","operation_id":"stale-operation","kind":"restart","target_node_id":"node-b","expected_generation":"1","expected_role":"standby","expected_admission":"unknown","accept_possible_loss":false}"#;
     write_request(&mut stale_action, &format!("POST /api/v1/actions HTTP/1.1\r\nHost: {address}\r\nOrigin: {origin}\r\nContent-Type: application/json\r\nCookie: {cookie}\r\nX-CSRF-Token: {csrf}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", stale_body.len()), stale_body);
     let stale_response = read_response(&mut stale_action);
     assert!(stale_response.starts_with("HTTP/1.1 409"));
     assert!(stale_response.contains("stale route generation"));
 
     let mut action = TcpStream::connect(&address).unwrap();
-    let action_body = br#"{"kind":"restart","target_node_id":"node-b","expected_generation":"0","expected_role":"standby","expected_admission":"unknown","accept_possible_loss":false}"#;
+    let action_body = br#"{"request_id":"action-request","operation_id":"action-operation","kind":"restart","target_node_id":"node-b","expected_generation":"0","expected_role":"standby","expected_admission":"unknown","accept_possible_loss":false}"#;
     write_request(&mut action, &format!("POST /api/v1/actions HTTP/1.1\r\nHost: {address}\r\nOrigin: {origin}\r\nContent-Type: application/json\r\nCookie: {cookie}\r\nX-CSRF-Token: {csrf}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", action_body.len()), action_body);
     let action_response = read_response(&mut action);
     assert!(action_response.starts_with("HTTP/1.1 503"));
@@ -270,6 +276,8 @@ fn dashboard_shows_cluster_overview_and_refuses_unavailable_native_actions() {
 
     let _ = child.kill();
     let _ = child.wait();
+    let verify = Journal::open(&journal, "verify").unwrap();
+    assert!(verify.receipt("action-request").unwrap().is_none());
     let _ = std::fs::remove_file(journal);
 }
 
