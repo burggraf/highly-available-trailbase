@@ -112,34 +112,81 @@ pub fn decode_frame(
 }
 
 #[cfg(unix)]
-pub fn receive_one(path: &Path, expected_token: &str) -> Result<NodeActionCommand, TransportError> {
-    if !valid_token(expected_token) {
-        return Err(TransportError::InvalidToken);
-    }
-    let parent = path.parent().ok_or(TransportError::Io)?;
-    let metadata = std::fs::symlink_metadata(parent).map_err(|_| TransportError::Io)?;
-    if !metadata.is_dir() || metadata.mode() & 0o077 != 0 {
-        return Err(TransportError::Io);
-    }
-    let listener = UnixListener::bind(path).map_err(|_| TransportError::Io)?;
-    let bound = std::fs::symlink_metadata(path).map_err(|_| TransportError::Io)?;
-    if !bound.file_type().is_socket() {
-        return Err(TransportError::Io);
-    }
-    let result = (|| {
-        let (mut stream, _) = listener.accept().map_err(|_| TransportError::Io)?;
-        let frame = read_one_frame(&mut stream)?;
-        decode_frame(&frame, expected_token)
-    })();
-    let cleanup = match std::fs::symlink_metadata(path) {
-        Ok(current) if current.dev() == bound.dev() && current.ino() == bound.ino() => {
-            std::fs::remove_file(path)
+pub struct LocalUnixListener {
+    listener: UnixListener,
+    path: std::path::PathBuf,
+    expected_token: String,
+    bound_device: u64,
+    bound_inode: u64,
+    closed: bool,
+}
+
+#[cfg(unix)]
+impl LocalUnixListener {
+    pub fn bind(path: &Path, expected_token: &str) -> Result<Self, TransportError> {
+        if !valid_token(expected_token) {
+            return Err(TransportError::InvalidToken);
         }
-        _ => Err(std::io::Error::new(
-            ErrorKind::NotFound,
-            "listener path changed",
-        )),
-    };
+        let parent = path.parent().ok_or(TransportError::Io)?;
+        let metadata = std::fs::symlink_metadata(parent).map_err(|_| TransportError::Io)?;
+        if !metadata.is_dir() || metadata.mode() & 0o077 != 0 {
+            return Err(TransportError::Io);
+        }
+        let listener = UnixListener::bind(path).map_err(|_| TransportError::Io)?;
+        let bound = std::fs::symlink_metadata(path).map_err(|_| TransportError::Io)?;
+        if !bound.file_type().is_socket() {
+            return Err(TransportError::Io);
+        }
+        Ok(Self {
+            listener,
+            path: path.to_path_buf(),
+            expected_token: expected_token.to_owned(),
+            bound_device: bound.dev(),
+            bound_inode: bound.ino(),
+            closed: false,
+        })
+    }
+
+    pub fn receive(&self) -> Result<NodeActionCommand, TransportError> {
+        let (mut stream, _) = self.listener.accept().map_err(|_| TransportError::Io)?;
+        let frame = read_one_frame(&mut stream)?;
+        decode_frame(&frame, &self.expected_token)
+    }
+
+    pub fn shutdown(mut self) -> Result<(), TransportError> {
+        let result = self.cleanup();
+        self.closed = true;
+        result
+    }
+
+    fn cleanup(&self) -> Result<(), TransportError> {
+        match std::fs::symlink_metadata(&self.path) {
+            Ok(current)
+                if current.file_type().is_socket()
+                    && current.dev() == self.bound_device
+                    && current.ino() == self.bound_inode =>
+            {
+                std::fs::remove_file(&self.path).map_err(|_| TransportError::Io)
+            }
+            _ => Err(TransportError::Io),
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for LocalUnixListener {
+    fn drop(&mut self) {
+        if !self.closed {
+            let _ = self.cleanup();
+        }
+    }
+}
+
+#[cfg(unix)]
+pub fn receive_one(path: &Path, expected_token: &str) -> Result<NodeActionCommand, TransportError> {
+    let listener = LocalUnixListener::bind(path, expected_token)?;
+    let result = listener.receive();
+    let cleanup = listener.shutdown();
     match (result, cleanup) {
         (Ok(command), Ok(())) => Ok(command),
         (Ok(_), Err(_)) | (Err(_), Err(_)) => Err(TransportError::Io),
@@ -315,6 +362,48 @@ mod tests {
             decode_frame(&invalid_command, TOKEN),
             Err(TransportError::Command(NodeBoundaryError::InvalidWire))
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn persistent_listener_keeps_socket_until_explicit_shutdown() {
+        use std::{io::Write, os::unix::net::UnixStream, thread, time::Duration};
+
+        let (directory, path) = private_socket_path("p");
+        let listener = LocalUnixListener::bind(&path, TOKEN).unwrap();
+        assert!(matches!(
+            LocalUnixListener::bind(&path, TOKEN),
+            Err(TransportError::Io)
+        ));
+        let client_path = path.clone();
+        let client = thread::spawn(move || {
+            for _ in 0..2 {
+                let mut connected = None;
+                for _ in 0..100 {
+                    match UnixStream::connect(&client_path) {
+                        Ok(stream) => {
+                            connected = Some(stream);
+                            break;
+                        }
+                        Err(_) => thread::sleep(Duration::from_millis(5)),
+                    }
+                }
+                let mut stream = connected.expect("listener did not accept connections");
+                stream
+                    .write_all(&encode_frame(TOKEN, &command()).unwrap())
+                    .unwrap();
+                stream.shutdown(std::net::Shutdown::Write).unwrap();
+            }
+        });
+        assert_eq!(listener.receive().unwrap(), command());
+        assert_eq!(listener.receive().unwrap(), command());
+        assert!(path.exists(), "listener path disappeared before shutdown");
+        client.join().unwrap();
+        listener.shutdown().unwrap();
+        assert!(!path.exists());
+        let rebound = LocalUnixListener::bind(&path, TOKEN).unwrap();
+        rebound.shutdown().unwrap();
+        std::fs::remove_dir(directory).unwrap();
     }
 
     #[cfg(unix)]
