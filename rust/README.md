@@ -1,6 +1,6 @@
 # HAT Rust V1 — local Tasks 2–9 subset
 
-This package implements the accepted local slices from the [single-controller V1 plan](../docs/plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance): bounded configuration validation, primary-only routing/proxying, fixture node/controller state, restore/fence boundaries, planned switchover, manual failover/reconciliation/reseed, refusal-safe Task 9 artifacts, and the accepted local Task 9D action-adapter contract. It does not perform native TrailBase/Litestream work, provider fencing, installation, deployment, public traffic, or live qualification.
+This package implements the accepted local slices from the [single-controller V1 plan](../docs/plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance): bounded configuration validation, primary-only routing/proxying, fixture node/controller state, restore/fence boundaries, planned switchover, manual failover/reconciliation/reseed, refusal-safe Task 9 artifacts, the accepted local Task 9D action-adapter contract, and the in-progress local Task 9E node boundary contract. It does not perform native TrailBase/Litestream work, provider fencing, installation, deployment, public traffic, or live qualification.
 
 ## Configuration checker
 
@@ -88,6 +88,12 @@ hat controller serve --listen 127.0.0.1:18083 \
 `controller_node` in the validated config, not a `--read-only` toggle, determines which configured node is the mutation authority. A node with another identity serves authenticated read-only status; missing/unknown observations remain `unknown`, and action controls are disabled. Login, CSRF, Origin/Host, target identity, exact route-generation, role/admission confirmation, and possible-loss checks are bounded at the API. The native node-action adapter is intentionally absent: failover, restart, shutdown, and rejoin requests are refused with a clear reason and never simulated. Durable operation submissions replay the same receipt and non-authority dashboards refuse them.
 
 This local slice is accepted against T5-AC1 through T5-AC5 and T9C-AC1 through T9C-AC5. Task 9D adds `ActionCommand`, bounded adapter outcomes, server-derived action digests, exact replay/conflict handling, and injected fake-adapter tests; the default server still uses an unavailable adapter and refuses before journal insertion. It is not public HTTPS, production TLS, remote forwarding, a deployment, a fencing/controller action system, a native restart workflow, or a VPS qualification. No real node action is claimed.
+
+## Local node boundary (Task 9E, local-only)
+
+Task 9E defines bounded version-1 JSON envelopes for a future controller-to-node action and a node observation. Duplicate keys, unknown fields, oversized input, unsupported schema, malformed identities, invalid digests/generations, unknown route generation, stale generation, and role/admission mismatches refuse. `NodeObservation::from_node` validates local state before constructing an observation. The command digest is derived from the same controller-authoritative fields used by Task 9D.
+
+This is a library boundary only. It opens no listener, uses no transport, starts/stops no process, accesses no TrailBase/Litestream state, restores no data, fences no provider, publishes no route, and performs no remote or disruptive action. See `../docs/plans/2026-09-11-task9e-node-boundary-design.md`.
 
 ## Local restore/fence boundary (Task 6, accepted locally)
 

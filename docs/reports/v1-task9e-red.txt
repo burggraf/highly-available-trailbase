@@ -1,0 +1,13 @@
+# Task 9E RED evidence
+
+Task 9E is a local contract addition with no pre-existing transport/runtime boundary to exercise. The first implementation was developed against the node-boundary test cases in `rust/src/node_agent.rs`; the retained focused run is `/tmp/task9e-node-agent-test.log` and the full suite is `/tmp/task9e-full-test.log`.
+
+The focused node-boundary command was:
+
+```text
+cargo test --locked --manifest-path rust/Cargo.toml node_agent
+```
+
+The retained output records five node-boundary tests passing after implementation. No native, network, process, restore, fence, or remote effect was used. A pre-implementation behavioral RED log was not retained for this new module; this is recorded as a process limitation rather than fabricated as evidence.
+
+A later mutation check removed the constructor's validation call and reran `observation_constructor_refuses_malformed_local_state`; it failed at `rust/src/node_agent.rs:489` with exit 101 (`/tmp/task9e-red-constructor-mutation.log`), then the validation was restored and the focused test passed (`/tmp/task9e-green-constructor.log`). This confirms the refusal test detects the reviewed defect, but is labeled honestly as post-implementation mutation evidence. The stage remains subject to the active plan's fresh review and gate checks.

@@ -1,0 +1,26 @@
+# Task 9E gates
+
+## Scope
+
+Local-only node boundary contract. The implementation validates bounded strict JSON command/observation envelopes and exact in-memory state binding. No listener, network transport, process spawn/stop, TrailBase/Litestream access, restore, fencing, route publication, forwarding, remote host, or disruptive effect ran.
+
+## Final checks
+
+Source revision: obtain with `git rev-parse HEAD` at the containing Task 9E checkpoint commit.
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Behavioral/refusal evidence | pass with limitation recorded | `docs/reports/v1-task9e-red.txt`; `/tmp/task9e-red-constructor-mutation.log`; `/tmp/task9e-green-constructor.log` |
+| Focused node-boundary tests | pass — 5 tests | `/tmp/task9e-node-agent-test2.log` |
+| Full locked package suite | pass — 68 tests, 0 failures, 0 doctests | `/tmp/task9e-full-test-final.log` |
+| `cargo clippy --locked --all-targets -- -D warnings` | pass | `/tmp/task9e-clippy-final.log` |
+| `cargo fmt --manifest-path rust/Cargo.toml --check` | pass | command exit 0 |
+| `cargo build --release --locked` | pass | `/tmp/task9e-release-final.log` |
+| Release binary SHA-256 | `58a41aae011c164637beee14cb875b5d940bf01feadb198b0627a3f1d5a80522` | `/tmp/task9e-release-sha-final.txt` |
+| `git diff --check` | pass | command exit 0 |
+
+## Coverage
+
+The node-boundary tests cover versioned strict command and observation round trips, duplicate/unknown/oversized input, malformed local observation state, digest mismatch, exact cluster/node/incarnation binding, unknown and stale generation, role/admission mismatch, and valid state binding. The controller digest helper is shared by the node envelope and covers all action identity fields.
+
+No transport, executor, native-effect, deployment, or production-readiness claim is made. The missing pre-implementation RED log is retained as a process limitation; the mutation RED demonstrates the refusal test is meaningful.

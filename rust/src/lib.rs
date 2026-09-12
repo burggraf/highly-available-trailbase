@@ -4,6 +4,7 @@ pub mod controller;
 pub mod fence;
 pub mod journal;
 pub mod node;
+pub mod node_agent;
 pub mod operations;
 pub mod proxy;
 pub mod replication;

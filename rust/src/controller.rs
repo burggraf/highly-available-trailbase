@@ -103,6 +103,33 @@ pub trait ActionAdapter: Send + Sync {
     fn execute(&self, command: &ActionCommand) -> Result<ActionOutcome, ActionAdapterError>;
 }
 
+impl ActionCommand {
+    pub fn derived_digest(&self) -> String {
+        let canonical = serde_json::to_vec(&(
+            "hat-action-v1",
+            &self.cluster_id,
+            &self.controller_node_id,
+            &self.request_id,
+            &self.operation_id,
+            &self.kind,
+            &self.target_node_id,
+            &self.expected_generation,
+            &self.expected_role,
+            &self.expected_admission,
+            self.accept_possible_loss,
+        ))
+        .expect("action digest fields are serializable");
+        Sha256::digest(canonical)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect()
+    }
+
+    pub fn digest_matches(&self) -> bool {
+        self.digest == self.derived_digest()
+    }
+}
+
 struct UnavailableActionAdapter;
 
 impl ActionAdapter for UnavailableActionAdapter {
@@ -892,24 +919,20 @@ fn valid_action_identity(value: &str) -> bool {
 }
 
 fn action_digest(cluster: &ClusterView, body: &ActionRequest) -> String {
-    let canonical = serde_json::to_vec(&(
-        "hat-action-v1",
-        &cluster.cluster_id,
-        &cluster.controller_node_id,
-        &body.request_id,
-        &body.operation_id,
-        &body.kind,
-        &body.target_node_id,
-        &body.expected_generation,
-        &body.expected_role,
-        &body.expected_admission,
-        body.accept_possible_loss,
-    ))
-    .expect("action digest fields are serializable");
-    Sha256::digest(canonical)
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect()
+    ActionCommand {
+        cluster_id: cluster.cluster_id.clone(),
+        controller_node_id: cluster.controller_node_id.clone(),
+        request_id: body.request_id.clone(),
+        operation_id: body.operation_id.clone(),
+        digest: String::new(),
+        kind: body.kind.clone(),
+        target_node_id: body.target_node_id.clone(),
+        expected_generation: body.expected_generation.clone(),
+        expected_role: body.expected_role.clone(),
+        expected_admission: body.expected_admission.clone(),
+        accept_possible_loss: body.accept_possible_loss,
+    }
+    .derived_digest()
 }
 
 fn action_receipt(receipt: OperationReceipt, status: StatusCode) -> Response<Body> {
