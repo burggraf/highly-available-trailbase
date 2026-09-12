@@ -35,6 +35,7 @@ This section is the authoritative restart tracker. Follow [AGENTS.md](../../AGEN
 | Task 9F — local node-forwarding boundary | accepted | In-memory command conversion, observation validation, injected executor dispatch, and refusal tests passed T9F-AC1 through T9F-AC4. Transport, native, remote, backup, fence, and disruptive effects remain out of scope. |
 | Task 9G — local authenticated transport contract | accepted | Bounded token-authenticated framing around the validated node envelope passed T9G-AC1 through T9G-AC4. Persistent listeners, TLS/mTLS, remote, native, process, backup, fence, and disruptive effects remain out of scope. |
 | Task 9H — ephemeral local Unix listener | accepted | One-request local Unix listener passed T9H-AC1 through T9H-AC4. Temporary private-directory socket binding/cleanup and bounded frame delivery are accepted; daemons, persistent listeners, TLS/mTLS, remote, native, process, backup, fence, and disruptive effects remain out of scope. |
+| Task 9I — persistent local Unix listener | in_progress | Owner said continue after the next-boundary choice; the bounded local lifecycle slice is authorized. Explicit bind/receive/shutdown/rebind behavior is in scope; production call sites, daemons, TLS/mTLS, remote, native, process, backup, fence, and disruptive effects remain out of scope. |
 | Task 10 — fault/release qualification | pending | Not authorized; workload, attempt budget and soak approval required. |
 
 ### Task 2 completion contract — approved and accepted
@@ -616,6 +617,17 @@ Design reference: [Task 9H ephemeral listener](2026-09-11-task9h-ephemeral-liste
 | T9H-AC2 | Pre-existing path, bind/I/O failure, truncation, oversized/trailing frame, wrong token, invalid envelope, and invalid nested command refuse without unbounded reads or unrelated cleanup. | `rust/src/local_transport.rs` tests; `docs/reports/v1-task9h-gates.txt` | pass |
 | T9H-AC3 | The helper is one-request/test-only; no daemon, persistent listener, TLS/mTLS, remote/native/process effect, or credential provisioning is introduced. | `docs/reports/v1-task9h-review.txt`; package gates | pass |
 | T9H-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no native-effect claim. | `docs/reports/v1-task9h-*` | pass |
+
+### Task 9I — Persistent local Unix listener — approved for local-only implementation
+
+Design reference: [Task 9I persistent local listener](2026-09-11-task9i-persistent-local-listener-design.md). This slice wraps the bounded Task 9H codec in an explicit private-path lifecycle: bind, repeated receive, shutdown, and rebind. No production call site, daemon/service unit, TLS/mTLS, remote forwarding, native executor, process, restore, fence, route publication, deployment, or disruptive effect is authorized.
+
+| ID | Observable requirement, including refusal cases | Exact check/evidence | Result |
+| --- | --- | --- | --- |
+| T9I-AC1 | A private local listener binds, receives multiple valid authenticated commands, and preserves each validated command. | local listener lifecycle tests; design doc | not_run |
+| T9I-AC2 | Invalid token/parent, bind collision, malformed/oversized/trailing frame, wrong token, invalid envelope/nested command, and cleanup uncertainty refuse safely. | local listener refusal tests | not_run |
+| T9I-AC3 | Explicit shutdown closes the listener, cleans only its verified socket path, and permits a clean rebind; no production call site or external/native effect exists. | lifecycle/rebind tests; package gates | not_run |
+| T9I-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no external-effect claim. | `docs/reports/v1-task9i-*` | not_run |
 
 ### Task 9 — Installable disposable deployment and native acceptance
 
