@@ -6,7 +6,7 @@ Local authenticated transport contract only. The implementation provides bounded
 
 ## Final checks
 
-Source revision: obtain with `git rev-parse HEAD` at the containing Task 9G source checkpoint commit.
+Source revision: `8788290162e197c352c8ddf375a489d98728c923` (Task 9G source checkpoint; later acceptance bookkeeping is docs-only).
 
 | Check | Result | Evidence |
 | --- | --- | --- |
