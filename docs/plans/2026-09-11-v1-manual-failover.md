@@ -34,6 +34,7 @@ This section is the authoritative restart tracker. Follow [AGENTS.md](../../AGEN
 | Task 9E — local node boundary contract | accepted | Local versioned node command/observation envelopes and exact state binding passed T9E-AC1 through T9E-AC4. Transport, executors, process, backup, fence, forwarding, remote, and disruptive effects remain out of scope. |
 | Task 9F — local node-forwarding boundary | accepted | In-memory command conversion, observation validation, injected executor dispatch, and refusal tests passed T9F-AC1 through T9F-AC4. Transport, native, remote, backup, fence, and disruptive effects remain out of scope. |
 | Task 9G — local authenticated transport contract | accepted | Bounded token-authenticated framing around the validated node envelope passed T9G-AC1 through T9G-AC4. Persistent listeners, TLS/mTLS, remote, native, process, backup, fence, and disruptive effects remain out of scope. |
+| Task 9H — ephemeral local Unix listener | in_progress | Owner selected the one-request local Unix listener slice. Temporary socket binding/cleanup and bounded frame delivery are authorized; daemons, persistent listeners, TLS/mTLS, remote, native, process, backup, fence, and disruptive effects remain out of scope. |
 | Task 10 — fault/release qualification | pending | Not authorized; workload, attempt budget and soak approval required. |
 
 ### Task 2 completion contract — approved and accepted
@@ -602,6 +603,17 @@ Design reference: [Task 9G local transport](2026-09-11-task9g-local-transport-de
 | T9G-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no native-effect claim. | `docs/reports/v1-task9g-*` | pass |
 
 **Task 9G handoff:** source/tests are in checkpoint `d36a08f`; final source SHA-256 is `6e8b1046fd2c83983ceac76b0cb6dfe7964b74af4ff7fa1cfddca60a4a01867f`. Final gates are in `docs/reports/v1-task9g-gates.txt`; review `e27f5d33-126b-4e8a-8d12-7df154c0172a` returned PASS. The normal server remains fail-closed and no persistent/native/remote effect ran. The next step requires a separately scoped persistent transport/TLS or native executor decision.
+
+### Task 9H — Ephemeral local Unix listener — approved for local-only implementation
+
+Design reference: [Task 9H ephemeral listener](2026-09-11-task9h-ephemeral-listener-design.md). This slice exercises one bounded authenticated frame through a temporary Unix socket and removes only the socket it successfully created. No daemon, persistent listener, TLS/mTLS, remote forwarding, native executor, process, restore, fence, route publication, deployment, or disruptive effect is authorized.
+
+| ID | Observable requirement, including refusal cases | Exact check/evidence | Result |
+| --- | --- | --- | --- |
+| T9H-AC1 | A one-request Unix listener accepts a valid bounded frame, returns the validated node command, and cleans up its own temporary socket. | local listener unit/socket tests; design doc | not_run |
+| T9H-AC2 | Pre-existing path, bind/I/O failure, truncation, oversized/trailing frame, wrong token, invalid envelope, and invalid nested command refuse without unbounded reads or unrelated cleanup. | local listener refusal tests | not_run |
+| T9H-AC3 | The helper is one-request/test-only; no daemon, persistent listener, TLS/mTLS, remote/native/process effect, or credential provisioning is introduced. | package gates; dashboard tests | not_run |
+| T9H-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no native-effect claim. | `docs/reports/v1-task9h-*` | not_run |
 
 ### Task 9 — Installable disposable deployment and native acceptance
 
