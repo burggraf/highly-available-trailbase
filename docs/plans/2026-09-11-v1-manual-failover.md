@@ -33,7 +33,7 @@ This section is the authoritative restart tracker. Follow [AGENTS.md](../../AGEN
 | Task 9D — local action-adapter contract | accepted | Local typed action identity/outcomes, durable replay/conflict handling, injected fake tests, and refusal-safe default behavior passed T9D-AC1 through T9D-AC4. Native node, backup, fence, forwarding, remote, and disruptive effects remain out of scope. |
 | Task 9E — local node boundary contract | accepted | Local versioned node command/observation envelopes and exact state binding passed T9E-AC1 through T9E-AC4. Transport, executors, process, backup, fence, forwarding, remote, and disruptive effects remain out of scope. |
 | Task 9F — local node-forwarding boundary | accepted | In-memory command conversion, observation validation, injected executor dispatch, and refusal tests passed T9F-AC1 through T9F-AC4. Transport, native, remote, backup, fence, and disruptive effects remain out of scope. |
-| Task 9G — local authenticated transport contract | in_progress | Owner selected the local authenticated transport slice. Bounded token-authenticated framing around the validated node envelope is authorized; persistent listeners, TLS/mTLS, remote, native, process, backup, fence, and disruptive effects remain out of scope. |
+| Task 9G — local authenticated transport contract | accepted | Bounded token-authenticated framing around the validated node envelope passed T9G-AC1 through T9G-AC4. Persistent listeners, TLS/mTLS, remote, native, process, backup, fence, and disruptive effects remain out of scope. |
 | Task 10 — fault/release qualification | pending | Not authorized; workload, attempt budget and soak approval required. |
 
 ### Task 2 completion contract — approved and accepted
@@ -596,10 +596,12 @@ Design reference: [Task 9G local transport](2026-09-11-task9g-local-transport-de
 
 | ID | Observable requirement, including refusal cases | Exact check/evidence | Result |
 | --- | --- | --- | --- |
-| T9G-AC1 | Valid command frames round-trip through bounded length-prefixed local bytes and preserve the validated node command. | local transport unit/socket-pair tests; design doc | not_run |
-| T9G-AC2 | Wrong/short token, truncated/trailing/oversized frame, duplicate/unknown envelope field, unsupported schema, and invalid nested command refuse before a command is returned. | local transport refusal tests | not_run |
-| T9G-AC3 | The normal controller remains unavailable-adapter and no persistent listener, remote/native/process effect, TLS/mTLS, or credential provisioning is introduced. | dashboard tests; package gates | not_run |
-| T9G-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no native-effect claim. | `docs/reports/v1-task9g-*` | not_run |
+| T9G-AC1 | Valid command frames round-trip through bounded length-prefixed local bytes and preserve the validated node command. | `rust/src/local_transport.rs` tests; `docs/reports/v1-task9g-review.txt` | pass |
+| T9G-AC2 | Wrong/short token, truncated/trailing/oversized frame, duplicate/unknown envelope field, unsupported schema, and invalid nested command refuse before a command is returned. | `rust/src/local_transport.rs` tests; `docs/reports/v1-task9g-gates.txt` | pass |
+| T9G-AC3 | The normal controller remains unavailable-adapter and no persistent listener, remote/native/process effect, TLS/mTLS, or credential provisioning is introduced. | `rust/tests/dashboard.rs`; `docs/reports/v1-task9g-review.txt` | pass |
+| T9G-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no native-effect claim. | `docs/reports/v1-task9g-*` | pass |
+
+**Task 9G handoff:** source/tests are in checkpoint `d36a08f`; final source SHA-256 is `6e8b1046fd2c83983ceac76b0cb6dfe7964b74af4ff7fa1cfddca60a4a01867f`. Final gates are in `docs/reports/v1-task9g-gates.txt`; review `e27f5d33-126b-4e8a-8d12-7df154c0172a` returned PASS. The normal server remains fail-closed and no persistent/native/remote effect ran. The next step requires a separately scoped persistent transport/TLS or native executor decision.
 
 ### Task 9 — Installable disposable deployment and native acceptance
 

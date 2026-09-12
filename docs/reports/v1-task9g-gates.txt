@@ -6,17 +6,17 @@ Local authenticated transport contract only. The implementation provides bounded
 
 ## Final checks
 
-Source revision: `8788290162e197c352c8ddf375a489d98728c923` (Task 9G source checkpoint; later acceptance bookkeeping is docs-only).
+Source revision: `d36a08fe81daca739f982550fcf08d189f91d43f` (Task 9G source checkpoint; later acceptance bookkeeping is docs-only).
 
 | Check | Result | Evidence |
 | --- | --- | --- |
 | Behavioral/authentication RED | pass | `docs/reports/v1-task9g-red.txt`; `/tmp/task9g-red-auth.log`; `/tmp/task9g-green-transport.log` |
-| Focused transport tests | pass — 4 tests | `/tmp/task9g-transport-test.log` |
-| Full locked package suite | pass — 73 tests, 0 failures, 0 doctests | `/tmp/task9g-full-test.log` |
-| `cargo clippy --locked --all-targets -- -D warnings` | pass | `/tmp/task9g-clippy.log` |
+| Focused transport tests | pass — 4 tests, including schema-version refusal | `/tmp/task9g-transport-test2.log` |
+| Full locked package suite | pass — 73 tests, 0 failures, 0 doctests | `/tmp/task9g-full-test-final.log` |
+| `cargo clippy --locked --all-targets -- -D warnings` | pass | `/tmp/task9g-clippy-final.log` |
 | `cargo fmt --manifest-path rust/Cargo.toml --check` | pass | command exit 0 |
-| `cargo build --release --locked` | pass | `/tmp/task9g-release.log` |
-| Release binary SHA-256 | `6e8b1046fd2c83983ceac76b0cb6dfe7964b74af4ff7fa1cfddca60a4a01867f` | `/tmp/task9g-release-sha.txt` |
+| `cargo build --release --locked` | pass | `/tmp/task9g-release-final.log` |
+| Release binary SHA-256 | `6e8b1046fd2c83983ceac76b0cb6dfe7964b74af4ff7fa1cfddca60a4a01867f` | `/tmp/task9g-release-sha-final.txt` |
 | `git diff --check` | pass | command exit 0 |
 
 ## Coverage

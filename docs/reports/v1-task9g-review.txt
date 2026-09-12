@@ -1,0 +1,17 @@
+# Task 9G review record
+
+## Review sequence
+
+1. Fresh read-only review `bb2e626b-7d6c-41ce-9310-0a923a3c7ee6` returned BLOCK because the implemented unsupported-schema refusal had no direct regression assertion. The `schema_version: 2` refusal test was added, focused/full gates were rerun, and the source checkpoint advanced to `d36a08fe81daca739f982550fcf08d189f91d43f`.
+2. Final read-only review `e27f5d33-126b-4e8a-8d12-7df154c0172a` returned PASS. It confirmed direct schema-version coverage, bounded framing/authentication, nested validation, Unix socket-pair coverage, final gate evidence, and no native effect.
+
+## Criterion review
+
+- T9G-AC1: pass — valid length-prefixed frames round-trip through the local byte boundary and preserve the validated node command.
+- T9G-AC2: pass — wrong/short tokens, truncation, trailing bytes, oversized frames, duplicate/unknown fields, unsupported schema, and invalid nested commands refuse.
+- T9G-AC3: pass — the normal controller remains unavailable-adapter; no persistent listener, TLS/mTLS, credential provisioning, remote/native/process effect exists.
+- T9G-AC4: pass — RED, 73-test locked suite, Clippy, fmt, locked release, SHA-256, diff check, docs, and final PASS review are retained.
+
+## Residual risks
+
+This is a local framing contract only. It does not authenticate a production peer identity, establish TLS/mTLS, open a persistent listener, forward remotely, execute native actions, or qualify deployment.
