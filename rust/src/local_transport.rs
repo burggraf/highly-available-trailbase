@@ -1,6 +1,6 @@
 use crate::{
     config::reject_duplicate_keys,
-    controller::{ActionAdapterError, ActionOutcome},
+    controller::{ActionAdapter, ActionAdapterError, ActionCommand, ActionOutcome},
     node_agent::{NodeActionCommand, NodeBoundaryError, NodeExecutor},
 };
 use serde::{Deserialize, Serialize};
@@ -278,6 +278,52 @@ pub enum LocalExecutionError {
 pub enum LocalRequesterError {
     Io,
     Transport(TransportError),
+}
+
+#[cfg(unix)]
+pub struct LocalActionAdapter {
+    path: std::path::PathBuf,
+    peer_token: String,
+    incarnation: String,
+}
+
+#[cfg(unix)]
+impl LocalActionAdapter {
+    pub fn new(
+        path: &Path,
+        peer_token: &str,
+        incarnation: &str,
+    ) -> Result<Self, ActionAdapterError> {
+        if !valid_token(peer_token)
+            || incarnation.is_empty()
+            || incarnation.len() > MAX_TOKEN
+            || !incarnation.bytes().all(|byte| byte.is_ascii_graphic())
+        {
+            return Err(ActionAdapterError::Refused);
+        }
+        Ok(Self {
+            path: path.to_path_buf(),
+            peer_token: peer_token.to_owned(),
+            incarnation: incarnation.to_owned(),
+        })
+    }
+}
+
+#[cfg(unix)]
+impl ActionAdapter for LocalActionAdapter {
+    fn available(&self) -> bool {
+        true
+    }
+
+    fn execute(&self, command: &ActionCommand) -> Result<ActionOutcome, ActionAdapterError> {
+        let node_command = NodeActionCommand::from_controller(command, &self.incarnation)
+            .map_err(|_| ActionAdapterError::Refused)?;
+        match request_once(&self.path, &self.peer_token, &node_command) {
+            Ok(Ok(outcome)) => Ok(outcome),
+            Ok(Err(error)) => Err(error),
+            Err(_) => Err(ActionAdapterError::Uncertain),
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -708,6 +754,55 @@ mod tests {
         assert_eq!(server.join().unwrap(), (Ok(()), Ok(())));
         assert!(!path.exists());
         std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_action_adapter_preserves_outcome_and_uncertainty() {
+        use std::thread;
+
+        struct FailedSafeExecutor;
+
+        impl NodeExecutor for FailedSafeExecutor {
+            fn execute(
+                &self,
+                _command: &NodeActionCommand,
+            ) -> Result<ActionOutcome, ActionAdapterError> {
+                Ok(ActionOutcome::FailedSafe)
+            }
+        }
+
+        let (directory, path) = private_socket_path("adapter");
+        let listener = LocalUnixListener::bind(&path, TOKEN).unwrap();
+        let server = thread::spawn(move || {
+            let result = listener.receive_and_respond(&FailedSafeExecutor);
+            let cleanup = listener.shutdown();
+            (result, cleanup)
+        });
+        let adapter = LocalActionAdapter::new(&path, TOKEN, INCARNATION).unwrap();
+        assert!(adapter.available());
+        assert_eq!(
+            adapter.execute(&command().to_action_command()),
+            Ok(ActionOutcome::FailedSafe)
+        );
+        assert_eq!(server.join().unwrap(), (Ok(()), Ok(())));
+        assert!(!path.exists());
+        std::fs::remove_dir(directory).unwrap();
+
+        let (directory, path) = private_socket_path("uncertain-adapter");
+        std::fs::remove_dir(&directory).unwrap();
+        let adapter = LocalActionAdapter::new(&path, TOKEN, INCARNATION).unwrap();
+        assert_eq!(
+            adapter.execute(&command().to_action_command()),
+            Err(ActionAdapterError::Uncertain)
+        );
+        let mut invalid = command().to_action_command();
+        invalid.digest = "invalid".into();
+        assert_eq!(adapter.execute(&invalid), Err(ActionAdapterError::Refused));
+        assert!(matches!(
+            LocalActionAdapter::new(&path, "short", INCARNATION),
+            Err(ActionAdapterError::Refused)
+        ));
     }
 
     #[cfg(unix)]
