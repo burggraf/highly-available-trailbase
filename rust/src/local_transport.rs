@@ -408,6 +408,19 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn shutdown_refuses_a_replaced_socket_path() {
+        let (directory, path) = private_socket_path("replace");
+        let listener = LocalUnixListener::bind(&path, TOKEN).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, b"replacement").unwrap();
+        assert_eq!(listener.shutdown(), Err(TransportError::Io));
+        assert_eq!(std::fs::read(&path).unwrap(), b"replacement");
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn ephemeral_listener_accepts_one_frame_and_cleans_its_path() {
         use std::{io::Write, os::unix::net::UnixStream, thread, time::Duration};
 
