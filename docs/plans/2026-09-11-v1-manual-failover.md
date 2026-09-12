@@ -31,7 +31,7 @@ This section is the authoritative restart tracker. Follow [AGENTS.md](../../AGEN
 | Task 9 — deployment/native acceptance | in_progress | Local artifact/contract subset T9-AC1 through T9-AC5 passed; owner authorized one bounded disposable VPS E2E cycle and a temporary remote UI demo. Further cycles, permanent deployment, and unsupported/provider effects remain separately gated. |
 | Task 9C — cluster console/authority slice | accepted | Local console/status/authority slice accepted: the configured `controller_node` plus local node identity selects the sole mutation authority; all other dashboards are read-only, observations stay unknown until supplied, and native actions refuse safely. Remote process/backup/fence execution remains the next native slice. |
 | Task 9D — local action-adapter contract | accepted | Local typed action identity/outcomes, durable replay/conflict handling, injected fake tests, and refusal-safe default behavior passed T9D-AC1 through T9D-AC4. Native node, backup, fence, forwarding, remote, and disruptive effects remain out of scope. |
-| Task 9E — local node boundary contract | in_progress | Owner said continue. Versioned node command/observation envelopes and exact local state binding are authorized; transport, executors, process, backup, fence, forwarding, remote, and disruptive effects remain out of scope. |
+| Task 9E — local node boundary contract | accepted | Local versioned node command/observation envelopes and exact state binding passed T9E-AC1 through T9E-AC4. Transport, executors, process, backup, fence, forwarding, remote, and disruptive effects remain out of scope. |
 | Task 10 — fault/release qualification | pending | Not authorized; workload, attempt budget and soak approval required. |
 
 ### Task 2 completion contract — approved and accepted
@@ -568,10 +568,12 @@ Design reference: [Task 9E node boundary contract](2026-09-11-task9e-node-bounda
 
 | ID | Observable requirement, including refusal cases | Exact check/evidence | Result |
 | --- | --- | --- | --- |
-| T9E-AC1 | Node action commands and observations have bounded, versioned, strict JSON wire forms; duplicate keys, unknown fields, oversized input, malformed identities, and unsupported schema are refused. | `rust/src/node_agent.rs` unit tests; `docs/reports/v1-task9e-*` | not_run |
-| T9E-AC2 | A command binds cluster, controller, node, incarnation, operation/request identity, digest, kind, exact generation, expected role/admission, and loss policy; digest and all fields are validated before execution can be considered. | node-boundary unit tests; design doc | not_run |
-| T9E-AC3 | A local observation binds cluster/node/incarnation and explicitly distinguishes unknown generation; stale, mismatched, unknown, or changed role/admission state refuses. | node-boundary unit tests | not_run |
-| T9E-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no native-effect claim. | `docs/reports/v1-task9e-*` | not_run |
+| T9E-AC1 | Node action commands and observations have bounded, versioned, strict JSON wire forms; duplicate keys, unknown fields, oversized input, malformed identities, and unsupported schema are refused. | `rust/src/node_agent.rs` tests; `docs/reports/v1-task9e-gates.txt` | pass |
+| T9E-AC2 | A command binds cluster, controller, node, incarnation, operation/request identity, digest, kind, exact generation, expected role/admission, and loss policy; digest and all fields are validated before execution can be considered. | `rust/src/node_agent.rs`, `rust/src/controller.rs`, `docs/reports/v1-task9e-review.txt` | pass |
+| T9E-AC3 | A local observation binds cluster/node/incarnation and explicitly distinguishes unknown generation; stale, mismatched, unknown, or changed role/admission state refuses. | `rust/src/node_agent.rs` tests; `docs/reports/v1-task9e-review.txt` | pass |
+| T9E-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no native-effect claim. | `docs/reports/v1-task9e-*` | pass |
+
+**Task 9E handoff:** source/tests are in checkpoint `d412464`; final source SHA-256 is `58a41aae011c164637beee14cb875b5d940bf01feadb198b0627a3f1d5a80522`. Final package gates are in `docs/reports/v1-task9e-gates.txt`. Review `25b397a0-1abb-49cc-9bc6-0d41a87bff2f` found no implementation defect; its bookkeeping blockers were fixed in the follow-up docs checkpoint. The pre-implementation RED limitation remains honestly recorded; no native effect ran. The next safe step is a separately scoped transport/executor decision.
 
 ### Task 9 — Installable disposable deployment and native acceptance
 

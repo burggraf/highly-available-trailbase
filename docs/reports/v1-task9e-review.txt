@@ -1,0 +1,18 @@
+# Task 9E review record
+
+## Review sequence
+
+1. Fresh read-only review `38e50d36-4726-4aca-9e75-d79d046cedba` returned BLOCK because the implementation lacked recorded Task 9E gates/review evidence and `NodeObservation::from_node` did not self-validate malformed local state.
+2. The constructor now validates before returning, and final 68-test/clippy/fmt/release/diff evidence is retained in `docs/reports/v1-task9e-gates.txt`. Review `25b397a0-1abb-49cc-9bc6-0d41a87bff2f` found no implementation defect but returned BLOCK for the then-pending authoritative plan results and missing source revision. Those bookkeeping findings were corrected in the docs-only acceptance checkpoint.
+3. Final evidence-only review after the bookkeeping corrections is pending; record its run ID and PASS verdict here before treating Task 9E as accepted.
+
+## Criterion review
+
+- T9E-AC1: pass — strict, bounded, versioned command/observation JSON rejects duplicate/unknown/oversized/malformed input.
+- T9E-AC2: pass — command fields and shared versioned digest are validated before a command can bind to a node.
+- T9E-AC3: pass — local observations self-validate and command binding refuses unknown/stale generation, identity, role, and admission mismatches.
+- T9E-AC4: pending final evidence-only review; the gate report, source checkpoint, limitation record, and implementation review are retained.
+
+## Residual risks
+
+This remains a library-only boundary. No listener, transport, executor, process control, observation transport, backup/restore, fencing, route publication, remote forwarding, deployment, or native/disruptive effect exists or was run. The missing pre-implementation RED log is explicitly retained as a process limitation; mutation RED and green evidence demonstrate the malformed-state refusal test.

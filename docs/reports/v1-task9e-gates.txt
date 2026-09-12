@@ -6,7 +6,7 @@ Local-only node boundary contract. The implementation validates bounded strict J
 
 ## Final checks
 
-Source revision: obtain with `git rev-parse HEAD` at the containing Task 9E checkpoint commit.
+Source revision: `d4124649e9b5cacaf15cc30e925a70f65ca9a27f` (Task 9E source checkpoint; later docs-only acceptance updates do not change the tested source).
 
 | Check | Result | Evidence |
 | --- | --- | --- |
