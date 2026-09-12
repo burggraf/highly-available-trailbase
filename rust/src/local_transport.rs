@@ -6,7 +6,7 @@ use crate::{
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
 use std::{
-    io::{ErrorKind, Read},
+    io::{ErrorKind, Read, Write},
     os::unix::{
         fs::{FileTypeExt, MetadataExt},
         net::{UnixListener, UnixStream},
@@ -48,6 +48,85 @@ struct EncodedEnvelope<'a> {
     command: &'a str,
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireResponse {
+    schema_version: u8,
+    result: String,
+}
+
+#[derive(Serialize)]
+struct EncodedResponse<'a> {
+    schema_version: u8,
+    result: &'a str,
+}
+
+pub fn encode_response(
+    result: Result<ActionOutcome, ActionAdapterError>,
+) -> Result<Vec<u8>, TransportError> {
+    let result = match result {
+        Ok(ActionOutcome::Succeeded) => "succeeded",
+        Ok(ActionOutcome::FailedSafe) => "failed_safe",
+        Ok(ActionOutcome::Uncertain) | Err(ActionAdapterError::Uncertain) => "uncertain",
+        Err(ActionAdapterError::Unavailable | ActionAdapterError::Refused) => "refused",
+    };
+    let payload = serde_json::to_vec(&EncodedResponse {
+        schema_version: SCHEMA_VERSION,
+        result,
+    })
+    .map_err(|_| TransportError::InvalidEnvelope)?;
+    frame_payload(&payload)
+}
+
+pub fn decode_response(
+    frame: &[u8],
+) -> Result<Result<ActionOutcome, ActionAdapterError>, TransportError> {
+    let payload = frame_payload_slice(frame)?;
+    let text = std::str::from_utf8(payload).map_err(|_| TransportError::InvalidFrame)?;
+    reject_duplicate_keys(text).map_err(|_| TransportError::InvalidEnvelope)?;
+    let response: WireResponse =
+        serde_json::from_str(text).map_err(|_| TransportError::InvalidEnvelope)?;
+    if response.schema_version != SCHEMA_VERSION {
+        return Err(TransportError::UnsupportedSchema);
+    }
+    match response.result.as_str() {
+        "succeeded" => Ok(Ok(ActionOutcome::Succeeded)),
+        "failed_safe" => Ok(Ok(ActionOutcome::FailedSafe)),
+        "uncertain" => Ok(Err(ActionAdapterError::Uncertain)),
+        "refused" => Ok(Err(ActionAdapterError::Refused)),
+        _ => Err(TransportError::InvalidEnvelope),
+    }
+}
+
+fn frame_payload(payload: &[u8]) -> Result<Vec<u8>, TransportError> {
+    if payload.len() > FRAME_LIMIT {
+        return Err(TransportError::TooLarge);
+    }
+    let length = u32::try_from(payload.len()).map_err(|_| TransportError::TooLarge)?;
+    let mut frame = Vec::with_capacity(4 + payload.len());
+    frame.extend_from_slice(&length.to_be_bytes());
+    frame.extend_from_slice(payload);
+    Ok(frame)
+}
+
+fn frame_payload_slice(frame: &[u8]) -> Result<&[u8], TransportError> {
+    if frame.len() < 4 {
+        return Err(TransportError::Truncated);
+    }
+    let length = u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize;
+    if length > FRAME_LIMIT {
+        return Err(TransportError::TooLarge);
+    }
+    let end = 4usize.checked_add(length).ok_or(TransportError::TooLarge)?;
+    if frame.len() < end {
+        return Err(TransportError::Truncated);
+    }
+    if frame.len() > end {
+        return Err(TransportError::TrailingBytes);
+    }
+    Ok(&frame[4..end])
+}
+
 pub fn encode_frame(
     peer_token: &str,
     command: &NodeActionCommand,
@@ -65,14 +144,7 @@ pub fn encode_frame(
         command: &command_wire,
     })
     .map_err(|_| TransportError::InvalidEnvelope)?;
-    if envelope.len() > FRAME_LIMIT {
-        return Err(TransportError::TooLarge);
-    }
-    let length = u32::try_from(envelope.len()).map_err(|_| TransportError::TooLarge)?;
-    let mut frame = Vec::with_capacity(4 + envelope.len());
-    frame.extend_from_slice(&length.to_be_bytes());
-    frame.extend_from_slice(&envelope);
-    Ok(frame)
+    frame_payload(&envelope)
 }
 
 pub fn decode_frame(
@@ -82,21 +154,7 @@ pub fn decode_frame(
     if !valid_token(expected_token) {
         return Err(TransportError::InvalidToken);
     }
-    if frame.len() < 4 {
-        return Err(TransportError::Truncated);
-    }
-    let length = u32::from_be_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize;
-    if length > FRAME_LIMIT {
-        return Err(TransportError::TooLarge);
-    }
-    let end = 4usize.checked_add(length).ok_or(TransportError::TooLarge)?;
-    if frame.len() < end {
-        return Err(TransportError::Truncated);
-    }
-    if frame.len() > end {
-        return Err(TransportError::TrailingBytes);
-    }
-    let payload = &frame[4..end];
+    let payload = frame_payload_slice(frame)?;
     let text = std::str::from_utf8(payload).map_err(|_| TransportError::InvalidFrame)?;
     reject_duplicate_keys(text).map_err(|_| TransportError::InvalidEnvelope)?;
     let envelope: WireEnvelope =
@@ -149,19 +207,44 @@ impl LocalUnixListener {
     }
 
     pub fn receive(&self) -> Result<NodeActionCommand, TransportError> {
-        let (mut stream, _) = self.listener.accept().map_err(|_| TransportError::Io)?;
-        let frame = read_one_frame(&mut stream)?;
-        decode_frame(&frame, &self.expected_token)
+        Ok(self.accept_command()?.1)
     }
 
     pub fn receive_and_execute(
         &self,
         executor: &dyn NodeExecutor,
     ) -> Result<ActionOutcome, LocalExecutionError> {
-        let command = self.receive().map_err(LocalExecutionError::Transport)?;
+        let command = self
+            .accept_command()
+            .map_err(LocalExecutionError::Transport)?
+            .1;
         executor
             .execute(&command)
             .map_err(LocalExecutionError::Executor)
+    }
+
+    pub fn receive_and_respond(
+        &self,
+        executor: &dyn NodeExecutor,
+    ) -> Result<(), LocalExecutionError> {
+        let (mut stream, command) = self
+            .accept_command()
+            .map_err(LocalExecutionError::Transport)?;
+        let response =
+            encode_response(executor.execute(&command)).map_err(LocalExecutionError::Transport)?;
+        stream
+            .write_all(&response)
+            .map_err(|_| LocalExecutionError::Transport(TransportError::Io))
+    }
+
+    fn accept_command(&self) -> Result<(UnixStream, NodeActionCommand), TransportError> {
+        let (mut stream, _) = self.listener.accept().map_err(|_| TransportError::Io)?;
+        let frame = read_one_frame(&mut stream)?;
+        stream
+            .set_nonblocking(false)
+            .map_err(|_| TransportError::Io)?;
+        let command = decode_frame(&frame, &self.expected_token)?;
+        Ok((stream, command))
     }
 
     pub fn shutdown(mut self) -> Result<(), TransportError> {
@@ -429,6 +512,142 @@ mod tests {
         );
         client.join().unwrap();
         assert_eq!(executor.calls.lock().unwrap().as_slice(), &[command()]);
+        listener.shutdown().unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[test]
+    fn response_codec_preserves_bounded_results() {
+        let cases = [
+            (Ok(ActionOutcome::Succeeded), Ok(ActionOutcome::Succeeded)),
+            (Ok(ActionOutcome::FailedSafe), Ok(ActionOutcome::FailedSafe)),
+            (
+                Ok(ActionOutcome::Uncertain),
+                Err(ActionAdapterError::Uncertain),
+            ),
+            (
+                Err(ActionAdapterError::Uncertain),
+                Err(ActionAdapterError::Uncertain),
+            ),
+            (
+                Err(ActionAdapterError::Refused),
+                Err(ActionAdapterError::Refused),
+            ),
+        ];
+        for (input, expected) in cases {
+            let frame = encode_response(input).unwrap();
+            assert_eq!(decode_response(&frame).unwrap(), expected);
+        }
+        let unknown = raw_frame(br#"{"schema_version":1,"result":"other"}"#);
+        assert_eq!(
+            decode_response(&unknown),
+            Err(TransportError::InvalidEnvelope)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn listener_writes_executor_response_frame() {
+        use std::{
+            io::{Read, Write},
+            os::unix::net::UnixStream,
+            thread,
+            time::Duration,
+        };
+
+        struct FailedSafeExecutor;
+
+        impl NodeExecutor for FailedSafeExecutor {
+            fn execute(
+                &self,
+                _command: &NodeActionCommand,
+            ) -> Result<ActionOutcome, ActionAdapterError> {
+                Ok(ActionOutcome::FailedSafe)
+            }
+        }
+
+        let (directory, path) = private_socket_path("response");
+        let listener = LocalUnixListener::bind(&path, TOKEN).unwrap();
+        let client_path = path.clone();
+        let client = thread::spawn(move || {
+            let mut connected = None;
+            for _ in 0..100 {
+                match UnixStream::connect(&client_path) {
+                    Ok(stream) => {
+                        connected = Some(stream);
+                        break;
+                    }
+                    Err(_) => thread::sleep(Duration::from_millis(5)),
+                }
+            }
+            let mut stream = connected.expect("listener did not accept connections");
+            stream
+                .write_all(&encode_frame(TOKEN, &command()).unwrap())
+                .unwrap();
+            stream.shutdown(std::net::Shutdown::Write).unwrap();
+            let mut response = Vec::new();
+            stream.read_to_end(&mut response).unwrap();
+            response
+        });
+        listener.receive_and_respond(&FailedSafeExecutor).unwrap();
+        let response = client.join().unwrap();
+        assert_eq!(
+            decode_response(&response).unwrap(),
+            Ok(ActionOutcome::FailedSafe)
+        );
+        listener.shutdown().unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn transport_refusal_writes_no_response() {
+        use std::{
+            io::{Read, Write},
+            os::unix::net::UnixStream,
+            thread,
+            time::Duration,
+        };
+
+        struct SucceededExecutor;
+
+        impl NodeExecutor for SucceededExecutor {
+            fn execute(
+                &self,
+                _command: &NodeActionCommand,
+            ) -> Result<ActionOutcome, ActionAdapterError> {
+                Ok(ActionOutcome::Succeeded)
+            }
+        }
+
+        let (directory, path) = private_socket_path("no-response");
+        let listener = LocalUnixListener::bind(&path, TOKEN).unwrap();
+        let client_path = path.clone();
+        let client = thread::spawn(move || {
+            let mut connected = None;
+            for _ in 0..100 {
+                match UnixStream::connect(&client_path) {
+                    Ok(stream) => {
+                        connected = Some(stream);
+                        break;
+                    }
+                    Err(_) => thread::sleep(Duration::from_millis(5)),
+                }
+            }
+            let mut stream = connected.expect("listener did not accept connections");
+            stream
+                .write_all(&encode_frame("wrong-token-012345", &command()).unwrap())
+                .unwrap();
+            stream.shutdown(std::net::Shutdown::Write).unwrap();
+            let mut response = Vec::new();
+            stream.read_to_end(&mut response).unwrap();
+            response
+        });
+        assert_eq!(
+            listener.receive_and_respond(&SucceededExecutor),
+            Err(LocalExecutionError::Transport(TransportError::Unauthorized))
+        );
+        assert!(client.join().unwrap().is_empty());
         listener.shutdown().unwrap();
         std::fs::remove_dir(directory).unwrap();
     }
