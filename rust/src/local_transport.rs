@@ -1,6 +1,7 @@
 use crate::{
     config::reject_duplicate_keys,
-    node_agent::{NodeActionCommand, NodeBoundaryError},
+    controller::{ActionAdapterError, ActionOutcome},
+    node_agent::{NodeActionCommand, NodeBoundaryError, NodeExecutor},
 };
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]
@@ -153,6 +154,16 @@ impl LocalUnixListener {
         decode_frame(&frame, &self.expected_token)
     }
 
+    pub fn receive_and_execute(
+        &self,
+        executor: &dyn NodeExecutor,
+    ) -> Result<ActionOutcome, LocalExecutionError> {
+        let command = self.receive().map_err(LocalExecutionError::Transport)?;
+        executor
+            .execute(&command)
+            .map_err(LocalExecutionError::Executor)
+    }
+
     pub fn shutdown(mut self) -> Result<(), TransportError> {
         let result = self.cleanup();
         self.closed = true;
@@ -171,6 +182,12 @@ impl LocalUnixListener {
             _ => Err(TransportError::Io),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalExecutionError {
+    Transport(TransportError),
+    Executor(ActionAdapterError),
 }
 
 #[cfg(unix)]
@@ -362,6 +379,157 @@ mod tests {
             decode_frame(&invalid_command, TOKEN),
             Err(TransportError::Command(NodeBoundaryError::InvalidWire))
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn authenticated_transport_dispatches_to_injected_executor_once() {
+        use std::{io::Write, os::unix::net::UnixStream, sync::Mutex, thread, time::Duration};
+
+        struct RecordingExecutor {
+            calls: Mutex<Vec<NodeActionCommand>>,
+        }
+
+        impl NodeExecutor for RecordingExecutor {
+            fn execute(
+                &self,
+                command: &NodeActionCommand,
+            ) -> Result<ActionOutcome, ActionAdapterError> {
+                self.calls.lock().unwrap().push(command.clone());
+                Ok(ActionOutcome::Succeeded)
+            }
+        }
+
+        let (directory, path) = private_socket_path("exec");
+        let listener = LocalUnixListener::bind(&path, TOKEN).unwrap();
+        let client_path = path.clone();
+        let client = thread::spawn(move || {
+            let mut connected = None;
+            for _ in 0..100 {
+                match UnixStream::connect(&client_path) {
+                    Ok(stream) => {
+                        connected = Some(stream);
+                        break;
+                    }
+                    Err(_) => thread::sleep(Duration::from_millis(5)),
+                }
+            }
+            let mut stream = connected.expect("listener did not accept connections");
+            stream
+                .write_all(&encode_frame(TOKEN, &command()).unwrap())
+                .unwrap();
+            stream.shutdown(std::net::Shutdown::Write).unwrap();
+        });
+        let executor = RecordingExecutor {
+            calls: Mutex::new(Vec::new()),
+        };
+        assert_eq!(
+            listener.receive_and_execute(&executor),
+            Ok(ActionOutcome::Succeeded)
+        );
+        client.join().unwrap();
+        assert_eq!(executor.calls.lock().unwrap().as_slice(), &[command()]);
+        listener.shutdown().unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn transport_refusal_happens_before_executor_invocation() {
+        use std::{
+            io::Write,
+            os::unix::net::UnixStream,
+            sync::atomic::{AtomicUsize, Ordering},
+            thread,
+            time::Duration,
+        };
+
+        struct CountingExecutor(AtomicUsize);
+
+        impl NodeExecutor for CountingExecutor {
+            fn execute(
+                &self,
+                _command: &NodeActionCommand,
+            ) -> Result<ActionOutcome, ActionAdapterError> {
+                self.0.fetch_add(1, Ordering::Relaxed);
+                Ok(ActionOutcome::Succeeded)
+            }
+        }
+
+        let (directory, path) = private_socket_path("auth");
+        let listener = LocalUnixListener::bind(&path, TOKEN).unwrap();
+        let client_path = path.clone();
+        let client = thread::spawn(move || {
+            let mut connected = None;
+            for _ in 0..100 {
+                match UnixStream::connect(&client_path) {
+                    Ok(stream) => {
+                        connected = Some(stream);
+                        break;
+                    }
+                    Err(_) => thread::sleep(Duration::from_millis(5)),
+                }
+            }
+            let mut stream = connected.expect("listener did not accept connections");
+            stream
+                .write_all(&encode_frame("wrong-token-012345", &command()).unwrap())
+                .unwrap();
+            stream.shutdown(std::net::Shutdown::Write).unwrap();
+        });
+        let executor = CountingExecutor(AtomicUsize::new(0));
+        assert_eq!(
+            listener.receive_and_execute(&executor),
+            Err(LocalExecutionError::Transport(TransportError::Unauthorized))
+        );
+        client.join().unwrap();
+        assert_eq!(executor.0.load(Ordering::Relaxed), 0);
+        listener.shutdown().unwrap();
+        std::fs::remove_dir(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn executor_uncertainty_is_preserved() {
+        use std::{io::Write, os::unix::net::UnixStream, thread, time::Duration};
+
+        struct UncertainExecutor;
+
+        impl NodeExecutor for UncertainExecutor {
+            fn execute(
+                &self,
+                _command: &NodeActionCommand,
+            ) -> Result<ActionOutcome, ActionAdapterError> {
+                Err(ActionAdapterError::Uncertain)
+            }
+        }
+
+        let (directory, path) = private_socket_path("uncertain");
+        let listener = LocalUnixListener::bind(&path, TOKEN).unwrap();
+        let client_path = path.clone();
+        let client = thread::spawn(move || {
+            let mut connected = None;
+            for _ in 0..100 {
+                match UnixStream::connect(&client_path) {
+                    Ok(stream) => {
+                        connected = Some(stream);
+                        break;
+                    }
+                    Err(_) => thread::sleep(Duration::from_millis(5)),
+                }
+            }
+            let mut stream = connected.expect("listener did not accept connections");
+            stream
+                .write_all(&encode_frame(TOKEN, &command()).unwrap())
+                .unwrap();
+            stream.shutdown(std::net::Shutdown::Write).unwrap();
+        });
+        assert_eq!(
+            listener.receive_and_execute(&UncertainExecutor),
+            Err(LocalExecutionError::Executor(ActionAdapterError::Uncertain))
+        );
+        client.join().unwrap();
+        listener.shutdown().unwrap();
+        std::fs::remove_dir(directory).unwrap();
     }
 
     #[cfg(unix)]
