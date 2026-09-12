@@ -16,6 +16,7 @@ pub struct Config {
     schema_version: u8,
     cluster_id: String,
     primary: String,
+    controller_node: String,
     state_dir: String,
     replica_reads: bool,
     required_databases: Vec<String>,
@@ -58,6 +59,7 @@ struct RawConfig {
     schema_version: u8,
     cluster_id: String,
     primary: String,
+    controller_node: String,
     state_dir: String,
     replica_reads: bool,
     required_databases: Vec<String>,
@@ -124,6 +126,9 @@ impl Config {
         if !node_ids.contains(&raw.primary) {
             return Err(ConfigError::InvalidValue("primary"));
         }
+        if !node_ids.contains(&raw.controller_node) {
+            return Err(ConfigError::InvalidValue("controller_node"));
+        }
 
         let mut databases = HashSet::new();
         if raw
@@ -140,6 +145,7 @@ impl Config {
             schema_version: raw.schema_version,
             cluster_id: raw.cluster_id,
             primary: raw.primary,
+            controller_node: raw.controller_node,
             state_dir: raw.state_dir,
             replica_reads: raw.replica_reads,
             required_databases: raw.required_databases,
@@ -157,6 +163,10 @@ impl Config {
 
     pub fn primary_node_id(&self) -> &str {
         &self.primary
+    }
+
+    pub fn controller_node_id(&self) -> &str {
+        &self.controller_node
     }
 
     pub fn state_dir(&self) -> &str {
@@ -368,6 +378,7 @@ mod tests {
             "schema_version": 1,
             "cluster_id": "00000000-0000-4000-8000-000000000001",
             "primary": "node-a",
+            "controller_node": "node-b",
             "state_dir": "/var/lib/hat/controller",
             "replica_reads": false,
             "required_databases": ["main", "session", "aux"],
@@ -382,6 +393,7 @@ mod tests {
     fn accepts_the_v1_configuration_shape() {
         let config = Config::from_json(valid_config()).expect("valid config");
         assert_eq!(config.primary_node_id(), "node-a");
+        assert_eq!(config.controller_node_id(), "node-b");
         assert_eq!(config.required_databases(), &["main", "session", "aux"]);
     }
 
@@ -397,6 +409,15 @@ mod tests {
     #[test]
     fn rejects_unknown_primary() {
         let config = valid_config().replace("\"primary\": \"node-a\"", "\"primary\": \"node-z\"");
+        assert!(Config::from_json(&config).is_err());
+    }
+
+    #[test]
+    fn rejects_unknown_controller_node() {
+        let config = valid_config().replace(
+            "\"controller_node\": \"node-b\"",
+            "\"controller_node\": \"node-z\"",
+        );
         assert!(Config::from_json(&config).is_err());
     }
 

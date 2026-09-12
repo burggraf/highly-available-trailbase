@@ -1,0 +1,42 @@
+# Task 9C gates and evidence
+
+## Scope
+
+This checkpoint covers only the local Rust console/status/authority/refusal slice and its temporary SSH-only dashboard demonstration. It does not claim native node control, TrailBase/Litestream restore, provider fencing, public HTTPS, permanent deployment, or production readiness.
+
+## Source and dirty scope
+
+- Branch: `main`.
+- Source revision: obtain with `git rev-parse HEAD` at the containing checkpoint commit.
+- Task-owned files: `README.md`, `deploy/v1/config.example.json`, `docs/plans/2026-09-11-v1-manual-failover.md`, `docs/status.md`, `docs/v1-contract.md`, `docs/v1-runbook.md`, `rust/README.md`, `rust/src/config.rs`, `rust/src/controller.rs`, `rust/src/main.rs`, `rust/src/replication.rs`, `rust/src/routing.rs`, `rust/tests/cli.rs`, `rust/tests/dashboard.rs`, `rust/tests/operations.rs`, and `rust/tests/proxy.rs`, plus the `v1-task9c-*` reports. Historical Python/deployment files were not changed.
+
+## Behavioral RED
+
+- `cargo test --manifest-path rust/Cargo.toml --test dashboard` initially failed with exit 101 before the dashboard implementation; retained in `docs/reports/v1-task9c-red.txt` and `/tmp/task9c-red-dashboard.log`.
+
+## Local gates
+
+- Focused dashboard suite: `cargo test --locked --manifest-path rust/Cargo.toml --test dashboard -- --test-threads=1` — exit 0, 3 passed (`/tmp/task9c-dashboard-final4.log`).
+- Final package suite: `cargo test --locked --manifest-path rust/Cargo.toml` — exit 0, 61 tests passed across the package and 0 doctests (`proc_f632` retained process output).
+- Clippy: `cargo clippy --locked --manifest-path rust/Cargo.toml --all-targets -- -D warnings` — exit 0 (`proc_6ea9`).
+- Formatting: `cargo fmt --manifest-path rust/Cargo.toml --check` — exit 0.
+- Diff check: `git diff --check` — exit 0.
+- Linux release build: `docker run --platform linux/amd64 --rm -v "$PWD":/src -w /src/rust rust:bookworm /usr/local/cargo/bin/cargo build --locked --release` — exit 0 (`proc_dead`). Result: Linux x86_64 ELF `rust/target/release/hat`, SHA-256 `9e69399cb9f84441fd10cd5dbec72e5474c8c88a03320e2e8b069f86b9734d22`.
+
+## Retained failed attempts
+
+- First cross-build attempt (`proc_2c11`) stopped because the local Docker API was unavailable; `orb start` restored the local container runtime.
+- The next image invocation (`proc_c2e4`) exited 127 because `bash -lc` did not expose the image's Cargo path. The corrected absolute Cargo path succeeded.
+- A prior full suite (`proc_8001`) exited 101 when the parallel dashboard test's account setup child failed; no application assertion passed on that run. Serial dashboard, parallel dashboard, and the subsequent full suites passed after the test now retains setup stderr.
+- These failures remain historical evidence; they are not replaced by the later green run.
+
+## Browser/remote boundary evidence
+
+- Local Chrome DevTools verified the final semantic dashboard through `http://localhost:18083/`: authenticated status, three node cards, explicit unknown health/admission/replication, disabled actions, and no console errors. Screenshot: `/tmp/hat-console-fm3-final.png`.
+- The final remote demo deployed the same Linux x86_64 hash to all three named hosts. Ports 18081/18082/18083 each returned root 200, favicon 204, login 200, and authenticated status 200 with three nodes, `controller_node_id: fm3`, and `actions.enabled: false`.
+- fm1/fm2 durable operation submissions returned 503 `controller authority is configured elsewhere`; fm3 typed restart returned 503 `native action adapter unavailable`.
+- Full remote details and cleanup handoff: `docs/reports/v1-task9c-ui-demo.txt`.
+
+## Disposition
+
+T9C-AC1 through T9C-AC5 pass within the local/refusal boundary. No native action or production-readiness claim is made. Temporary remote units, SSH forwards, and the password file remain cleanup obligations for the viewing session.

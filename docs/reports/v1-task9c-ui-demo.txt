@@ -1,0 +1,27 @@
+# Task 9C temporary console demonstration
+
+Status: temporary SSH-only demonstration, not a deployment or native qualification. Owner-authorized disposable-host mutation was limited to replacing the test-owned binary/config and restarting the test-owned dashboard units; no application/node failover, restore, fencing, or provider action ran.
+
+## Remote fixture
+
+- Hosts: `fm1.zzzx.uk`, `fm2.zzzx.uk`, `fm3.zzzx.uk` through the existing approved root SSH profile.
+- Test root: `/opt/hat-ui-demo`; historical files/services were not removed.
+- Config: `/opt/hat-ui-demo/config.json`, with `controller_node: fm3`, primary `fm1`, and three configured nodes.
+- Binary: `/opt/hat-ui-demo/hat`, Linux x86_64 ELF, SHA-256 `9e69399cb9f84441fd10cd5dbec72e5474c8c88a03320e2e8b069f86b9734d22` on all three hosts.
+- Final test-owned transient units: `hat-ui-demo-9c3-fm1`, `hat-ui-demo-9c3-fm2`, and `hat-ui-demo-9c3-fm3`, bound to loopback ports `18081`, `18082`, and `18083` respectively.
+- All three remote config checks returned `configuration valid`; all three loopback roots returned HTTP 200 and `/favicon.ico` returned HTTP 204.
+
+## Auth/status checks through SSH forwards
+
+Using the temporary demo operator account through local forwards:
+
+- Ports 18081, 18082, and 18083: login HTTP 200; authenticated status HTTP 200; `controller_node_id: fm3`; three nodes rendered; `actions.enabled: false`.
+- fm1/fm2 status identified the authority as `fm3`; fm3 status identified itself as the configured authority.
+- fm1/fm2 durable operation submissions returned HTTP 503, `controller authority is configured elsewhere`.
+- fm3 a typed restart request returned HTTP 503, `native action adapter unavailable`.
+
+Chrome DevTools verified the final fm3 dashboard at `http://localhost:18083/`: semantic headings/regions/forms, all three node cards, explicit `Unknown` health/admission/replication, disabled action controls, and no console errors after the favicon boundary was added. Screenshot: `/tmp/hat-console-fm3-final.png`.
+
+## Cleanup handoff
+
+After the viewing session, stop only the three `hat-ui-demo-9c3-*` units, remove only `/opt/hat-ui-demo` on the three named hosts, stop SSH forwards `proc_d5bb`, `proc_5c00`, and `proc_5d08`, and remove `/tmp/hat-ui-demo-password`. Preserve historical deployment files and units. No cleanup or permanent deployment claim is made by this report.

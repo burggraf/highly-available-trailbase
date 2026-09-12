@@ -6,13 +6,13 @@ An early-stage project for a single-writer [TrailBase](https://github.com/trailb
 
 ## Current development — Rust V1
 
-**Active scope:** one controller, primary-only proxies, manual fenced failover; no Raft or replica reads. **Current stage: Task 9B VPS probe partial; native HAT qualification blocked.** Tasks 2 through 8 are accepted only for local fixture behavior; the Task 9B probe did not qualify the Rust controller/node operation boundary.
+**Active scope:** one controller, primary-only proxies, manual fenced failover; no Raft or replica reads. **Current stage: Task 9C cluster console accepted locally; native HAT qualification remains blocked.** Tasks 2 through 8 and the local Task 9 artifact subset are accepted only for local fixture behavior; the Task 9B probe did not qualify the Rust controller/node operation boundary.
 
 - [Active plan and restart handoff](docs/plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance) — authoritative stage/acceptance tracker.
 - [Development workflow](AGENTS.md) — restart procedure, autonomous stage loop, evidence and approval rules.
 - [Current status](docs/status.md) and [Rust usage/limits](rust/README.md).
 
-Tasks 2 through 8 and the local Task 9 artifact subset are accepted on `main`. One bounded, cleaned-up disposable probe used fresh test roots on fm1/fm2 and the checked-out Rust proxy; it did not qualify deployment, fencing, public HTTPS, or native failover/rejoin. See `docs/reports/v1-task9b-*`.
+Tasks 2 through 8, the local Task 9 artifact subset, and Task 9C are accepted on `main` for their stated local boundaries. The Task 9C console is loopback/SSH-tunnel friendly, derives the sole mutation authority from `controller_node` plus local `--node-id`, shows unknown observations, and refuses unavailable native actions. One bounded, cleaned-up disposable probe used fresh test roots on fm1/fm2 and the checked-out Rust proxy; it did not qualify deployment, fencing, public HTTPS, or native failover/rejoin. See `docs/reports/v1-task9b-*` and `docs/reports/v1-task9c-*`.
 
 Python `hat/`, `tests/`, `experiments/`, existing `deploy/`, and earlier plans are **historical implementation/evidence**, not instructions to resume old live operations or the current Rust roadmap. Preserve them; do not translate them wholesale or treat their checks as Rust qualification.
 

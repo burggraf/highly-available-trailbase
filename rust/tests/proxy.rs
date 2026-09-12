@@ -23,7 +23,7 @@ fn bound_listener() -> (TcpListener, String) {
 
 fn proxy_input(upstream: &str) -> String {
     format!(
-        r#"{{"config":{{"schema_version":1,"cluster_id":"11111111-1111-4111-8111-111111111111","primary":"node-a","state_dir":"/var/lib/hat/state","replica_reads":false,"required_databases":["main","session"],"nodes":[{{"id":"node-a","endpoint":"http://{upstream}","data_dir":"/var/lib/hat/node-a"}}]}},"route":{{"schema_version":1,"cluster_id":"11111111-1111-4111-8111-111111111111","generation":"1","primary_node_id":"node-a","writer_epoch":"7","primary_incarnation":"22222222-2222-4222-8222-222222222222","release_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","config_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},"peer_token":"test-peer-token"}}"#
+        r#"{{"config":{{"schema_version":1,"cluster_id":"11111111-1111-4111-8111-111111111111","primary":"node-a","controller_node":"node-a","state_dir":"/var/lib/hat/state","replica_reads":false,"required_databases":["main","session"],"nodes":[{{"id":"node-a","endpoint":"http://{upstream}","data_dir":"/var/lib/hat/node-a"}}]}},"route":{{"schema_version":1,"cluster_id":"11111111-1111-4111-8111-111111111111","generation":"1","primary_node_id":"node-a","writer_epoch":"7","primary_incarnation":"22222222-2222-4222-8222-222222222222","release_digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","config_digest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}},"peer_token":"test-peer-token"}}"#
     )
 }
 

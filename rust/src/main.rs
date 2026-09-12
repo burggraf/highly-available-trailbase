@@ -22,7 +22,7 @@ async fn main() -> ExitCode {
         (Some("controller"), Some("serve")) => controller_serve(&mut args).await,
         (Some("controller"), Some("account")) => controller_account(&mut args),
         _ => {
-            eprintln!("usage: hat config check | hat doctor | proxy serve --listen HOST:PORT | node status | controller status | controller serve --listen HOST:PORT --journal PATH --origin ORIGIN | controller account add --journal PATH --account NAME");
+            eprintln!("usage: hat config check | hat doctor | proxy serve --listen HOST:PORT | node status | controller status | controller serve --listen HOST:PORT --journal PATH --origin ORIGIN --config PATH --node-id NODE | controller account add --journal PATH --account NAME");
             ExitCode::from(2)
         }
     }
@@ -184,34 +184,64 @@ fn controller_account(args: &mut impl Iterator<Item = String>) -> ExitCode {
 }
 
 async fn controller_serve(args: &mut impl Iterator<Item = String>) -> ExitCode {
+    let usage = "usage: hat controller serve --listen HOST:PORT --journal PATH --origin ORIGIN --config PATH --node-id NODE";
     let mut listen = None;
     let mut journal = None;
     let mut origin = None;
+    let mut config_path = None;
+    let mut node_id = None;
     while let Some(argument) = args.next() {
-        let value = match args.next() {
-            Some(value) => value,
-            None => {
-                eprintln!(
-                    "usage: hat controller serve --listen HOST:PORT --journal PATH --origin ORIGIN"
-                );
-                return ExitCode::from(2);
-            }
+        let Some(value) = args.next() else {
+            eprintln!("{usage}");
+            return ExitCode::from(2);
         };
         match argument.as_str() {
             "--listen" => listen = value.parse::<SocketAddr>().ok(),
             "--journal" => journal = Some(value),
             "--origin" => origin = Some(value),
+            "--config" => config_path = Some(value),
+            "--node-id" => node_id = Some(value),
             _ => {
-                eprintln!(
-                    "usage: hat controller serve --listen HOST:PORT --journal PATH --origin ORIGIN"
-                );
+                eprintln!("{usage}");
                 return ExitCode::from(2);
             }
         }
     }
     let (Some(listen), Some(journal), Some(origin)) = (listen, journal, origin) else {
-        eprintln!("usage: hat controller serve --listen HOST:PORT --journal PATH --origin ORIGIN");
+        eprintln!("{usage}");
         return ExitCode::from(2);
+    };
+    let (cluster, local_node_id) = match config_path {
+        Some(path) => {
+            let Some(node_id) = node_id else {
+                eprintln!("{usage}");
+                return ExitCode::from(2);
+            };
+            let config = match std::fs::read(&path)
+                .ok()
+                .filter(|bytes| bytes.len() <= config::CONFIG_LIMIT)
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+                .and_then(|input| config::Config::from_json(&input).ok())
+            {
+                Some(config) => config,
+                None => {
+                    eprintln!("controller configuration unavailable");
+                    return ExitCode::from(2);
+                }
+            };
+            if config.node(&node_id).is_none() {
+                eprintln!("controller node unavailable");
+                return ExitCode::from(2);
+            }
+            (controller::ClusterView::from_config(&config), Some(node_id))
+        }
+        None => {
+            if node_id.is_some() {
+                eprintln!("{usage}");
+                return ExitCode::from(2);
+            }
+            (controller::ClusterView::empty(), None)
+        }
     };
     let controller = match controller::Controller::open(journal, "controller-process") {
         Ok(controller) => controller,
@@ -220,7 +250,15 @@ async fn controller_serve(args: &mut impl Iterator<Item = String>) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    match controller::serve_dashboard(listen, controller, &origin).await {
+    match controller::serve_dashboard_with_cluster(
+        listen,
+        controller,
+        &origin,
+        cluster,
+        local_node_id.as_deref(),
+    )
+    .await
+    {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
             eprintln!("{message}");

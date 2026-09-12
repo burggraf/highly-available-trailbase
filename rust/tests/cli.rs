@@ -4,6 +4,7 @@ const VALID_CONFIG: &str = r#"{
   "schema_version": 1,
   "cluster_id": "00000000-0000-4000-8000-000000000001",
   "primary": "node-a",
+  "controller_node": "node-b",
   "state_dir": "/var/lib/hat/controller",
   "replica_reads": false,
   "required_databases": ["main", "session", "aux"],

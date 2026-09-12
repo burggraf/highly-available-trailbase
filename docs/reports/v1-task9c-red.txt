@@ -1,0 +1,7 @@
+# Task 9C behavioral RED
+
+- Scope: local Rust dashboard/status/authority slice only; no native node, backup, fencing, public HTTPS, or remote action.
+- Initial command: `cargo test --manifest-path rust/Cargo.toml --test dashboard` (retained in `/tmp/task9c-red-dashboard.log`).
+- Result: exit 101; the new configured-dashboard test failed before implementation with `cluster controller did not listen`.
+- This failure is retained as behavioral RED. A compiler/type failure was not used as the RED evidence.
+- Follow-up focused dashboard runs passed after the config-bound cluster view, authority derivation, typed action checks, and refusal-safe UI/API were implemented.

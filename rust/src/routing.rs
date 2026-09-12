@@ -289,6 +289,7 @@ mod tests {
                 "schema_version": 1,
                 "cluster_id": "{CLUSTER}",
                 "primary": "node-a",
+                "controller_node": "node-a",
                 "state_dir": "/var/lib/hat/controller",
                 "replica_reads": false,
                 "required_databases": ["main", "session", "aux"],

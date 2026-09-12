@@ -139,7 +139,7 @@ mod tests {
 
     fn config_json(databases: &str) -> Config {
         Config::from_json(&format!(
-            r#"{{"schema_version":1,"cluster_id":"11111111-1111-4111-8111-111111111111","primary":"node-a","state_dir":"/var/lib/hat/state","replica_reads":false,"required_databases":[{databases}],"nodes":[{{"id":"node-a","endpoint":"http://127.0.0.1:18080","data_dir":"/var/lib/hat/node-a"}}]}}"#
+            r#"{{"schema_version":1,"cluster_id":"11111111-1111-4111-8111-111111111111","primary":"node-a","controller_node":"node-a","state_dir":"/var/lib/hat/state","replica_reads":false,"required_databases":[{databases}],"nodes":[{{"id":"node-a","endpoint":"http://127.0.0.1:18080","data_dir":"/var/lib/hat/node-a"}}]}}"#
         ))
         .unwrap()
     }

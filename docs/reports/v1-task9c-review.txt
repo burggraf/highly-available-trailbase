@@ -1,0 +1,21 @@
+# Task 9C review record
+
+## Review sequence
+
+1. Fresh read-only review `00c06b60-4041-4ca0-9ca1-28c53010ef21` initially returned BLOCK for caller-selected authority, missing generation/state validation, and incomplete endpoint coverage. Fixes: required `controller_node`, explicit local `--node-id`, authority checks on both mutation endpoints, exact route-generation comparison, expected role/admission fields, and authority tests.
+2. Fresh read-only review `ac03297d-fbdd-472a-946d-3db5811a6ecd` confirmed the implementation boundaries but returned BLOCK because the required T9C gate/review/UI reports were absent and the status response hard-coded `fm3 controller`. Fixes: added the three reports and returned the configured controller node ID.
+3. Fresh read-only review `a4e9fc39-1b55-423c-90ec-ce7a75f2853b` confirmed the source/security boundary but found stale evidence references: the cleanup unit suffix was `9c2` while the deployed units were `9c3`, and the plan referenced an absent review report/screenshot path. Fixes: cleanup now names `hat-ui-demo-9c3-*`; the plan points to the existing `/tmp/hat-console-fm3-final.png`; the review report is present. The binary hash in both reports is the final deployed `9e69399cb9f84441fd10cd5dbec72e5474c8c88a03320e2e8b069f86b9734d22`.
+4. Fresh follow-up read-only review `1a653bb1-6f53-4207-91ee-9bbc4fc6961a` returned BLOCK because the plan still named the unversioned temporary units and this report had not yet recorded that review's result. Both documentation findings were corrected.
+5. Final evidence-only verification review `bbb2317f-ee17-476e-b97f-45734dc73cc3` returned PASS after the documentation fixes. It confirmed final unit names, matching binary hashes, existing report/screenshot paths, dynamic authority, and no stale acceptance references.
+
+## Criterion review
+
+- T9C-AC1: semantic dashboard, configured inventory, node cards, keyboard/semantic form controls, and Chrome evidence pass.
+- T9C-AC2: bounded authenticated status is config-bound; health/admission/replication remain `unknown` without observations; no reachability is fabricated.
+- T9C-AC3: target, generation, expected role/admission, CSRF/origin, authentication, and loss acknowledgement are checked; native actions are disabled/refused.
+- T9C-AC4: authority is derived from validated config identity; `/api/v1/operations` and `/api/v1/actions` reject non-authority submissions; durable operation replay/conflict behavior is tested.
+- T9C-AC5: behavioral RED, local gates, reports, and fresh review are retained; no native action claim is made.
+
+## Residual risks
+
+The dashboard is still a loopback/SSH-tunnel demonstration. It has no native node observation channel, remote forwarding path, backup/restore adapter, fencing adapter, or executable failover/rejoin action. Those controls remain fail-closed and require a separate native stage.

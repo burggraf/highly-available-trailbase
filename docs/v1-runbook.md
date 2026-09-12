@@ -20,6 +20,20 @@ cargo run --manifest-path rust/Cargo.toml -- doctor < deploy/v1/config.example.j
 
 `hat doctor` reads one bounded configuration document from stdin, validates the same schema as `hat config check`, and prints a fixed result. It does not open `state_dir`, `data_dir`, database files, certificates, endpoints, or secrets; it does not start systemd or a network listener. The example uses `.invalid` hostnames and placeholder paths deliberately.
 
+## Task 9C console boundary
+
+The local console is loopback-bound and may be viewed through an SSH tunnel only. It requires a validated config with `controller_node` and an explicit local `--node-id`; that configured identity, not a read-only switch, selects the sole mutation authority:
+
+```sh
+hat controller serve --listen 127.0.0.1:18083 \
+  --journal /var/lib/hat/controller.sqlite \
+  --origin http://localhost:18083 \
+  --config /etc/hat/config.json \
+  --node-id fm3
+```
+
+The console shows config-bound inventory and `unknown` observations until a native observation channel exists. Failover, restart, shutdown, rejoin, remote forwarding, restore, and fencing remain refused; this command is not a deployment or native qualification.
+
 ## Inputs required before any installation decision
 
 A later owner-approved native/deployment stage must freeze all of these before touching a host:

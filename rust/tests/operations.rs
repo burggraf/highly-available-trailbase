@@ -27,7 +27,7 @@ const CONFIG_DIGEST: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 
 fn config() -> Config {
     Config::from_json(
-        r#"{"schema_version":1,"cluster_id":"11111111-1111-4111-8111-111111111111","primary":"node-a","state_dir":"/var/lib/hat/state","replica_reads":false,"required_databases":["main","session","aux"],"nodes":[{"id":"node-a","endpoint":"http://127.0.0.1:18080","data_dir":"/var/lib/hat/node-a"},{"id":"node-b","endpoint":"http://127.0.0.1:18081","data_dir":"/var/lib/hat/node-b"}]}"#,
+        r#"{"schema_version":1,"cluster_id":"11111111-1111-4111-8111-111111111111","primary":"node-a","controller_node":"node-a","state_dir":"/var/lib/hat/state","replica_reads":false,"required_databases":["main","session","aux"],"nodes":[{"id":"node-a","endpoint":"http://127.0.0.1:18080","data_dir":"/var/lib/hat/node-a"},{"id":"node-b","endpoint":"http://127.0.0.1:18081","data_dir":"/var/lib/hat/node-b"}]}"#,
     )
     .unwrap()
 }

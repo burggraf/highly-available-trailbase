@@ -17,6 +17,7 @@ The exact version-1 configuration object is:
 - `schema_version`: number `1`.
 - `cluster_id`: lowercase canonical UUID string.
 - `primary`: a node ID from `nodes`.
+- `controller_node`: the one configured node allowed to accept dashboard mutations; it must be a node ID from `nodes`.
 - `state_dir`: absolute lexical path under `/var/lib/hat` with no `.` or `..` component. This is a supported-location rule, not proof of ownership, mode, or symlink safety.
 - `replica_reads`: exactly `false`; local replica reads are refused in V1.
 - `required_databases`: one to 64 unique names, including `main` and `session`; `logs` is reserved for local controller logs and is refused.
@@ -72,13 +73,21 @@ Task 4 adds process-local node lifecycle state and replication observations. Nod
 
 `hat node status` reports the inert process-local starting state. This slice does not start TrailBase or Litestream, open configured data paths, use systemd, perform native restore, activate real writers, or claim deployment/process-group qualification.
 
-## Local controller slice (Task 5, accepted locally)
+## Local controller slice (Tasks 5 and 9C, accepted locally)
 
-The local controller now has a bundled SQLite journal with `foreign_keys=ON`, `synchronous=FULL`, one-owner locking, durable operation intent, exact duplicate receipts, conflict refusal, unfinished-operation reopen, Argon2id account/session primitives, incarnation-bound restart waiting, and a loopback-only dashboard shell/status boundary. `controller serve` requires explicit `--listen`, `--journal`, and `--origin` arguments. It does not create a default account.
+The local controller has a bundled SQLite journal with `foreign_keys=ON`, `synchronous=FULL`, one-owner locking, durable operation intent, exact duplicate receipts, conflict refusal, unfinished-operation reopen, Argon2id account/session primitives, and incarnation-bound restart waiting. Serve the dashboard with an explicit configuration and local identity:
 
-This local slice is accepted against T5-AC1 through T5-AC5. It is not public HTTPS, production TLS, a deployment, a fencing/controller action system, a native restart workflow, or a VPS qualification. No actual VPS or external service has been used.
+```sh
+hat controller serve --listen 127.0.0.1:18083 \
+  --journal /var/lib/hat/controller.sqlite \
+  --origin http://localhost:18083 \
+  --config /etc/hat/config.json \
+  --node-id fm3
+```
 
-This is not a controller deployment, failover, or native qualification claim. Python `hat/`, historical deployment files, and private evidence remain untouched.
+`controller_node` in the validated config, not a `--read-only` toggle, determines which configured node is the mutation authority. A node with another identity serves authenticated read-only status; missing/unknown observations remain `unknown`, and action controls are disabled. Login, CSRF, Origin/Host, target identity, exact route-generation, role/admission confirmation, and possible-loss checks are bounded at the API. The native node-action adapter is intentionally absent: failover, restart, shutdown, and rejoin requests are refused with a clear reason and never simulated. Durable operation submissions replay the same receipt and non-authority dashboards refuse them.
+
+This local slice is accepted against T5-AC1 through T5-AC5 and T9C-AC1 through T9C-AC5. It is not public HTTPS, production TLS, remote forwarding, a deployment, a fencing/controller action system, a native restart workflow, or a VPS qualification. No real node action is claimed.
 
 ## Local restore/fence boundary (Task 6, accepted locally)
 

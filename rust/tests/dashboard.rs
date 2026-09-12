@@ -44,7 +44,12 @@ fn start_controller() -> (Child, String, std::path::PathBuf) {
         .unwrap()
         .write_all(b"a sufficiently long password\n")
         .unwrap();
-    assert!(account.wait().unwrap().success());
+    let account_output = account.wait_with_output().unwrap();
+    assert!(
+        account_output.status.success(),
+        "account setup failed: {}",
+        String::from_utf8_lossy(&account_output.stderr)
+    );
     let child = Command::new(env!("CARGO_BIN_EXE_hat"))
         .args([
             "controller",
@@ -82,8 +87,9 @@ fn dashboard_serves_local_status_shell_and_refuses_unauthenticated_status() {
     let page_count = page.read(&mut page_bytes).unwrap_or(0);
     let page_response = String::from_utf8_lossy(&page_bytes[..page_count]);
     assert!(page_response.starts_with("HTTP/1.1 200"));
-    assert!(page_response.contains("HAT controller"));
+    assert!(page_response.contains("HAT Control Center"));
     assert!(page_response.contains("id=\"login\""));
+    assert!(page_response.contains("/app.css"));
     assert!(page_response.contains("/app.js"));
     assert!(page_response
         .to_ascii_lowercase()
@@ -136,7 +142,9 @@ fn dashboard_serves_local_status_shell_and_refuses_unauthenticated_status() {
     let operation_body =
         br#"{"request_id":"request-1","operation_id":"operation-1","digest":"digest-1"}"#;
     write_request(&mut operation, &format!("POST /api/v1/operations HTTP/1.1\r\nHost: {address}\r\nOrigin: {origin}\r\nContent-Type: application/json\r\nCookie: {cookie}\r\nX-CSRF-Token: {csrf}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", operation_body.len()), operation_body);
-    assert!(read_response(&mut operation).starts_with("HTTP/1.1 202"));
+    let operation_response = read_response(&mut operation);
+    assert!(operation_response.starts_with("HTTP/1.1 503"));
+    assert!(operation_response.contains("controller authority is configured elsewhere"));
 
     let _ = child.kill();
     let _ = child.wait();
@@ -163,6 +171,238 @@ fn dashboard_serves_local_status_shell_and_refuses_unauthenticated_status() {
         .unwrap();
     assert!(recovery.wait().unwrap().success());
     let _ = std::fs::remove_file(journal);
+}
+
+#[test]
+fn dashboard_shows_cluster_overview_and_refuses_unavailable_native_actions() {
+    let (mut child, address, journal) = start_controller_with_config();
+    let origin = format!("http://{address}");
+
+    let mut page = TcpStream::connect(&address).unwrap();
+    page.write_all(
+        format!("GET / HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n").as_bytes(),
+    )
+    .unwrap();
+    let page_response = read_response(&mut page);
+    assert!(page_response.starts_with("HTTP/1.1 200"));
+    for text in [
+        "Cluster overview",
+        "Fail over",
+        "Restart node",
+        "Rejoin node",
+    ] {
+        assert!(page_response.contains(text), "missing {text}");
+    }
+
+    let mut login = TcpStream::connect(&address).unwrap();
+    let login_body = br#"{"account":"operator","password":"a sufficiently long password"}"#;
+    write_request(&mut login, &format!("POST /api/v1/login HTTP/1.1\r\nHost: {address}\r\nOrigin: {origin}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", login_body.len()), login_body);
+    let login_response = read_response(&mut login);
+    assert!(login_response.starts_with("HTTP/1.1 200"));
+    let cookie = login_response
+        .lines()
+        .find(|line| line.to_ascii_lowercase().starts_with("set-cookie:"))
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .split_once(':')
+        .unwrap()
+        .1
+        .trim()
+        .to_owned();
+    let csrf = login_response
+        .split("\"csrf_token\":\"")
+        .nth(1)
+        .unwrap()
+        .split('\"')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let mut status = TcpStream::connect(&address).unwrap();
+    status
+        .write_all(
+            format!("GET /api/v1/status HTTP/1.1\r\nHost: {address}\r\nCookie: {cookie}\r\nConnection: close\r\n\r\n").as_bytes(),
+        )
+        .unwrap();
+    let status_response = read_response(&mut status);
+    assert!(status_response.starts_with("HTTP/1.1 200"));
+    assert!(status_response.contains("\"nodes\""));
+    assert!(status_response.contains("\"controller_node_id\":\"node-a\""));
+    assert!(status_response.contains("\"authority\":\"node-a\""));
+    assert!(status_response.contains("\"node-a\""));
+    assert!(status_response.contains("\"unknown\""));
+    assert!(status_response.contains("\"enabled\":false"));
+
+    let mut operation = TcpStream::connect(&address).unwrap();
+    let operation_body =
+        br#"{"request_id":"request-1","operation_id":"operation-1","digest":"digest-1"}"#;
+    write_request(&mut operation, &format!("POST /api/v1/operations HTTP/1.1\r\nHost: {address}\r\nOrigin: {origin}\r\nContent-Type: application/json\r\nCookie: {cookie}\r\nX-CSRF-Token: {csrf}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", operation_body.len()), operation_body);
+    assert!(read_response(&mut operation).starts_with("HTTP/1.1 202"));
+
+    let mut duplicate = TcpStream::connect(&address).unwrap();
+    write_request(&mut duplicate, &format!("POST /api/v1/operations HTTP/1.1\r\nHost: {address}\r\nOrigin: {origin}\r\nContent-Type: application/json\r\nCookie: {cookie}\r\nX-CSRF-Token: {csrf}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", operation_body.len()), operation_body);
+    let duplicate_response = read_response(&mut duplicate);
+    assert!(duplicate_response.starts_with("HTTP/1.1 202"));
+    assert!(duplicate_response.contains("operation-1"));
+
+    let mut unknown_action = TcpStream::connect(&address).unwrap();
+    let unknown_body = br#"{"kind":"restart","target_node_id":"node-z","expected_generation":"0","expected_role":"standby","expected_admission":"unknown","accept_possible_loss":false}"#;
+    write_request(&mut unknown_action, &format!("POST /api/v1/actions HTTP/1.1\r\nHost: {address}\r\nOrigin: {origin}\r\nContent-Type: application/json\r\nCookie: {cookie}\r\nX-CSRF-Token: {csrf}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", unknown_body.len()), unknown_body);
+    let unknown_response = read_response(&mut unknown_action);
+    assert!(unknown_response.starts_with("HTTP/1.1 400"));
+    assert!(unknown_response.contains("unknown target node"));
+
+    let mut stale_action = TcpStream::connect(&address).unwrap();
+    let stale_body = br#"{"kind":"restart","target_node_id":"node-b","expected_generation":"1","expected_role":"standby","expected_admission":"unknown","accept_possible_loss":false}"#;
+    write_request(&mut stale_action, &format!("POST /api/v1/actions HTTP/1.1\r\nHost: {address}\r\nOrigin: {origin}\r\nContent-Type: application/json\r\nCookie: {cookie}\r\nX-CSRF-Token: {csrf}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", stale_body.len()), stale_body);
+    let stale_response = read_response(&mut stale_action);
+    assert!(stale_response.starts_with("HTTP/1.1 409"));
+    assert!(stale_response.contains("stale route generation"));
+
+    let mut action = TcpStream::connect(&address).unwrap();
+    let action_body = br#"{"kind":"restart","target_node_id":"node-b","expected_generation":"0","expected_role":"standby","expected_admission":"unknown","accept_possible_loss":false}"#;
+    write_request(&mut action, &format!("POST /api/v1/actions HTTP/1.1\r\nHost: {address}\r\nOrigin: {origin}\r\nContent-Type: application/json\r\nCookie: {cookie}\r\nX-CSRF-Token: {csrf}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", action_body.len()), action_body);
+    let action_response = read_response(&mut action);
+    assert!(action_response.starts_with("HTTP/1.1 503"));
+    assert!(action_response.contains("native action adapter unavailable"));
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_file(journal);
+}
+
+#[test]
+fn configured_non_authority_refuses_durable_operations() {
+    let (mut child, address, journal) = start_controller_with_config_as("node-b");
+    let origin = format!("http://{address}");
+
+    let mut login = TcpStream::connect(&address).unwrap();
+    let login_body = br#"{"account":"operator","password":"a sufficiently long password"}"#;
+    write_request(&mut login, &format!("POST /api/v1/login HTTP/1.1\r\nHost: {address}\r\nOrigin: {origin}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", login_body.len()), login_body);
+    let login_response = read_response(&mut login);
+    assert!(login_response.starts_with("HTTP/1.1 200"));
+    let cookie = login_response
+        .lines()
+        .find(|line| line.to_ascii_lowercase().starts_with("set-cookie:"))
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .split_once(':')
+        .unwrap()
+        .1
+        .trim()
+        .to_owned();
+    let csrf = login_response
+        .split("\"csrf_token\":\"")
+        .nth(1)
+        .unwrap()
+        .split('"')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    let mut operation = TcpStream::connect(&address).unwrap();
+    let operation_body =
+        br#"{"request_id":"read-only-request","operation_id":"read-only-operation","digest":"digest"}"#;
+    write_request(&mut operation, &format!("POST /api/v1/operations HTTP/1.1\r\nHost: {address}\r\nOrigin: {origin}\r\nContent-Type: application/json\r\nCookie: {cookie}\r\nX-CSRF-Token: {csrf}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", operation_body.len()), operation_body);
+    let response = read_response(&mut operation);
+    assert!(response.starts_with("HTTP/1.1 503"));
+    assert!(response.contains("controller authority is configured elsewhere"));
+
+    let _ = child.kill();
+    let _ = child.wait();
+    let _ = std::fs::remove_file(journal);
+}
+
+fn start_controller_with_config() -> (Child, String, std::path::PathBuf) {
+    start_controller_with_config_as("node-a")
+}
+
+fn start_controller_with_config_as(local_node_id: &str) -> (Child, String, std::path::PathBuf) {
+    let address = free_addr();
+    let suffix = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let journal = std::env::temp_dir().join(format!("hat-dashboard-cluster-{suffix}.db"));
+    let config = std::env::temp_dir().join(format!("hat-dashboard-cluster-{suffix}.json"));
+    std::fs::write(
+        &config,
+        r#"{
+            "schema_version": 1,
+            "cluster_id": "00000000-0000-4000-8000-000000000001",
+            "primary": "node-a",
+            "controller_node": "node-a",
+            "state_dir": "/var/lib/hat/controller",
+            "replica_reads": false,
+            "required_databases": ["main", "session", "aux"],
+            "nodes": [
+                {"id": "node-a", "endpoint": "http://node-a.internal:4000", "data_dir": "/var/lib/hat/node-a"},
+                {"id": "node-b", "endpoint": "http://node-b.internal:4000", "data_dir": "/var/lib/hat/node-b"}
+            ]
+        }"#,
+    )
+    .unwrap();
+    let origin = format!("http://{address}");
+    let mut account = Command::new(env!("CARGO_BIN_EXE_hat"))
+        .args([
+            "controller",
+            "account",
+            "add",
+            "--journal",
+            journal.to_str().unwrap(),
+            "--account",
+            "operator",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    account
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"a sufficiently long password\n")
+        .unwrap();
+    let account_output = account.wait_with_output().unwrap();
+    assert!(
+        account_output.status.success(),
+        "account setup failed: {}",
+        String::from_utf8_lossy(&account_output.stderr)
+    );
+    let mut child = Command::new(env!("CARGO_BIN_EXE_hat"))
+        .args([
+            "controller",
+            "serve",
+            "--listen",
+            &address,
+            "--journal",
+            journal.to_str().unwrap(),
+            "--origin",
+            &origin,
+            "--config",
+            config.to_str().unwrap(),
+            "--node-id",
+            local_node_id,
+        ])
+        .stdin(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    for _ in 0..100 {
+        if TcpStream::connect(&address).is_ok() {
+            let _ = std::fs::remove_file(config);
+            return (child, address, journal);
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+    panic!("cluster controller did not listen");
 }
 
 fn write_request(stream: &mut TcpStream, headers: &str, body: &[u8]) {
