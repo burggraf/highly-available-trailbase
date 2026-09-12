@@ -1,0 +1,7 @@
+# Task 9F RED evidence
+
+The first focused compile exposed an incorrectly placed test attribute while adding the recording executor (`/tmp/task9f-node-agent-test.log`, exit 101). It was corrected before behavioral verification.
+
+The forwarding refusal behavior has retained mutation RED evidence: temporarily removing `NodeActionCommand::validate_against` caused `in_memory_adapter_validates_before_executor_invocation` to return `Ok(Succeeded)` for an unknown-generation observation instead of `Err(Refused)` (`/tmp/task9f-red-forwarding.log`, exit 101, `rust/src/node_agent.rs:521`). Restoring the validation call made the focused test pass (`/tmp/task9f-green-forwarding.log`).
+
+No transport, process, native, remote, restore, fence, or disruptive effect ran.

@@ -1,0 +1,24 @@
+# Task 9F gates
+
+## Scope
+
+Local in-memory forwarding boundary only. `InMemoryNodeAdapter` converts a controller `ActionCommand` into a validated `NodeActionCommand`, checks the selected `NodeObservation`, and calls an injected executor. The executor is test-only; the normal CLI remains on the unavailable adapter. No transport, native process, remote host, backup/restore, fencing, route publication, deployment, or disruptive effect ran.
+
+## Final checks
+
+Source revision: obtain with `git rev-parse HEAD` at the containing Task 9F source checkpoint commit.
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Behavioral/refusal RED | pass | `docs/reports/v1-task9f-red.txt`; `/tmp/task9f-red-forwarding.log`; `/tmp/task9f-green-forwarding.log` |
+| Focused forwarding/node tests | pass — 6 node-agent tests | `/tmp/task9f-node-agent-test2.log` |
+| Full locked package suite | pass — 69 tests, 0 failures, 0 doctests | `/tmp/task9f-full-test.log` |
+| `cargo clippy --locked --all-targets -- -D warnings` | pass | `/tmp/task9f-clippy.log` |
+| `cargo fmt --manifest-path rust/Cargo.toml --check` | pass | command exit 0 |
+| `cargo build --release --locked` | pass | `/tmp/task9f-release.log` |
+| Release binary SHA-256 | `6a0da7d406b26143d783d122904c4314ed75afa5d96057c767058d6b0b761578` | `/tmp/task9f-release-sha.txt` |
+| `git diff --check` | pass | command exit 0 |
+
+## Coverage
+
+The in-memory adapter test proves a valid command reaches the injected executor once, while unknown-generation and stale observations refuse before a second invocation. Existing dashboard tests preserve the default unavailable-adapter and authority refusal boundary. No native-effect claim is made.

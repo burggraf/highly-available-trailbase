@@ -1,6 +1,6 @@
 # HAT Rust V1 — local Tasks 2–9 subset
 
-This package implements the accepted local slices from the [single-controller V1 plan](../docs/plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance): bounded configuration validation, primary-only routing/proxying, fixture node/controller state, restore/fence boundaries, planned switchover, manual failover/reconciliation/reseed, refusal-safe Task 9 artifacts, the accepted local Task 9D action-adapter contract and the accepted local Task 9E node boundary contract. It does not perform native TrailBase/Litestream work, provider fencing, installation, deployment, public traffic, or live qualification.
+This package implements the accepted local slices from the [single-controller V1 plan](../docs/plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance): bounded configuration validation, primary-only routing/proxying, fixture node/controller state, restore/fence boundaries, planned switchover, manual failover/reconciliation/reseed, refusal-safe Task 9 artifacts, the accepted local Task 9D action-adapter contract, the accepted local Task 9E node boundary contract, and the in-progress local Task 9F forwarding boundary. It does not perform native TrailBase/Litestream work, provider fencing, installation, deployment, public traffic, or live qualification.
 
 ## Configuration checker
 
@@ -94,6 +94,10 @@ This local slice is accepted against T5-AC1 through T5-AC5 and T9C-AC1 through T
 Task 9E defines bounded version-1 JSON envelopes for a future controller-to-node action and a node observation. Duplicate keys, unknown fields, oversized input, unsupported schema, malformed identities, invalid digests/generations, unknown route generation, stale generation, and role/admission mismatches refuse. `NodeObservation::from_node` validates local state before constructing an observation. The command digest is derived from the same controller-authoritative fields used by Task 9D.
 
 This is a library boundary only. It opens no listener, uses no transport, starts/stops no process, accesses no TrailBase/Litestream state, restores no data, fences no provider, publishes no route, and performs no remote or disruptive action. See `../docs/plans/2026-09-11-task9e-node-boundary-design.md`.
+
+## Local forwarding boundary (Task 9F, local-only)
+
+Task 9F provides `InMemoryNodeAdapter`, which converts a controller action into a `NodeActionCommand`, validates the selected observation, and calls only an injected executor. Unknown, stale, or mismatched observations refuse before invocation. The normal controller still uses an unavailable adapter; no transport or native executor is installed.
 
 ## Local restore/fence boundary (Task 6, accepted locally)
 

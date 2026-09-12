@@ -1,9 +1,13 @@
 use crate::{
     config::{is_uuid, reject_duplicate_keys},
-    controller::ActionCommand,
+    controller::{ActionAdapter, ActionAdapterError, ActionCommand, ActionOutcome},
     node::{Admission, NodeRole, NodeState},
 };
 use serde::{Deserialize, Serialize};
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+};
 
 const SCHEMA_VERSION: u8 = 1;
 const WIRE_LIMIT: usize = 8 * 1024;
@@ -52,6 +56,59 @@ pub enum NodeBoundaryError {
     GenerationMismatch,
     RoleMismatch,
     AdmissionMismatch,
+}
+
+pub trait NodeExecutor: Send + Sync {
+    fn execute(&self, command: &NodeActionCommand) -> Result<ActionOutcome, ActionAdapterError>;
+}
+
+pub struct InMemoryNodeAdapter {
+    observations: Mutex<HashMap<String, NodeObservation>>,
+    executor: Arc<dyn NodeExecutor>,
+}
+
+impl InMemoryNodeAdapter {
+    pub fn new(
+        observations: impl IntoIterator<Item = NodeObservation>,
+        executor: Arc<dyn NodeExecutor>,
+    ) -> Result<Self, NodeBoundaryError> {
+        let mut by_node = HashMap::new();
+        for observation in observations {
+            observation.validate_fields()?;
+            if by_node
+                .insert(observation.node_id.clone(), observation)
+                .is_some()
+            {
+                return Err(NodeBoundaryError::InvalidField("duplicate node_id"));
+            }
+        }
+        Ok(Self {
+            observations: Mutex::new(by_node),
+            executor,
+        })
+    }
+}
+
+impl ActionAdapter for InMemoryNodeAdapter {
+    fn available(&self) -> bool {
+        true
+    }
+
+    fn execute(&self, command: &ActionCommand) -> Result<ActionOutcome, ActionAdapterError> {
+        let observation = self
+            .observations
+            .lock()
+            .map_err(|_| ActionAdapterError::Refused)?
+            .get(&command.target_node_id)
+            .cloned()
+            .ok_or(ActionAdapterError::Refused)?;
+        let node_command = NodeActionCommand::from_controller(command, &observation.incarnation)
+            .map_err(|_| ActionAdapterError::Refused)?;
+        node_command
+            .validate_against(&observation)
+            .map_err(|_| ActionAdapterError::Refused)?;
+        self.executor.execute(&node_command)
+    }
 }
 
 #[derive(Deserialize)]
@@ -436,6 +493,47 @@ mod tests {
         };
         command.digest = command.derived_digest();
         command
+    }
+
+    struct RecordingExecutor {
+        calls: Mutex<Vec<NodeActionCommand>>,
+    }
+
+    impl NodeExecutor for RecordingExecutor {
+        fn execute(
+            &self,
+            command: &NodeActionCommand,
+        ) -> Result<ActionOutcome, ActionAdapterError> {
+            self.calls.lock().unwrap().push(command.clone());
+            Ok(ActionOutcome::Succeeded)
+        }
+    }
+
+    #[test]
+    fn in_memory_adapter_validates_before_executor_invocation() {
+        let executor = Arc::new(RecordingExecutor {
+            calls: Mutex::new(Vec::new()),
+        });
+        let observation = NodeObservation::from_node(&node(), Some(3)).unwrap();
+        let adapter = InMemoryNodeAdapter::new([observation], executor.clone()).unwrap();
+        assert_eq!(adapter.execute(&action()), Ok(ActionOutcome::Succeeded));
+        assert_eq!(executor.calls.lock().unwrap().len(), 1);
+
+        let unknown = NodeObservation::from_node(&node(), None).unwrap();
+        let unknown_adapter = InMemoryNodeAdapter::new([unknown], executor.clone()).unwrap();
+        assert_eq!(
+            unknown_adapter.execute(&action()),
+            Err(ActionAdapterError::Refused)
+        );
+        assert_eq!(executor.calls.lock().unwrap().len(), 1);
+
+        let stale = NodeObservation::from_node(&node(), Some(4)).unwrap();
+        let stale_adapter = InMemoryNodeAdapter::new([stale], executor.clone()).unwrap();
+        assert_eq!(
+            stale_adapter.execute(&action()),
+            Err(ActionAdapterError::Refused)
+        );
+        assert_eq!(executor.calls.lock().unwrap().len(), 1);
     }
 
     #[test]
