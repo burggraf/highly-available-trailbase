@@ -1093,7 +1093,7 @@ mod tests {
         stream
             .write_all(&encode_frame(TOKEN, &command()).unwrap())
             .unwrap();
-        stream.shutdown(std::net::Shutdown::Write).unwrap();
+        let _ = stream.shutdown(std::net::Shutdown::Write);
         assert_eq!(server.join().unwrap().unwrap(), command());
         assert!(!path.exists());
         std::fs::remove_dir(directory).unwrap();
