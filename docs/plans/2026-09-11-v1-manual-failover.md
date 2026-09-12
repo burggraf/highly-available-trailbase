@@ -35,7 +35,7 @@ This section is the authoritative restart tracker. Follow [AGENTS.md](../../AGEN
 | Task 9F — local node-forwarding boundary | accepted | In-memory command conversion, observation validation, injected executor dispatch, and refusal tests passed T9F-AC1 through T9F-AC4. Transport, native, remote, backup, fence, and disruptive effects remain out of scope. |
 | Task 9G — local authenticated transport contract | accepted | Bounded token-authenticated framing around the validated node envelope passed T9G-AC1 through T9G-AC4. Persistent listeners, TLS/mTLS, remote, native, process, backup, fence, and disruptive effects remain out of scope. |
 | Task 9H — ephemeral local Unix listener | accepted | One-request local Unix listener passed T9H-AC1 through T9H-AC4. Temporary private-directory socket binding/cleanup and bounded frame delivery are accepted; daemons, persistent listeners, TLS/mTLS, remote, native, process, backup, fence, and disruptive effects remain out of scope. |
-| Task 9I — persistent local Unix listener | in_progress | Owner said continue after the next-boundary choice; the bounded local lifecycle slice is authorized. Explicit bind/receive/shutdown/rebind behavior is in scope; production call sites, daemons, TLS/mTLS, remote, native, process, backup, fence, and disruptive effects remain out of scope. |
+| Task 9I — persistent local Unix listener | accepted | Persistent local lifecycle passed T9I-AC1 through T9I-AC4. Explicit bind/receive/shutdown/rebind behavior is accepted; production call sites, daemons, TLS/mTLS, remote, native, process, backup, fence, and disruptive effects remain out of scope. |
 | Task 10 — fault/release qualification | pending | Not authorized; workload, attempt budget and soak approval required. |
 
 ### Task 2 completion contract — approved and accepted
@@ -624,10 +624,12 @@ Design reference: [Task 9I persistent local listener](2026-09-11-task9i-persiste
 
 | ID | Observable requirement, including refusal cases | Exact check/evidence | Result |
 | --- | --- | --- | --- |
-| T9I-AC1 | A private local listener binds, receives multiple valid authenticated commands, and preserves each validated command. | local listener lifecycle tests; design doc | not_run |
-| T9I-AC2 | Invalid token/parent, bind collision, malformed/oversized/trailing frame, wrong token, invalid envelope/nested command, and cleanup uncertainty refuse safely. | local listener refusal tests | not_run |
-| T9I-AC3 | Explicit shutdown closes the listener, cleans only its verified socket path, and permits a clean rebind; no production call site or external/native effect exists. | lifecycle/rebind tests; package gates | not_run |
-| T9I-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no external-effect claim. | `docs/reports/v1-task9i-*` | not_run |
+| T9I-AC1 | A private local listener binds, receives multiple valid authenticated commands, and preserves each validated command. | `rust/src/local_transport.rs` lifecycle tests; `docs/reports/v1-task9i-review.txt` | pass |
+| T9I-AC2 | Invalid token/parent, bind collision, malformed/oversized/trailing frame, wrong token, invalid envelope/nested command, and cleanup uncertainty refuse safely. | `rust/src/local_transport.rs` refusal tests; `docs/reports/v1-task9i-gates.txt` | pass |
+| T9I-AC3 | Explicit shutdown closes the listener, cleans only its verified socket path, and permits a clean rebind; no production call site or external/native effect exists. | lifecycle/rebind tests; package gates | pass |
+| T9I-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no external-effect claim. | `docs/reports/v1-task9i-*` | pass |
+
+**Task 9I handoff:** source/tests are in checkpoint `6d444469b71d7494243777d10381d7e1af02e20c`; final release SHA-256 is `40b4977993b0cb768ad8184f1ff64873605849db82082863d976437676aa4a02`. Final gates are in `docs/reports/v1-task9i-gates.txt`; final review `a5bfcc7d-b02b-47f1-92fb-dcf000c9a47b` returned PASS after the documentation correction. The listener is library/test-only, requires a private mode-0700 parent, verifies socket identity before cleanup, and has no production/native/remote call site.
 
 ### Task 9 — Installable disposable deployment and native acceptance
 

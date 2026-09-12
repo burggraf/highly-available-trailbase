@@ -1,0 +1,17 @@
+# Task 9I review record
+
+## Review sequence
+
+1. Fresh read-only review `33f9723a-18ae-436b-92df-15a38faad910` verified the implementation and returned BLOCK for an inaccurate 78-test count (the retained full suite had 79 at that checkpoint) and overclaimed cleanup-uncertainty coverage. The gate count was corrected after the final rerun, and `shutdown_refuses_a_replaced_socket_path` was added to unlink/replace the bound socket and verify shutdown refuses while preserving the replacement.
+2. Fresh final read-only review `a5bfcc7d-b02b-47f1-92fb-dcf000c9a47b` returned PASS for the implementation, gates, and local-only scope. It identified stale acceptance bookkeeping; that documentation finding is corrected in the plan, README, status, Rust README, and this report.
+
+## Criterion review
+
+- T9I-AC1: pass — private listener receives repeated valid authenticated commands.
+- T9I-AC2: pass — invalid token/parent, bind collision, malformed frames, nested validation failures, and cleanup uncertainty refuse safely.
+- T9I-AC3: pass — explicit shutdown cleans the verified path and clean rebind succeeds; no production/external effect exists.
+- T9I-AC4: pass — RED, 11 focused tests, 80-test locked suite, Clippy, fmt, locked release, SHA-256, diff check, docs, and final PASS review are retained.
+
+## Residual risks
+
+The listener remains library/test-only. No production listener lifecycle, TLS/mTLS, remote forwarding, native execution, deployment, or disruptive qualification is claimed.

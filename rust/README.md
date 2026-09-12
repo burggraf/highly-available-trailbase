@@ -1,6 +1,6 @@
 # HAT Rust V1 — local Tasks 2–9 subset
 
-This package implements the accepted local slices from the [single-controller V1 plan](../docs/plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance): bounded configuration validation, primary-only routing/proxying, fixture node/controller state, restore/fence boundaries, planned switchover, manual failover/reconciliation/reseed, refusal-safe Task 9 artifacts, the accepted local Task 9D action-adapter contract, the accepted local Task 9E node boundary contract, the accepted local Task 9F forwarding boundary, the accepted local Task 9G transport contract, and the accepted local Task 9H ephemeral listener. It does not perform native TrailBase/Litestream work, provider fencing, installation, deployment, public traffic, or live qualification.
+This package implements the accepted local slices from the [single-controller V1 plan](../docs/plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance): bounded configuration validation, primary-only routing/proxying, fixture node/controller state, restore/fence boundaries, planned switchover, manual failover/reconciliation/reseed, refusal-safe Task 9 artifacts, the accepted local Task 9D action-adapter contract, the accepted local Task 9E node boundary contract, the accepted local Task 9F forwarding boundary, the accepted local Task 9G transport contract, the accepted local Task 9H ephemeral listener, and the accepted local Task 9I persistent listener lifecycle. It does not perform native TrailBase/Litestream work, provider fencing, installation, deployment, public traffic, or live qualification.
 
 ## Configuration checker
 
@@ -99,9 +99,9 @@ This is a library boundary only. It opens no listener, uses no transport, starts
 
 Task 9F provides `InMemoryNodeAdapter`, which converts a controller action into a `NodeActionCommand`, validates the selected observation, and calls only an injected executor. Unknown, stale, or mismatched observations refuse before invocation. The normal controller still uses an unavailable adapter; no transport or native executor is installed.
 
-## Local authenticated transport (Task 9G and Task 9H accepted locally)
+## Local authenticated transport (Task 9G through Task 9I accepted locally)
 
-Task 9G frames the validated node command with a bounded length prefix and strict versioned JSON envelope. A printable per-channel token is checked with bounded constant-time comparison; wrong tokens, malformed frames, duplicate/unknown fields, oversized input, and invalid nested commands refuse. Task 9H exercises one temporary Unix listener request in a private mode-0700 parent, reads one declared-length frame without requiring peer half-close, and removes only the verified bound path; no daemon or persistent listener is configured.
+Task 9G frames the validated node command with a bounded length prefix and strict versioned JSON envelope. A printable per-channel token is checked with bounded constant-time comparison; wrong tokens, malformed frames, duplicate/unknown fields, oversized input, and invalid nested commands refuse. Task 9H exercises one temporary Unix listener request in a private mode-0700 parent, reads one declared-length frame without requiring peer half-close, and removes only the verified bound path. Task 9I wraps this in a library/test-only persistent local bind/receive/shutdown/rebind lifecycle; no production listener, TLS/mTLS, or remote/native action is configured.
 
 ## Local restore/fence boundary (Task 6, accepted locally)
 
