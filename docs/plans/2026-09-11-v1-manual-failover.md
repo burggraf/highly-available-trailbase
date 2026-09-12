@@ -31,6 +31,7 @@ This section is the authoritative restart tracker. Follow [AGENTS.md](../../AGEN
 | Task 9 — deployment/native acceptance | in_progress | Local artifact/contract subset T9-AC1 through T9-AC5 passed; owner authorized one bounded disposable VPS E2E cycle and a temporary remote UI demo. Further cycles, permanent deployment, and unsupported/provider effects remain separately gated. |
 | Task 9C — cluster console/authority slice | accepted | Local console/status/authority slice accepted: the configured `controller_node` plus local node identity selects the sole mutation authority; all other dashboards are read-only, observations stay unknown until supplied, and native actions refuse safely. Remote process/backup/fence execution remains the next native slice. |
 | Task 9D — local action-adapter contract | accepted | Local typed action identity/outcomes, durable replay/conflict handling, injected fake tests, and refusal-safe default behavior passed T9D-AC1 through T9D-AC4. Native node, backup, fence, forwarding, remote, and disruptive effects remain out of scope. |
+| Task 9E — local node boundary contract | in_progress | Owner said continue. Versioned node command/observation envelopes and exact local state binding are authorized; transport, executors, process, backup, fence, forwarding, remote, and disruptive effects remain out of scope. |
 | Task 10 — fault/release qualification | pending | Not authorized; workload, attempt budget and soak approval required. |
 
 ### Task 2 completion contract — approved and accepted
@@ -560,6 +561,17 @@ Design reference: [Task 9D action-adapter contract](2026-09-11-task9d-action-ada
 | T9D-AC4 | Behavioral RED, package gates, fresh authority/action review, and accurate docs/handoff pass with no native-effect claim. | `docs/reports/v1-task9d-*` | pass |
 
 **Task 9D handoff:** source/tests/docs are accepted locally in the containing checkpoint after final review `81561d9b-59ba-48fc-a0da-abd741fead76`. Final gates are retained in `docs/reports/v1-task9d-gates.txt`; the release SHA-256 is `1628e35a513470782e3fbd38e48a3807c39e2983e9727079b96b92647036e62b`. The default server remains fail-closed and no native or remote effect ran. The next safe step is a separately authorized native observation/node-agent/forwarding design; do not enable the injected adapter or repeat VPS qualification from this checkpoint.
+
+### Task 9E — Local node boundary contract — approved for local-only implementation
+
+Design reference: [Task 9E node boundary contract](2026-09-11-task9e-node-boundary-design.md). This slice defines strict versioned JSON for a future controller-to-node command and node observation, and validates exact identity/state/digest binding against in-memory `NodeState`. No listener, transport, executor, process, restore, fence, route publication, forwarding, remote deployment, or native/disruptive effect is authorized.
+
+| ID | Observable requirement, including refusal cases | Exact check/evidence | Result |
+| --- | --- | --- | --- |
+| T9E-AC1 | Node action commands and observations have bounded, versioned, strict JSON wire forms; duplicate keys, unknown fields, oversized input, malformed identities, and unsupported schema are refused. | `rust/src/node_agent.rs` unit tests; `docs/reports/v1-task9e-*` | not_run |
+| T9E-AC2 | A command binds cluster, controller, node, incarnation, operation/request identity, digest, kind, exact generation, expected role/admission, and loss policy; digest and all fields are validated before execution can be considered. | node-boundary unit tests; design doc | not_run |
+| T9E-AC3 | A local observation binds cluster/node/incarnation and explicitly distinguishes unknown generation; stale, mismatched, unknown, or changed role/admission state refuses. | node-boundary unit tests | not_run |
+| T9E-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no native-effect claim. | `docs/reports/v1-task9e-*` | not_run |
 
 ### Task 9 — Installable disposable deployment and native acceptance
 
