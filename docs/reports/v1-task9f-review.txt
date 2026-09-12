@@ -1,0 +1,16 @@
+# Task 9F review record
+
+## Review sequence
+
+1. Final read-only review `18e3d437-649d-4fdc-8e55-544ac65319f3` returned PASS. It found no issues in the in-memory forwarding boundary, refusal behavior, default unavailable adapter, effect-free scope, RED evidence, or 69-test gate evidence.
+
+## Criterion review
+
+- T9F-AC1: pass — `InMemoryNodeAdapter` converts a valid controller command to a `NodeActionCommand` and invokes the injected executor exactly once with the bound fields.
+- T9F-AC2: pass — missing, unknown-generation, stale, and mismatched observations refuse before executor invocation; bounded action outcomes are preserved.
+- T9F-AC3: pass — the normal dashboard/server still uses the unavailable adapter; no transport, process, remote, backup, fence, route, or disruptive effect exists.
+- T9F-AC4: pass — RED, full 69-test suite, Clippy, fmt, locked release, SHA-256, diff check, docs, and fresh PASS review are retained.
+
+## Residual risks
+
+This is still an in-memory test boundary. No authenticated controller-to-node transport, native executor, node listener, process lifecycle integration, observation channel, backup/restore, fencing, remote forwarding, deployment, or production qualification exists.

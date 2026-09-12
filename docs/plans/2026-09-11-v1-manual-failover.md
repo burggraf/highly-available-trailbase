@@ -32,7 +32,7 @@ This section is the authoritative restart tracker. Follow [AGENTS.md](../../AGEN
 | Task 9C — cluster console/authority slice | accepted | Local console/status/authority slice accepted: the configured `controller_node` plus local node identity selects the sole mutation authority; all other dashboards are read-only, observations stay unknown until supplied, and native actions refuse safely. Remote process/backup/fence execution remains the next native slice. |
 | Task 9D — local action-adapter contract | accepted | Local typed action identity/outcomes, durable replay/conflict handling, injected fake tests, and refusal-safe default behavior passed T9D-AC1 through T9D-AC4. Native node, backup, fence, forwarding, remote, and disruptive effects remain out of scope. |
 | Task 9E — local node boundary contract | accepted | Local versioned node command/observation envelopes and exact state binding passed T9E-AC1 through T9E-AC4. Transport, executors, process, backup, fence, forwarding, remote, and disruptive effects remain out of scope. |
-| Task 9F — local node-forwarding boundary | in_progress | Owner said continue. In-memory command conversion, observation validation, and injected executor dispatch are authorized; transport, native, remote, backup, fence, and disruptive effects remain out of scope. |
+| Task 9F — local node-forwarding boundary | accepted | In-memory command conversion, observation validation, injected executor dispatch, and refusal tests passed T9F-AC1 through T9F-AC4. Transport, native, remote, backup, fence, and disruptive effects remain out of scope. |
 | Task 10 — fault/release qualification | pending | Not authorized; workload, attempt budget and soak approval required. |
 
 ### Task 2 completion contract — approved and accepted
@@ -582,10 +582,12 @@ Design reference: [Task 9F forwarding boundary](2026-09-11-task9f-forwarding-bou
 
 | ID | Observable requirement, including refusal cases | Exact check/evidence | Result |
 | --- | --- | --- | --- |
-| T9F-AC1 | A valid controller command converts to a node envelope and reaches the injected executor exactly once with the same identity/digest/state bindings. | `rust/src/node_agent.rs` tests; design doc | not_run |
-| T9F-AC2 | Missing, unknown-generation, stale, or mismatched observations refuse before executor invocation; executor outcomes remain bounded by the existing action result contract. | node-forwarding tests | not_run |
-| T9F-AC3 | Default CLI behavior and native-effect refusal boundaries remain unchanged; no transport/process/remote effect is introduced. | dashboard tests; package gates | not_run |
-| T9F-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no native-effect claim. | `docs/reports/v1-task9f-*` | not_run |
+| T9F-AC1 | A valid controller command converts to a node envelope and reaches the injected executor exactly once with the same identity/digest/state bindings. | `rust/src/node_agent.rs` tests; `docs/reports/v1-task9f-review.txt` | pass |
+| T9F-AC2 | Missing, unknown-generation, stale, or mismatched observations refuse before executor invocation; executor outcomes remain bounded by the existing action result contract. | `rust/src/node_agent.rs` tests; `docs/reports/v1-task9f-gates.txt` | pass |
+| T9F-AC3 | Default CLI behavior and native-effect refusal boundaries remain unchanged; no transport/process/remote effect is introduced. | `rust/tests/dashboard.rs`; `docs/reports/v1-task9f-review.txt` | pass |
+| T9F-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no native-effect claim. | `docs/reports/v1-task9f-*` | pass |
+
+**Task 9F handoff:** source is in checkpoint `cbe62d0`; final source SHA-256 is `6a0da7d406b26143d783d122904c4314ed75afa5d96057c767058d6b0b761578`. Final gates are in `docs/reports/v1-task9f-gates.txt`; review `18e3d437-649d-4fdc-8e55-544ac65319f3` returned PASS. The normal server remains fail-closed and no native/remote effect ran. The next step requires a separately scoped authenticated transport and native executor decision.
 
 ### Task 9 — Installable disposable deployment and native acceptance
 
