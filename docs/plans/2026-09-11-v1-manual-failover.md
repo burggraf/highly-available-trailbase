@@ -37,6 +37,7 @@ This section is the authoritative restart tracker. Follow [AGENTS.md](../../AGEN
 | Task 9H — ephemeral local Unix listener | accepted | One-request local Unix listener passed T9H-AC1 through T9H-AC4. Temporary private-directory socket binding/cleanup and bounded frame delivery are accepted; daemons, persistent listeners, TLS/mTLS, remote, native, process, backup, fence, and disruptive effects remain out of scope. |
 | Task 9I — persistent local Unix listener | accepted | Persistent local lifecycle passed T9I-AC1 through T9I-AC4. Explicit bind/receive/shutdown/rebind behavior is accepted; production call sites, daemons, TLS/mTLS, remote, native, process, backup, fence, and disruptive effects remain out of scope. |
 | Task 9J — authenticated transport-to-executor boundary | accepted | Authenticated local transport-to-injected-executor integration passed T9J-AC1 through T9J-AC4. Valid transport invokes only the supplied `NodeExecutor`; refusal/outcome behavior is accepted. Default/native, controller, production, remote, process, backup, fence, and disruptive effects remain out of scope. |
+| Task 9K — local response contract | in_progress | Owner said continue; the bounded local request/response slice is authorized. Strict outcome/refusal responses over the existing injected executor boundary are in scope; default/native, controller, production, remote, process, backup, fence, and disruptive effects remain out of scope. |
 | Task 10 — fault/release qualification | pending | Not authorized; workload, attempt budget and soak approval required. |
 
 ### Task 2 completion contract — approved and accepted
@@ -644,6 +645,17 @@ Design reference: [Task 9J transport executor](2026-09-11-task9j-transport-execu
 | T9J-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no external-effect claim. | `docs/reports/v1-task9j-*` | pass |
 
 **Task 9J handoff:** source/tests are in checkpoint `f10fdafdc853d77843c9c01cdf19c2ed683c4d94`; final release SHA-256 is `abe67dcc6832b929d55c00c36c2f3de1a9096b657419c1dc49be88e18d53fda6`. Final gates are in `docs/reports/v1-task9j-gates.txt`; final review `735b43d4-363c-4fa6-952e-fe69c2c9ff1f` returned PASS. The transport remains library/test-only, requires the accepted local listener lifecycle, and invokes only an injected executor; no default/native/controller/production/remote effect exists.
+
+### Task 9K — Local response contract — approved for local-only implementation
+
+Design reference: [Task 9K local response](2026-09-11-task9k-local-response-design.md). This slice adds one bounded strict response frame for the accepted local injected-executor boundary. No default/native executor, controller wiring, production call site, daemon/service unit, TLS/mTLS, remote forwarding, process, restore, fence, route publication, deployment, or disruptive effect is authorized.
+
+| ID | Observable requirement, including refusal cases | Exact check/evidence | Result |
+| --- | --- | --- | --- |
+| T9K-AC1 | A valid command reaches the injected executor and writes one strict versioned response preserving the bounded action outcome. | response codec/listener tests; design doc | not_run |
+| T9K-AC2 | Transport/authentication refusal occurs before executor invocation and writes no response; malformed/oversized/duplicate/unknown response frames refuse. | refusal/invocation-count/codec tests | not_run |
+| T9K-AC3 | Executor errors map only to bounded refusal, response output is length-limited and detail-free, and no external/native effect exists. | error mapping tests; package gates | not_run |
+| T9K-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no external-effect claim. | `docs/reports/v1-task9k-*` | not_run |
 
 ### Task 9 — Installable disposable deployment and native acceptance
 
