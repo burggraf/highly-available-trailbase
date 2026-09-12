@@ -6,7 +6,7 @@ An early-stage project for a single-writer [TrailBase](https://github.com/trailb
 
 ## Current development — Rust V1
 
-**Active scope:** one controller, primary-only proxies, manual fenced failover; no Raft or replica reads. **Current stage: Task 9H ephemeral local Unix listener is in progress; native HAT qualification remains blocked.** Tasks 2 through 9G are accepted only for their recorded local boundaries; the Task 9B probe did not qualify the Rust controller/node operation boundary.
+**Active scope:** one controller, primary-only proxies, manual fenced failover; no Raft or replica reads. **Current stage: Task 9H ephemeral local Unix listener accepted; native HAT qualification remains blocked.** Tasks 2 through 9H are accepted only for their recorded local boundaries; the Task 9B probe did not qualify the Rust controller/node operation boundary.
 
 - [Active plan and restart handoff](docs/plans/2026-09-11-v1-manual-failover.md#execution-state-and-acceptance) — authoritative stage/acceptance tracker.
 - [Development workflow](AGENTS.md) — restart procedure, autonomous stage loop, evidence and approval rules.

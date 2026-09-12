@@ -1,0 +1,17 @@
+# Task 9H review record
+
+## Review sequence
+
+1. Fresh read-only review `bb738859-db6b-46f9-904e-cd7ec7da4b21` returned BLOCK for EOF-dependent completion, pathname-replacement cleanup risk, and missing listener-level malformed-frame cleanup tests. The listener was revised to read declared-length frames without half-close, require a private parent, verify bound socket identity before cleanup, and add refusal/cleanup tests.
+2. Final read-only review `1a407f74-21a8-4645-9ced-36e8da0fa077` returned PASS. It confirmed bounded one-request behavior, private-parent/path safeguards, valid and refusal tests, 78-test/gate evidence, source checkpoint, and no production/native effect.
+
+## Criterion review
+
+- T9H-AC1: pass — a one-request Unix listener accepts a valid bounded frame, returns the validated command without waiting for peer half-close, and cleans its socket path.
+- T9H-AC2: pass — shared/non-private parent, bind failure, pre-existing path, truncation, oversized/trailing frame, wrong token, invalid envelope, invalid nested command, and cleanup uncertainty refuse safely.
+- T9H-AC3: pass — the helper is one-request/test-only; no daemon, persistent listener, TLS/mTLS, remote/native/process effect, or credential provisioning exists.
+- T9H-AC4: pass — RED evidence, 78-test locked suite, Clippy, fmt, locked release, SHA-256, diff check, docs, and final PASS review are retained.
+
+## Residual risks
+
+None within the approved Task 9H local-only scope. Persistent transport, TLS/mTLS, remote forwarding, native execution, deployment, and disruptive qualification remain unimplemented and separately gated.
