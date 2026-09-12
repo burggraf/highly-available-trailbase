@@ -1,0 +1,24 @@
+# Task 9I gates
+
+## Scope
+
+Persistent local Unix listener lifecycle only. `LocalUnixListener` binds one private mode-0700 parent path, receives repeated bounded authenticated commands, explicitly shuts down, verifies/removes only its bound socket, and permits rebind. No production call site, daemon, service unit, TCP/HTTP/TLS/mTLS, credential provisioning, remote host, native process, backup/restore, fencing, route publication, deployment, or disruptive effect ran.
+
+## Final checks
+
+Source revision: `6d444469b71d7494243777d10381d7e1af02e20c` (Task 9I source checkpoint; later acceptance bookkeeping is docs-only).
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Behavioral lifecycle RED | pass | `docs/reports/v1-task9i-red.txt`; `/tmp/task9i-red-lifecycle4.log`; `/tmp/task9i-green-focused2.log` |
+| Focused local transport/lifecycle tests | pass — 11 tests | `/tmp/task9i-fix-focused.log` |
+| Full locked package suite | pass — 80 tests, 0 failures, 0 doctests | `/tmp/task9i-full-test-final.log` |
+| `cargo clippy --locked --all-targets -- -D warnings` | pass | `/tmp/task9i-clippy-final.log` |
+| `cargo fmt --manifest-path rust/Cargo.toml --check` | pass | command exit 0 |
+| `cargo build --release --locked` | pass | `/tmp/task9i-release-final.log` |
+| Release binary SHA-256 | `40b4977993b0cb768ad8184f1ff64873605849db82082863d976437676aa4a02` | `/tmp/task9i-release-sha-final.txt` |
+| `git diff --check` | pass | command exit 0 |
+
+## Coverage
+
+Tests cover repeated valid delivery, bind collision, explicit shutdown cleanup, clean rebind, replaced-socket cleanup uncertainty refusal/preservation, private/shared parent handling, pre-existing path preservation, malformed/truncated/trailing/wrong-token refusal cleanup, framing/authentication/nested validation, and the prior one-request boundary. No production or external effect is claimed.

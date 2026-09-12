@@ -1,0 +1,5 @@
+# Task 9I RED evidence
+
+A behavioral lifecycle test was added before the persistent wrapper: `persistent_listener_keeps_socket_until_explicit_shutdown` used the existing one-shot `receive_one` boundary and failed because the socket path disappeared before explicit shutdown (`/tmp/task9i-red-lifecycle4.log`, exit 101). The implementation then added `LocalUnixListener` with repeated `receive`, explicit `shutdown`, identity-checked cleanup, bind-collision refusal, and clean rebind. The final focused lifecycle/transport suite passes (`/tmp/task9i-green-focused2.log`).
+
+The first fresh review `33f9723a-18ae-436b-92df-15a38faad910` also found a stale full-suite count and missing cleanup-uncertainty regression. The count was corrected after rerunning the full suite; `shutdown_refuses_a_replaced_socket_path` now unlinks/replaces the bound socket and verifies `shutdown` refuses while preserving the replacement. No production call site, daemon, service unit, TCP/HTTP/TLS/mTLS, credential provisioning, remote host, native process, backup/restore, fencing, route publication, deployment, or disruptive effect ran.
