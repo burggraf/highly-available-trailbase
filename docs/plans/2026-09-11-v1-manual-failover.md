@@ -39,6 +39,7 @@ This section is the authoritative restart tracker. Follow [AGENTS.md](../../AGEN
 | Task 9J — authenticated transport-to-executor boundary | accepted | Authenticated local transport-to-injected-executor integration passed T9J-AC1 through T9J-AC4. Valid transport invokes only the supplied `NodeExecutor`; refusal/outcome behavior is accepted. Default/native, controller, production, remote, process, backup, fence, and disruptive effects remain out of scope. |
 | Task 9K — local response contract | accepted | Strict local outcome/refusal responses over the injected executor boundary passed T9K-AC1 through T9K-AC4. Default/native, controller, production, remote, process, backup, fence, and disruptive effects remain out of scope. |
 | Task 9L — local authenticated requester | accepted | One-request local authenticated client passed T9L-AC1 through T9L-AC4. Unix connect/write/read and bounded response decoding are accepted; controller, production, default/native, remote, process, backup, fence, and disruptive effects remain out of scope. |
+| Task 9M — local action-adapter client | in_progress | Owner said continue; the library/test-only `ActionAdapter` client slice is authorized. It may use only the supplied local requester and injected incarnation; normal controller wiring, default/native, production, remote, process, backup, fence, and disruptive effects remain out of scope. |
 | Task 10 — fault/release qualification | pending | Not authorized; workload, attempt budget and soak approval required. |
 
 ### Task 2 completion contract — approved and accepted
@@ -672,6 +673,17 @@ Design reference: [Task 9L local requester](2026-09-11-task9l-local-requester-de
 | T9L-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no external-effect claim. | `docs/reports/v1-task9l-*` | pass |
 
 **Task 9L handoff:** source/tests are in checkpoint `a8028f7bc7866685601ea1887b44435ba37a53e2`; final release SHA-256 is `717ddb5002e36b759e592385b4c8deeb651c78d1117a5a87fe698f06a363971a`. Final gates are in `docs/reports/v1-task9l-gates.txt`; final review `635dd0a8-7421-497e-97a2-53a6ba187bbd` returned PASS. The requester is library/test-only, performs one close-synchronized bounded request with no retry/fallback, and has no production/controller/native/remote effect.
+
+### Task 9M — Local action-adapter client — approved for local-only implementation
+
+Design reference: [Task 9M local action adapter](2026-09-11-task9m-local-action-adapter-design.md). This slice adds a test-only local `ActionAdapter` client over the accepted requester and preserves bounded uncertainty. It is not wired to the normal controller and has no default/native executor or external effect.
+
+| ID | Observable requirement, including refusal cases | Exact check/evidence | Result |
+| --- | --- | --- | --- |
+| T9M-AC1 | A valid `ActionCommand` derives a bound node command and reaches the local requester/executor, preserving the response outcome. | adapter/requester/listener tests; design doc | not_run |
+| T9M-AC2 | Invalid action identity/token/incarnation refuses before transport; requester/response errors do not claim success or safe refusal. | refusal/uncertainty tests | not_run |
+| T9M-AC3 | Post-command transport uncertainty maps to `ActionAdapterError::Uncertain`; no retry/fallback, normal-controller wiring, or external/native effect exists. | uncertainty tests; package gates | not_run |
+| T9M-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no external-effect claim. | `docs/reports/v1-task9m-*` | not_run |
 
 ### Task 9 — Installable disposable deployment and native acceptance
 
