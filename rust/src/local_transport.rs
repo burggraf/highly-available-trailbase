@@ -3,6 +3,8 @@ use crate::{
     node_agent::{NodeActionCommand, NodeBoundaryError},
 };
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
+use std::{io::Read, os::unix::net::UnixListener, path::Path};
 
 const SCHEMA_VERSION: u8 = 1;
 const FRAME_LIMIT: usize = 16 * 1024;
@@ -11,6 +13,7 @@ const MAX_TOKEN: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TransportError {
+    Io,
     InvalidToken,
     TooLarge,
     Truncated,
@@ -99,6 +102,36 @@ pub fn decode_frame(
         return Err(TransportError::Unauthorized);
     }
     NodeActionCommand::from_wire_json(&envelope.command).map_err(TransportError::Command)
+}
+
+#[cfg(unix)]
+pub fn receive_one(path: &Path, expected_token: &str) -> Result<NodeActionCommand, TransportError> {
+    if !valid_token(expected_token) {
+        return Err(TransportError::InvalidToken);
+    }
+    let listener = UnixListener::bind(path).map_err(|_| TransportError::Io)?;
+    let result = (|| {
+        let (mut stream, _) = listener.accept().map_err(|_| TransportError::Io)?;
+        let mut frame = Vec::with_capacity(4);
+        let mut buffer = [0u8; 1024];
+        loop {
+            let count = stream.read(&mut buffer).map_err(|_| TransportError::Io)?;
+            if count == 0 {
+                break;
+            }
+            if frame.len().saturating_add(count) > FRAME_LIMIT + 4 {
+                return Err(TransportError::TooLarge);
+            }
+            frame.extend_from_slice(&buffer[..count]);
+        }
+        decode_frame(&frame, expected_token)
+    })();
+    let cleanup = std::fs::remove_file(path);
+    match (result, cleanup) {
+        (Err(error), _) => Err(error),
+        (Ok(command), Ok(())) => Ok(command),
+        (Ok(_), Err(_)) => Err(TransportError::Io),
+    }
 }
 
 fn valid_token(value: &str) -> bool {
@@ -216,6 +249,58 @@ mod tests {
             decode_frame(&invalid_command, TOKEN),
             Err(TransportError::Command(NodeBoundaryError::InvalidWire))
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ephemeral_listener_accepts_one_frame_and_cleans_its_path() {
+        use std::{
+            io::Write,
+            os::unix::net::UnixStream,
+            thread,
+            time::{Duration, SystemTime, UNIX_EPOCH},
+        };
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("hat-task9h-{suffix}.sock"));
+        let server_path = path.clone();
+        let server = thread::spawn(move || receive_one(&server_path, TOKEN));
+        let mut connected = None;
+        for _ in 0..100 {
+            match UnixStream::connect(&path) {
+                Ok(stream) => {
+                    connected = Some(stream);
+                    break;
+                }
+                Err(_) => thread::sleep(Duration::from_millis(5)),
+            }
+        }
+        let mut stream = connected.expect("ephemeral listener did not bind");
+        stream
+            .write_all(&encode_frame(TOKEN, &command()).unwrap())
+            .unwrap();
+        stream.shutdown(std::net::Shutdown::Write).unwrap();
+        assert_eq!(server.join().unwrap().unwrap(), command());
+        assert!(!path.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ephemeral_listener_does_not_remove_preexisting_paths() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("hat-task9h-existing-{suffix}.sock"));
+        std::fs::write(&path, b"keep").unwrap();
+        assert_eq!(receive_one(&path, TOKEN), Err(TransportError::Io));
+        assert_eq!(std::fs::read(&path).unwrap(), b"keep");
+        std::fs::remove_file(path).unwrap();
     }
 
     #[cfg(unix)]
