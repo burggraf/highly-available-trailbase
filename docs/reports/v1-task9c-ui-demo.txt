@@ -22,6 +22,6 @@ Using the temporary demo operator account through local forwards:
 
 Chrome DevTools verified the final fm3 dashboard at `http://localhost:18083/`: semantic headings/regions/forms, all three node cards, explicit `Unknown` health/admission/replication, disabled action controls, and no console errors after the favicon boundary was added. Screenshot: `/tmp/hat-console-fm3-final.png`.
 
-## Cleanup handoff
+## Cleanup result
 
-After the viewing session, stop only the three `hat-ui-demo-9c3-*` units, remove only `/opt/hat-ui-demo` on the three named hosts, stop SSH forwards `proc_d5bb`, `proc_5c00`, and `proc_5d08`, and remove `/tmp/hat-ui-demo-password`. Preserve historical deployment files and units. No cleanup or permanent deployment claim is made by this report.
+After the viewing session, only the three `hat-ui-demo-9c3-*` units were stopped, `/opt/hat-ui-demo` was removed on the three named hosts, SSH forwards `proc_d5bb`, `proc_5c00`, and `proc_5d08` exited, and `/tmp/hat-ui-demo-password` was removed. Historical deployment files and units were preserved. Cleanup evidence: `/tmp/task9c-cleanup-final.log`. No permanent deployment claim is made by this report.
