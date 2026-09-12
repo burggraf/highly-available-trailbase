@@ -32,6 +32,7 @@ This section is the authoritative restart tracker. Follow [AGENTS.md](../../AGEN
 | Task 9C — cluster console/authority slice | accepted | Local console/status/authority slice accepted: the configured `controller_node` plus local node identity selects the sole mutation authority; all other dashboards are read-only, observations stay unknown until supplied, and native actions refuse safely. Remote process/backup/fence execution remains the next native slice. |
 | Task 9D — local action-adapter contract | accepted | Local typed action identity/outcomes, durable replay/conflict handling, injected fake tests, and refusal-safe default behavior passed T9D-AC1 through T9D-AC4. Native node, backup, fence, forwarding, remote, and disruptive effects remain out of scope. |
 | Task 9E — local node boundary contract | accepted | Local versioned node command/observation envelopes and exact state binding passed T9E-AC1 through T9E-AC4. Transport, executors, process, backup, fence, forwarding, remote, and disruptive effects remain out of scope. |
+| Task 9F — local node-forwarding boundary | in_progress | Owner said continue. In-memory command conversion, observation validation, and injected executor dispatch are authorized; transport, native, remote, backup, fence, and disruptive effects remain out of scope. |
 | Task 10 — fault/release qualification | pending | Not authorized; workload, attempt budget and soak approval required. |
 
 ### Task 2 completion contract — approved and accepted
@@ -574,6 +575,17 @@ Design reference: [Task 9E node boundary contract](2026-09-11-task9e-node-bounda
 | T9E-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no native-effect claim. | `docs/reports/v1-task9e-*` | pass |
 
 **Task 9E handoff:** source/tests are in checkpoint `d412464`; final source SHA-256 is `58a41aae011c164637beee14cb875b5d940bf01feadb198b0627a3f1d5a80522`. Final package gates are in `docs/reports/v1-task9e-gates.txt`. Review `25b397a0-1abb-49cc-9bc6-0d41a87bff2f` found no implementation defect; its bookkeeping blockers were fixed in the follow-up docs checkpoint. Final evidence-only review `3b41e933-eb23-4a27-a31c-0eb158a0af09` returned PASS. The pre-implementation RED limitation remains honestly recorded; no native effect ran. The next safe step is a separately scoped transport/executor decision.
+
+### Task 9F — Local node-forwarding boundary — approved for local-only implementation
+
+Design reference: [Task 9F forwarding boundary](2026-09-11-task9f-forwarding-boundary-design.md). This slice connects the controller action command to the Task 9E node envelope through an in-memory validating adapter and an injected executor only. The normal server remains unavailable-adapter and fail-closed. No transport, executor with native effects, process, restore, fence, route publication, forwarding, remote deployment, or disruptive effect is authorized.
+
+| ID | Observable requirement, including refusal cases | Exact check/evidence | Result |
+| --- | --- | --- | --- |
+| T9F-AC1 | A valid controller command converts to a node envelope and reaches the injected executor exactly once with the same identity/digest/state bindings. | `rust/src/node_agent.rs` tests; design doc | not_run |
+| T9F-AC2 | Missing, unknown-generation, stale, or mismatched observations refuse before executor invocation; executor outcomes remain bounded by the existing action result contract. | node-forwarding tests | not_run |
+| T9F-AC3 | Default CLI behavior and native-effect refusal boundaries remain unchanged; no transport/process/remote effect is introduced. | dashboard tests; package gates | not_run |
+| T9F-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no native-effect claim. | `docs/reports/v1-task9f-*` | not_run |
 
 ### Task 9 — Installable disposable deployment and native acceptance
 
