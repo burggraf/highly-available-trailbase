@@ -543,6 +543,37 @@ mod tests {
             decode_response(&unknown),
             Err(TransportError::InvalidEnvelope)
         );
+        let unknown_field = raw_frame(br#"{"schema_version":1,"result":"succeeded","extra":true}"#);
+        assert_eq!(
+            decode_response(&unknown_field),
+            Err(TransportError::InvalidEnvelope)
+        );
+        let duplicate =
+            raw_frame(br#"{"schema_version":1,"result":"succeeded","result":"succeeded"}"#);
+        assert_eq!(
+            decode_response(&duplicate),
+            Err(TransportError::InvalidEnvelope)
+        );
+        let unsupported = raw_frame(br#"{"schema_version":2,"result":"succeeded"}"#);
+        assert_eq!(
+            decode_response(&unsupported),
+            Err(TransportError::UnsupportedSchema)
+        );
+        let valid = encode_response(Ok(ActionOutcome::Succeeded)).unwrap();
+        assert_eq!(
+            decode_response(&valid[..valid.len() - 1]),
+            Err(TransportError::Truncated)
+        );
+        let mut trailing = valid.clone();
+        trailing.push(0);
+        assert_eq!(
+            decode_response(&trailing),
+            Err(TransportError::TrailingBytes)
+        );
+        assert_eq!(
+            decode_response(&vec![0xff; FRAME_LIMIT + 5]),
+            Err(TransportError::TooLarge)
+        );
     }
 
     #[cfg(unix)]
@@ -605,17 +636,19 @@ mod tests {
         use std::{
             io::{Read, Write},
             os::unix::net::UnixStream,
+            sync::atomic::{AtomicUsize, Ordering},
             thread,
             time::Duration,
         };
 
-        struct SucceededExecutor;
+        struct CountingExecutor(AtomicUsize);
 
-        impl NodeExecutor for SucceededExecutor {
+        impl NodeExecutor for CountingExecutor {
             fn execute(
                 &self,
                 _command: &NodeActionCommand,
             ) -> Result<ActionOutcome, ActionAdapterError> {
+                self.0.fetch_add(1, Ordering::Relaxed);
                 Ok(ActionOutcome::Succeeded)
             }
         }
@@ -643,11 +676,13 @@ mod tests {
             stream.read_to_end(&mut response).unwrap();
             response
         });
+        let executor = CountingExecutor(AtomicUsize::new(0));
         assert_eq!(
-            listener.receive_and_respond(&SucceededExecutor),
+            listener.receive_and_respond(&executor),
             Err(LocalExecutionError::Transport(TransportError::Unauthorized))
         );
         assert!(client.join().unwrap().is_empty());
+        assert_eq!(executor.0.load(Ordering::Relaxed), 0);
         listener.shutdown().unwrap();
         std::fs::remove_dir(directory).unwrap();
     }
