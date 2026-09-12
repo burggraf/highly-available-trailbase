@@ -573,7 +573,7 @@ Design reference: [Task 9E node boundary contract](2026-09-11-task9e-node-bounda
 | T9E-AC3 | A local observation binds cluster/node/incarnation and explicitly distinguishes unknown generation; stale, mismatched, unknown, or changed role/admission state refuses. | `rust/src/node_agent.rs` tests; `docs/reports/v1-task9e-review.txt` | pass |
 | T9E-AC4 | Behavioral RED, package gates, fresh safety review, and accurate docs/handoff pass with no native-effect claim. | `docs/reports/v1-task9e-*` | pass |
 
-**Task 9E handoff:** source/tests are in checkpoint `d412464`; final source SHA-256 is `58a41aae011c164637beee14cb875b5d940bf01feadb198b0627a3f1d5a80522`. Final package gates are in `docs/reports/v1-task9e-gates.txt`. Review `25b397a0-1abb-49cc-9bc6-0d41a87bff2f` found no implementation defect; its bookkeeping blockers were fixed in the follow-up docs checkpoint. The pre-implementation RED limitation remains honestly recorded; no native effect ran. The next safe step is a separately scoped transport/executor decision.
+**Task 9E handoff:** source/tests are in checkpoint `d412464`; final source SHA-256 is `58a41aae011c164637beee14cb875b5d940bf01feadb198b0627a3f1d5a80522`. Final package gates are in `docs/reports/v1-task9e-gates.txt`. Review `25b397a0-1abb-49cc-9bc6-0d41a87bff2f` found no implementation defect; its bookkeeping blockers were fixed in the follow-up docs checkpoint. Final evidence-only review `3b41e933-eb23-4a27-a31c-0eb158a0af09` returned PASS. The pre-implementation RED limitation remains honestly recorded; no native effect ran. The next safe step is a separately scoped transport/executor decision.
 
 ### Task 9 — Installable disposable deployment and native acceptance
 
