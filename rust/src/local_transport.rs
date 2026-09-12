@@ -188,6 +188,13 @@ mod tests {
 
     #[test]
     fn envelope_and_nested_command_refusals_are_distinct() {
+        let unsupported = raw_frame(
+            br#"{"schema_version":2,"peer_token":"peer-token-0123456789","command":"{}"}"#,
+        );
+        assert_eq!(
+            decode_frame(&unsupported, TOKEN),
+            Err(TransportError::UnsupportedSchema)
+        );
         let unknown = raw_frame(
             br#"{"schema_version":1,"peer_token":"peer-token-0123456789","command":"{}","extra":true}"#,
         );
