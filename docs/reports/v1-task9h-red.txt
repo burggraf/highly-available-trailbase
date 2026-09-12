@@ -1,0 +1,5 @@
+# Task 9H RED evidence
+
+A mutation replaced the listener's socket cleanup with a no-op. `ephemeral_listener_accepts_one_frame_and_cleans_its_path` then failed at `rust/src/local_transport.rs:287` because the temporary socket remained (`/tmp/task9h-red-cleanup.log`, exit 101). Restoring cleanup made the six focused local-transport tests pass (`/tmp/task9h-green-listener.log`).
+
+No daemon, persistent listener, TLS/mTLS, remote host, native process, backup/restore, fencing, route publication, deployment, or disruptive effect ran.

@@ -1,0 +1,24 @@
+# Task 9H gates
+
+## Scope
+
+One-request temporary Unix-domain listener only. The helper accepts one bounded authenticated frame, returns the validated node command, and removes only the path it successfully bound. No daemon, persistent listener, TLS/mTLS, credential provisioning, remote host, native process, backup/restore, fencing, route publication, deployment, or disruptive effect ran.
+
+## Final checks
+
+Source revision: `f1a455af5dd6c960852c4bb36f87b5507d5f7ce8` (Task 9H source checkpoint; later acceptance bookkeeping is docs-only).
+
+| Check | Result | Evidence |
+| --- | --- | --- |
+| Behavioral/cleanup RED | pass | `docs/reports/v1-task9h-red.txt`; `/tmp/task9h-red-cleanup.log`; `/tmp/task9h-green-listener.log` |
+| Focused local transport/listener tests | pass — 6 tests | `/tmp/task9h-listener-test.log` |
+| Full locked package suite | pass — 75 tests, 0 failures, 0 doctests | `/tmp/task9h-full-test.log` |
+| `cargo clippy --locked --all-targets -- -D warnings` | pass | `/tmp/task9h-clippy.log` |
+| `cargo fmt --manifest-path rust/Cargo.toml --check` | pass | command exit 0 |
+| `cargo build --release --locked` | pass | `/tmp/task9h-release.log` |
+| Release binary SHA-256 | `d4bec14953d1aa2fb97e521afa4106a745c5ce163c57d72bc8978a4b6446501a` | `/tmp/task9h-release-sha.txt` |
+| `git diff --check` | pass | command exit 0 |
+
+## Coverage
+
+Tests cover valid one-request delivery and cleanup, pre-existing path preservation, framing/authentication/nested validation, and the existing Unix socket-pair byte boundary. No persistent or native effect is claimed.
